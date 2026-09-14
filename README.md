@@ -129,10 +129,10 @@ Die Admin Bridge ermöglicht eine eingeschränkte serverseitige Steuerung über 
 
 Ein separates Admin-Paket befindet sich im Verzeichnis:
 
-```
+```text
 admin/
 
-```markdown
+```
 
 ## Dauer-RX-Schutz
 
@@ -195,16 +195,13 @@ cd Funkgateway
 ./install-linux.sh
 ./start.sh
 
-
-```markdown
 Alternativ:
 
-```bash
 ./install.sh
 ./start.sh
 
 
-```markdown
+```
 ### Desktop-Eintrag
 
 Optional:
@@ -213,7 +210,7 @@ Optional:
 ./install-desktop.sh
 
 
-```markdown```
+```
 
 ## Python-Ice / Mumble-Komponenten
 
@@ -224,15 +221,14 @@ Falls FunkGateway meldet, dass Python-Ice nicht geladen werden kann:
 Alternativ kann die FunkGateway-Python-Umgebung über folgendes Script repariert werden:
 
 ```bash
-./repair-venv.sh```
-
+./repair-venv.sh
+```
 
 ## Konfiguration
 
 Die lokale FunkGateway-Konfiguration befindet sich unter:
 
-```text
-~/.config/funkgateway-ui/```
+~/.config/funkgateway-ui/
 
 Diese Konfiguration liegt außerhalb des Programmverzeichnisses und bleibt bei Versionswechseln erhalten.
 
@@ -240,8 +236,7 @@ Diese Konfiguration liegt außerhalb des Programmverzeichnisses und bleibt bei V
 
 Weitere technische Informationen befinden sich im Verzeichnis:
 
-```text
-docs/```
+docs/
 
 Dort befinden sich unter anderem:
 
@@ -276,8 +271,7 @@ Weitere Hinweise:
 ```text
 CONTRIBUTING.md
 
-
-```markdown ```
+```
 
 ## Lizenz
 
@@ -297,3 +291,4 @@ Weitere Informationen:
 
 ```text
 LICENSE
+```
