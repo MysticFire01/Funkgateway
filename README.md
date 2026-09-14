@@ -130,7 +130,9 @@ Die Admin Bridge ermöglicht eine eingeschränkte serverseitige Steuerung über 
 Ein separates Admin-Paket befindet sich im Verzeichnis:
 
 ```
-admin/```
+admin/
+
+```markdown
 
 ## Dauer-RX-Schutz
 
