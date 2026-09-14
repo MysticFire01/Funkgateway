@@ -1,0 +1,10 @@
+FunkGateway UI 0.5.6.20 – Generic Linux
+
+Installation:
+  ./install-linux.sh
+
+Start:
+  ./start.sh
+
+Mumble/Python-Ice:
+  Integrationen -> Mumble -> Mumble-Komponenten installieren / reparieren

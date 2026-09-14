@@ -1,2 +1,10 @@
-# Funkgateway
-Ein Linux Gateway Controller für verschiedene Sprachprogramme wie Mumble, Teamspeak, Zello uvm.
+# FunkGateway UI 0.5.6.20 – Generic Linux
+
+Schnellstart:
+
+```bash
+./install-linux.sh
+./start.sh
+```
+
+Siehe `README-GENERIC-LINUX.md`.

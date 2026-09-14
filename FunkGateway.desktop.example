@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FunkGateway
+Comment=Open Source Radio Gateway for Linux
+Exec=/PFAD/ZU/FunkGateway-UI-0.5.4-Ubuntu22.04-LTS/start.sh
+Path=/PFAD/ZU/FunkGateway-UI-0.5.4-Ubuntu22.04-LTS
+Icon=/PFAD/ZU/FunkGateway-UI-0.5.4-Ubuntu22.04-LTS/funkgateway.png
+Terminal=false
+Categories=AudioVideo;HamRadio;

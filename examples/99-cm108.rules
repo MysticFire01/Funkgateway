@@ -1,0 +1,2 @@
+# Example only. Adapt vendor/product IDs to your hardware before use.
+# SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", MODE="0660", GROUP="plugdev"
