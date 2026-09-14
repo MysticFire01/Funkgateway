@@ -14,6 +14,9 @@ Das Projekt richtet sich an Funkamateure, CB-Funk-Anwender und Betreiber von Fun
 - Rufzeichen-/ID-Funktionen
 - TeamSpeak-Integration
 - Mumble-Integration
+
+## Weitere Funktionen
+
 - Schutz bei Dauer-RX
 - automatische Störungsräume
 - WAV-Schutzansagen
@@ -31,7 +34,7 @@ Aktuelle Paketvarianten:
 - Debian 13
 - Generic Linux
 
-Der FunkGateway-Kern ist in allen Varianten identisch. Unterschiede betreffen hauptsächlich Installer und distributionsspezifische Systempakete.
+Der FunkGateway-Kern ist in allen Varianten identisch.
 
 ## Audio
 
@@ -54,7 +57,7 @@ Benötigt werden unter anderem:
 
 ## PTT-Unterstützung
 
-FunkGateway unterstützt verschiedene Möglichkeiten zur Sendertastung:
+FunkGateway unterstützt:
 
 - Testmodus
 - serielle RTS-/DTR-Steuerung
@@ -62,7 +65,7 @@ FunkGateway unterstützt verschiedene Möglichkeiten zur Sendertastung:
 - CM108/CM119 GPIO
 - Linux GPIO
 
-Zusätzlich stehen unter anderem zur Verfügung:
+Zusätzlich stehen zur Verfügung:
 
 - PTT Lead
 - PTT Hang
@@ -78,6 +81,9 @@ Funktionen:
 - aktuellen TeamSpeak-Channel anzeigen
 - aktuelle Sprecher anzeigen
 - Channel Commander automatisch setzen
+
+Weitere TeamSpeak-Funktionen:
+
 - Gateway-Client in andere Channels verschieben
 - TeamSpeak-Störungsraum festlegen
 - automatischer Wechsel in den Störungsraum bei Dauer-RX
@@ -85,37 +91,37 @@ Funktionen:
 
 Standardmäßig wird ClientQuery unter folgender Adresse erwartet:
 
-```text
 127.0.0.1:25639
 
 Der ClientQuery-API-Key kann aus der lokalen TeamSpeak-Konfiguration geladen oder manuell eingetragen werden.
 
-Mumble
+## Mumble
 
 FunkGateway unterstützt mehrere Möglichkeiten zur Mumble-Integration.
 
-Lokale Steuerung
+### Lokale Steuerung
 
 Die lokale Mumble-Integration arbeitet über DBus und benötigt keine Server-Adminrechte.
 
 Funktionen:
 
-aktuellen Mumble-Channel anzeigen
-aktuelle Sprecher anzeigen
-lokalen Mumble-Status prüfen
-Mumble Ice
+- aktuellen Mumble-Channel anzeigen
+- aktuelle Sprecher anzeigen
+- lokalen Mumble-Status prüfen
+
+### Mumble Ice
 
 Für erweiterte Serversteuerung kann Mumble Ice verwendet werden.
 
 Unterstützte Varianten:
 
-Direct Ice
-Ice über SSH-Tunnel
-Admin Bridge
+- Direct Ice
+- Ice über SSH-Tunnel
+- Admin Bridge
 
 Damit können unter anderem Störungsräume und automatische Channelwechsel realisiert werden.
 
-Admin Bridge
+### Admin Bridge
 
 Normale Gatewaybetreiber müssen keine globalen Ice-Secrets erhalten.
 
@@ -123,97 +129,117 @@ Die Admin Bridge ermöglicht eine eingeschränkte serverseitige Steuerung über 
 
 Ein separates Admin-Paket befindet sich im Verzeichnis:
 
-admin/
-Dauer-RX-Schutz
+```
+admin/```
+
+## Dauer-RX-Schutz
 
 FunkGateway kann erkennen, wenn der Funkempfang ungewöhnlich lange aktiv bleibt.
 
 Mögliche Reaktionen:
 
-Gateway stummschalten
-Schutzansage abspielen
-TeamSpeak-Gateway in einen Störungsraum verschieben
-Mumble-Gateway in einen Störungsraum verschieben
-wiederholte Störungsansagen
-nach stabil freiem Funkkanal automatisch reaktivieren
-in den vorherigen VoIP-Channel zurückkehren
+- Gateway stummschalten
+- Schutzansage abspielen
+- TeamSpeak-Gateway in einen Störungsraum verschieben
 
-Die Wiederaktivierung erfolgt optional erst, wenn der Funkkanal für eine definierte Zeit stabil frei war.
+Weitere mögliche Reaktionen:
 
-VoIP-HF-Sprachfilter
+- Mumble-Gateway in einen Störungsraum verschieben
+- wiederholte Störungsansagen
+- nach stabil freiem Funkkanal automatisch reaktivieren
+- in den vorherigen VoIP-Channel zurückkehren
+
+## VoIP-HF-Sprachfilter
 
 Seit Version 0.5.6.20 gibt es den Filter:
 
-„Nur bestätigte VoIP-Sprache auf HF senden“
+**„Nur bestätigte VoIP-Sprache auf HF senden“**
 
-Wenn an FunkGateway_TX ausschließlich TeamSpeak oder Mumble hängen, wird PTT nur freigegeben, wenn der jeweilige VoIP-Client tatsächlich einen sprechenden Benutzer meldet.
+Wenn an `FunkGateway_TX` ausschließlich TeamSpeak oder Mumble hängen, wird PTT nur freigegeben, wenn der jeweilige VoIP-Client tatsächlich einen sprechenden Benutzer meldet.
 
 Damit sollen lokale Client-Töne nicht über Funk ausgesendet werden, zum Beispiel:
 
-Channelwechsel-Töne
-Verbindungs- und Trennmeldungen
-Mute-/Unmute-Hinweise
-sonstige TeamSpeak-/Mumble-Systemtöne
+- Channelwechsel-Töne
+- Verbindungs- und Trennmeldungen
+- Mute-/Unmute-Hinweise
+- sonstige TeamSpeak-/Mumble-Systemtöne
 
-Mumble verwendet dafür getTalkingUsers.
+Mumble verwendet dafür `getTalkingUsers`.
 
 TeamSpeak verwendet den Sprecherstatus der ClientQuery-Schnittstelle.
 
-Schutzansagen
+## Schutzansagen
 
 Gemeinsame WAV-Einstellungen befinden sich unter:
 
-Schutz → Ansagen
+**Schutz → Ansagen**
 
 Sie gelten sowohl für TeamSpeak als auch für Mumble.
 
 Unterstützt werden unter anderem:
 
-Ansage bei Stummschaltung
-Ansage im Störungsraum
-wiederholte Störungsraum-Ansage
-Ansage bei Wiederaktivierung
-Installation
-Generic Linux
+- Ansage bei Stummschaltung
+- Ansage im Störungsraum
+- wiederholte Störungsraum-Ansage
+- Ansage bei Wiederaktivierung
+
+## Installation
+
+### Generic Linux
+
+```bash
 git clone git@github.com:MysticFire01/Funkgateway.git
 cd Funkgateway
 ./install-linux.sh
 ./start.sh
 
+
+```markdown
 Alternativ:
 
+```bash
 ./install.sh
 ./start.sh
-Desktop-Eintrag
+
+
+```markdown
+### Desktop-Eintrag
 
 Optional:
 
+```bash
 ./install-desktop.sh
-Python-Ice / Mumble-Komponenten
+
+
+```markdown```
+
+## Python-Ice / Mumble-Komponenten
 
 Falls FunkGateway meldet, dass Python-Ice nicht geladen werden kann:
 
-Integrationen → Mumble → Mumble-Komponenten installieren / reparieren
+**Integrationen → Mumble → Mumble-Komponenten installieren / reparieren**
 
 Alternativ kann die FunkGateway-Python-Umgebung über folgendes Script repariert werden:
 
-./repair-venv.sh
+```bash
+./repair-venv.sh```
 
-Dabei wird die bestehende virtuelle Python-Umgebung gesichert und neu aufgebaut.
 
-Konfiguration
+## Konfiguration
 
 Die lokale FunkGateway-Konfiguration befindet sich unter:
 
-~/.config/funkgateway-ui/
+```text
+~/.config/funkgateway-ui/```
 
 Diese Konfiguration liegt außerhalb des Programmverzeichnisses und bleibt bei Versionswechseln erhalten.
 
-Dokumentation
+## Dokumentation
 
 Weitere technische Informationen befinden sich im Verzeichnis:
 
-docs/
+```text
+docs/```
 
 Dort befinden sich unter anderem:
 
@@ -221,48 +247,51 @@ Architektur
 Audio-Routing
 Hardware
 Bridge-Konzept
-Sicherheit
+
+
+## Sicherheit
 
 Bitte niemals folgende Daten veröffentlichen oder committen:
 
-TeamSpeak-API-Keys
-Mumble-Ice-Secrets
-Bridge-Tokens
-SSH-Private-Keys
-Passwörter
+- TeamSpeak-API-Keys
+- Mumble-Ice-Secrets
+- Bridge-Tokens
+- SSH-Private-Keys
+- Passwörter
 
-SSH-Schlüssel sollten möglichst über ssh-agent verwendet werden.
-
-Releases
+## Releases
 
 Fertige Pakete für Ubuntu, Debian und Generic Linux werden als GitHub Releases bereitgestellt.
 
 Die ZIP-Pakete gehören nicht direkt in das Git-Repository.
 
-Mitmachen
+## Mitmachen
 
 Beiträge, Fehlerberichte und Verbesserungen sind willkommen.
 
-Weitere Hinweise befinden sich in:
+Weitere Hinweise:
 
+```text
 CONTRIBUTING.md
-Lizenz
+
+
+```markdown ```
+
+## Lizenz
 
 FunkGateway UI steht unter der:
 
-GNU General Public License v3.0
+**GNU General Public License v3.0**
 
 Das bedeutet unter anderem:
 
-Nutzung ist erlaubt
-Änderungen sind erlaubt
-Weitergabe ist erlaubt
-kommerzielle Nutzung ist erlaubt
-weitergegebene abgeleitete Versionen müssen ebenfalls unter GPLv3 stehen
+- Nutzung ist erlaubt
+- Änderungen sind erlaubt
+- Weitergabe ist erlaubt
+- kommerzielle Nutzung ist erlaubt
+- weitergegebene abgeleitete Versionen müssen ebenfalls unter GPLv3 stehen
 
-Weitere Informationen stehen in der Datei:
+Weitere Informationen:
 
+```text
 LICENSE
-Aktuelle Version
-
-0.5.6.20
