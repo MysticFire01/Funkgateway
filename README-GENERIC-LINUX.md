@@ -1,4 +1,4 @@
-# FunkGateway UI 0.5.6.20 – Generic Linux
+# FunkGateway UI 0.5.7.0 – Generic Linux
 
 Installation:
 
