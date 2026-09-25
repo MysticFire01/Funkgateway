@@ -1,13 +1,40 @@
 ## 0.5.7.0 – Selbstrücklauf, intelligente Bake und Updates
-- Neuer Selbstrücklauf-Schutz unter Schutz → Selbstrücklauf.
-- Schutzzeiten und Rücklauf-Schwellwerte sind frei einstellbar.
-- Rücklaufschutz kann nach VoIP, Rufzeichenbake, Rogerbeep/CW-K, Schutzansagen und manuellen Aussendungen starten.
-- Kurze Rückläufe werden gezählt; wiederholte Rückläufe können den bestehenden Gateway-Schutz und konfigurierte Störungsräume verwenden.
-- Lange echte Funkdurchgänge im Schutzfenster können als verlorener Durchgang erkannt und per WAV zur Wiederholung aufgefordert werden.
-- Rufzeichenbaken warten auf freien HF-/VoIP-Weg; es wird nur eine Bake vorgemerkt.
-- Der Bake-Intervalltimer startet erst nach dem tatsächlichen Ende der Bake neu.
-- Alle umfangreichen Einstellungsseiten sind vertikal scrollbar.
-- Neue GitHub-Updatefunktion mit Paketwahl und SHA256-Prüfung.
+
+### Selbstrücklauf-Schutz
+- Neuer Bereich **Schutz → Selbstrücklauf**.
+- Schutz kann getrennt nach **VoIP-Durchgang, Rufzeichenbake, Rogerbeep/CW-K, Schutzansagen/WAV** und optional manuellen lokalen Aussendungen gestartet werden.
+- Schutzzeit nach Sendeende frei einstellbar, Standard **3500 ms**.
+- Maximale Rücklauflänge frei einstellbar, Standard **2500 ms**.
+- Schwelle für einen echten Funkdurchgang frei einstellbar, Standard **5000 ms**.
+- Wartezeit vor einer Wiederholungsansage frei einstellbar, Standard **3000 ms**.
+- Beginnt RX innerhalb des Schutzfensters, wird der komplette RX-Durchgang bis zu seinem tatsächlichen Ende vermessen und währenddessen nicht zu VoIP weitergegeben.
+- Beginnt RX erst nach Ablauf des Schutzfensters, wird der Funkdurchgang normal behandelt.
+- Kurze Rückläufe können gezählt werden; wiederholte Ereignisse können den bestehenden Gateway-Schutz auslösen.
+- Optional werden die bereits konfigurierten TeamSpeak-/Mumble-Störungsräume verwendet.
+- Lange echte Funkdurchgänge, die innerhalb des Schutzfensters beginnen, werden als verlorener Durchgang erkannt und können nach Ende per frei wählbarer WAV zur Wiederholung aufgefordert werden.
+
+### Rufzeichenbake
+- Die automatische Bake unterbricht keine laufenden VoIP-Durchgänge mehr.
+- Die Bake unterbricht keinen lokalen Funk-RX.
+- Interne Aussendungen wie Rogerbeep oder Schutzansagen werden ebenfalls berücksichtigt.
+- Eine fällige Bake wird genau **einmal** vorgemerkt; es entsteht keine Warteschlange.
+- Freiwartezeit vor der Bake frei einstellbar, Standard **1500 ms**.
+- Der Intervalltimer startet erst nach dem **tatsächlichen Ende** der gesendeten Bake neu.
+
+### Oberfläche
+- Umfangreiche Haupt- und Unterseiten sind vertikal scrollbar.
+- Bedienelemente bleiben dadurch auch bei kleineren Fenstern und Displays erreichbar.
+- Die feste Hauptsteuerung oberhalb der Reiter bleibt erhalten.
+
+### GitHub-Updatefunktion
+- Neuer Bereich **Updates**.
+- Prüfung auf das neueste veröffentlichte GitHub-Release.
+- Automatische Auswahl des passenden Pakets für Generic Linux, Ubuntu 22.04/24.04/26.04 LTS sowie Debian 12/13.
+- Download und SHA256-Prüfung des Release-Pakets.
+- ZIP-Integritäts- und Pfadprüfung vor dem Entpacken.
+- Updates werden in einen neuen Versionsordner vorbereitet; die laufende Installation wird nicht überschrieben.
+- Die Konfiguration unter `~/.config/funkgateway-ui/` bleibt erhalten.
+- Optional kann beim Programmstart automatisch nach einer neuen Version gesucht werden.
 
 ## 0.5.6.20
 - Mumble/Ice: Python-Ice-Erkennung robuster gemacht. FunkGateway erkennt nun auch Ubuntu/Debian-Systemmodule unter `/usr/lib/python3/dist-packages`, wenn eine ältere isolierte venv verwendet wird.
