@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.9.21 – Mitgelieferte Standard-WAVs
+- Release-Pakete enthalten jetzt 13 generische deutsche WAV-Ansagen im Ordner `default_wavs/`.
+- Leere WAV-Slots werden beim Programmstart automatisch mit den passenden Standarddateien vorbelegt.
+- Bereits gespeicherte eigene WAV-Pfade werden **nicht überschrieben**.
+- Die Benutzeroberfläche weist darauf hin, dass die Standardansagen jederzeit über **„WAV auswählen“** ersetzt werden können.
+- Mitgeliefert werden Standardansagen für Rogerbeep, Stationsansage, Papageibake, AUTH, DTMF-Vollzugsmeldungen, Schutzansagen und verlorene Funkdurchgänge.
+- Die WAV-Dateien werden als PCM 16-bit, Mono, 48 kHz ausgeliefert.
+
 ## 0.5.9.20 – Update-Installer und Schnellstarter-Automatik
 - Der interne GitHub-Updater kann ein geprüftes Release nach dem Download jetzt automatisch installieren.
 - Nach dem Entpacken werden verlorene ZIP-Ausführungsrechte automatisch wiederhergestellt (`+x` für Shell-Skripte).
