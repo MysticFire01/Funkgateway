@@ -103,6 +103,21 @@ class MumbleLocalBackend:
             count=0
         return tokens[2:2+count]
 
+    def _call_bool(self, method: str, value: bool) -> str:
+        return subprocess.check_output(
+            ["busctl","--user","call",self.BUS_NAME,self.OBJ,self.IFACE,method,
+             "b","true" if value else "false"],
+            text=True, stderr=subprocess.STDOUT, timeout=2
+        ).strip()
+
+    def set_muted(self, enabled: bool):
+        self._call_bool("setSelfMuted",bool(enabled))
+        return True
+
+    def set_deaf(self, enabled: bool):
+        self._call_bool("setSelfDeaf",bool(enabled))
+        return True
+
     def is_muted(self) -> bool:
         tokens=self._tokens(self._call("isSelfMuted"))
         return len(tokens)>=2 and tokens[0]=="b" and tokens[1].lower()=="true"

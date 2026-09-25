@@ -2,6 +2,7 @@ import math
 import array
 import wave
 import signal
+import threading
 import re
 import subprocess
 """Main graphical user interface for FunkGateway.
@@ -10,13 +11,17 @@ The UI deliberately uses plain language.  Most radio operators should be able
 to configure the gateway without knowing how PipeWire, serial devices or GPIO
 work internally.
 """
-import json, subprocess, time, shutil, webbrowser
+import json, subprocess, time, shutil, webbrowser, html, hashlib, hmac, secrets, base64, struct
 from datetime import datetime
 from pathlib import Path
-from PySide6.QtWidgets import (QApplication,QCheckBox,QComboBox,QFileDialog,
+from PySide6.QtWidgets import (
+    QGroupBox,QApplication,QCheckBox,QComboBox,QFileDialog,
     QFormLayout,QHBoxLayout,QLabel,QLineEdit,QMainWindow,QMessageBox,QPushButton,
-    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget)
-from PySide6.QtCore import QTimer, Qt, Qt
+    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,
+    QDialog,QDialogButtonBox)
+from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF
+from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap
+from PySide6.QtPrintSupport import QPrinter
 
 try:
     import sounddevice as sd
@@ -24,7 +29,7 @@ try:
 except Exception:
     sd = sf = None
 
-from .constants import (APP_NAME,VERSION,CFG_FILE,LOG_FILE,CW_FILE,DTMF_FILE,
+from .constants import (APP_NAME,VERSION,CFG_FILE, CFG_DIR,LOG_FILE,CW_FILE,DTMF_FILE,
                         ID_RECORDING_FILE,ROGER_FILE,ensure_cfg)
 from .ports import discover_serial_ports, friendly_port_name
 from .ptt import DryPTT, SerialPTT, CM108PTT, GPIOPTT
@@ -47,6 +52,33 @@ class MainWindow(QMainWindow):
         self.roger_busy=False; self.roger_proc=None; self.roger_pending_token=0
         self.last_roger_time=0.0
         self.outgoing_audio_active=False
+        # Sink-input IDs that FunkGateway itself muted while Papagei mode
+        # was active. Only these streams are unmuted again when leaving Papagei.
+        self.parrot_muted_voip_streams=set()
+
+        # DTMF-Fernsteuerung (0.5.9.x)
+        self.dtmf_session_active=False
+        self.dtmf_session_muted=False
+        self.dtmf_buffer=""
+        self.dtmf_session_started=None
+        self.dtmf_last_digit=None
+        self.dtmf_release_token=0
+        self.dtmf_parrot_wait_rx_free=False
+        self.dtmf_control_rx_active=False
+        self.dtmf_ack_waiting_labels=set()
+        self.dtmf_mode_ack_generation=0
+        self.dtmf_mode_ack_pending=False
+
+        # Optional DTMF authentication. AUTH applies to the gateway globally
+        # for a limited time because classic RF/DTMF has no sender identity.
+        self.dtmf_auth_active_until=0.0
+        self.dtmf_auth_fail_count=0
+        self.dtmf_auth_locked_until=0.0
+        self.dtmf_auth_pin_salt=""
+        self.dtmf_auth_pin_hash=""
+        self.dtmf_auth_expiry_logged=False
+        self.dtmf_totp_secret=""
+        self.dtmf_totp_last_counter=-1
 
         # Optional integrations never own the audio/PTT core. If TeamSpeak is
         # unavailable, FunkGateway must continue to work normally.
@@ -118,6 +150,38 @@ class MainWindow(QMainWindow):
         self.latest_release=None
         self.latest_release_asset=None
 
+        # Papagei-/Echotest-Modus.
+        self.parrot_recording=False
+        self.parrot_playing=False
+        self.parrot_rx_started=None
+        self.parrot_proc=None
+        self.parrot_pending_beacon=False
+        self.parrot_beacon_in_progress=False
+        self.parrot_beacon_proc=None
+        self.parrot_beacon_free_since=None
+        self.parrot_last_beacon=time.monotonic()
+        self.parrot_temp_file=CFG_DIR / "papagei-temp.wav"
+        self.parrot_raw_file=CFG_DIR / "papagei-temp.raw"
+        self.parrot_raw_handle=None
+
+        # Kontinuierliche RX-Aufnahme für den Papagei-Vorlaufpuffer.
+        # 48 kHz, 16 Bit, Mono = 96.000 Byte/s.
+        self.parrot_capture_proc=None
+        self.parrot_capture_thread=None
+        self.parrot_capture_stop=threading.Event()
+        self.parrot_capture_lock=threading.Lock()
+        self.parrot_prebuffer=bytearray()
+        self.parrot_capture_source=None
+        self.parrot_capture_max_bytes=480000  # maximal 5 s
+        self.parrot_cycle_active=False
+        self.parrot_capture_fault_logged=False
+
+        # RX, das innerhalb des Selbstrücklauf-Schutzfensters beginnt, wird
+        # zunächst gepuffert. Wird es lang genug für einen echten Durchgang,
+        # kann es ohne Verlust des Anfangs zum Papagei-Durchgang hochgestuft werden.
+        self.parrot_guard_buffering=False
+        self.parrot_guard_prebuffer_bytes=0
+
         # Hauptsteuerung bleibt unabhängig vom gewählten Reiter immer sichtbar.
         # Dadurch sind Start/Stop/NOT-AUS/Rufzeichen auch bei kleinen Fenstern
         # oder sehr langen Einstellungsseiten sofort erreichbar.
@@ -156,7 +220,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.build_start(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
-        self.build_ids(); self.build_tools(); self.build_integrations(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
+        self.build_ids(); self.build_tools(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
         self._make_all_tab_pages_scrollable()
 
         self.load_cfg()
@@ -188,6 +252,7 @@ class MainWindow(QMainWindow):
     def _make_all_tab_pages_scrollable(self):
         """Make every settings tab vertically scrollable without hiding main controls."""
         tabs=[self.tabs] + [t for t in self.findChildren(QTabWidget) if t is not self.tabs]
+        # Deep/nested tabs first, then the main tab widget.
         for tab in reversed(tabs):
             current=tab.currentIndex()
             for i in range(tab.count()):
@@ -435,6 +500,73 @@ class MainWindow(QMainWindow):
         self.dtmf_text=QLineEdit(); dtb=QPushButton("DTMF senden"); dtb.clicked.connect(self.send_dtmf)
         f.addRow("CW Text:",self.cw_text); f.addRow("CW WPM:",self.cw_wpm); f.addRow("CW Ton:",self.cw_freq); f.addRow(cwb)
         f.addRow("DTMF:",self.dtmf_text); f.addRow(dtb); self.tabs.addTab(w,"CW / DTMF")
+
+        # Papagei / Echotest
+        parrot_box=QWidget()
+        pf=QFormLayout(parrot_box)
+        self.parrot_enabled=QCheckBox("Papagei aktiv")
+        self.parrot_max_seconds=QSpinBox(); self.parrot_max_seconds.setRange(1,180); self.parrot_max_seconds.setValue(30); self.parrot_max_seconds.setSuffix(" s")
+        self.parrot_rx_prebuffer_ms=QSpinBox(); self.parrot_rx_prebuffer_ms.setRange(0,5000); self.parrot_rx_prebuffer_ms.setValue(1500); self.parrot_rx_prebuffer_ms.setSuffix(" ms")
+        self.parrot_delay_ms=QSpinBox(); self.parrot_delay_ms.setRange(0,10000); self.parrot_delay_ms.setValue(1000); self.parrot_delay_ms.setSuffix(" ms")
+        self.parrot_lead_ms=QSpinBox(); self.parrot_lead_ms.setRange(0,10000); self.parrot_lead_ms.setValue(1200); self.parrot_lead_ms.setSuffix(" ms")
+        self.parrot_mute_voip=QCheckBox("VoIP während Papageibetrieb stummschalten"); self.parrot_mute_voip.setChecked(True)
+        self.parrot_enabled.toggled.connect(lambda _=False:self._refresh_rx_forward_mute())
+        self.parrot_enabled.toggled.connect(self._parrot_mode_toggled)
+        self.parrot_mute_voip.toggled.connect(lambda _=False:self._refresh_rx_forward_mute())
+        self.parrot_mute_voip.toggled.connect(lambda _=False:self._sync_parrot_voip_playback_mute())
+        self.parrot_mute_voip.toggled.connect(lambda _=False:self._set_tx_forward_muted(False))
+        self.parrot_return_guard=QCheckBox("Rücklaufschutz nach Papagei-Wiedergabe verwenden"); self.parrot_return_guard.setChecked(True)
+        self.parrot_roger=QCheckBox("Rogerbeep nach Papagei-Wiedergabe senden"); self.parrot_roger.setChecked(False)
+
+        self.parrot_beacon_enabled=QCheckBox("Papageibake aktiv"); self.parrot_beacon_enabled.setChecked(True)
+        self.parrot_beacon_file=QLineEdit()
+        pbrowse=QPushButton("WAV auswählen")
+        pbrowse.clicked.connect(lambda:self.choose_protection_wav(self.parrot_beacon_file))
+        prow=QHBoxLayout(); prow.addWidget(self.parrot_beacon_file); prow.addWidget(pbrowse)
+        self.parrot_beacon_interval=QSpinBox(); self.parrot_beacon_interval.setRange(1,120); self.parrot_beacon_interval.setValue(10); self.parrot_beacon_interval.setSuffix(" min")
+        self.parrot_beacon_free_wait_ms=QSpinBox(); self.parrot_beacon_free_wait_ms.setRange(0,30000); self.parrot_beacon_free_wait_ms.setValue(1500); self.parrot_beacon_free_wait_ms.setSuffix(" ms")
+        self.parrot_beacon_lead_ms=QSpinBox(); self.parrot_beacon_lead_ms.setRange(0,10000); self.parrot_beacon_lead_ms.setValue(1200); self.parrot_beacon_lead_ms.setSuffix(" ms")
+        self.parrot_beacon_tail_ms=QSpinBox(); self.parrot_beacon_tail_ms.setRange(0,5000); self.parrot_beacon_tail_ms.setValue(800); self.parrot_beacon_tail_ms.setSuffix(" ms")
+
+        for widget,tip in {
+            self.parrot_max_seconds:"Maximale Dauer eines aufgenommenen Funkdurchgangs. Standard: 30 Sekunden.",
+            self.parrot_rx_prebuffer_ms:"Audio vor der eigentlichen RX-Erkennung, das an den Anfang der Papagei-Aufnahme gesetzt wird. Standard: 1500 ms.",
+            self.parrot_delay_ms:"Wartezeit nach erkanntem Funkende bis zur Rücksendung. Standard: 1000 ms.",
+            self.parrot_lead_ms:"Zeit zwischen PTT EIN und Start der Papagei-Wiedergabe. Damit wird der Anfang nicht verschluckt. Standard: 1200 ms.",
+            self.parrot_beacon_interval:"Intervall der Papageibake. Der Timer startet erst nach tatsächlichem Ende der Bake neu. Standard: 10 Minuten.",
+            self.parrot_beacon_free_wait_ms:"So lange muss der Kanal frei sein, bevor die Papageibake gesendet wird. Standard: 1500 ms.",
+            self.parrot_beacon_lead_ms:"Zeit zwischen PTT EIN und Start der Papageibaken-WAV. Standard: 1200 ms.",
+            self.parrot_beacon_tail_ms:"Zusätzliche Zeit nach Ende der Papageibaken-WAV, bevor PTT ausgeschaltet wird. Verhindert abgeschnittene Audio-Enden. Standard: 800 ms."
+        }.items():
+            widget.setToolTip(tip)
+
+        pnote=QLabel(
+            "Im Papageibetrieb wird die normale Rufzeichenbake pausiert. Funk-RX wird aufgenommen "
+            "und nach erkanntem Funkende automatisch zurückgesendet. Ist „VoIP während Papageibetrieb "
+            "stummschalten“ aktiv, werden bekannte TeamSpeak-/Mumble-/FRN-/Zello-/Discord-Wiedergabestreams "
+            "auf FunkGateway_TX tatsächlich stummgeschaltet. Zusätzlich wird im Papageibetrieb der "
+            "gesamte gemischte FunkGateway_TX-Monitor zum Funkgerät gesperrt. Papagei-, Bake- und "
+            "Vollzugsmeldungs-WAVs laufen dabei direkt zum Funkgeräte-Ausgang. Dadurch kann laufendes "
+            "TeamSpeak-/Mumble-Audio nicht mehr in eine Papagei-Aussendung hineingemischt werden."
+        ); pnote.setWordWrap(True)
+
+        pf.addRow("",self.parrot_enabled)
+        pf.addRow("Maximale Aufnahmedauer:",self.parrot_max_seconds)
+        pf.addRow("RX-Vorlaufpuffer:",self.parrot_rx_prebuffer_ms)
+        pf.addRow("Wartezeit nach Funkende:",self.parrot_delay_ms)
+        pf.addRow("PTT-Vorlauf vor Wiedergabe:",self.parrot_lead_ms)
+        pf.addRow("",self.parrot_mute_voip)
+        pf.addRow("",self.parrot_return_guard)
+        pf.addRow("",self.parrot_roger)
+        pf.addRow(QLabel("<b>Papageibake</b>"))
+        pf.addRow("",self.parrot_beacon_enabled)
+        pf.addRow("Papageibake WAV:",prow)
+        pf.addRow("Papageibake Intervall:",self.parrot_beacon_interval)
+        pf.addRow("Freiwartezeit:",self.parrot_beacon_free_wait_ms)
+        pf.addRow("PTT-Vorlauf Papageibake:",self.parrot_beacon_lead_ms)
+        pf.addRow("PTT-Nachlauf Papageibake:",self.parrot_beacon_tail_ms)
+        pf.addRow("",pnote)
+        self.tabs.addTab(parrot_box,"Papagei")
 
     def build_integrations(self):
         """Build optional VoIP integrations in tidy sub-tabs.
@@ -727,6 +859,258 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(w,"Integrationen")
 
+    def build_dtmf(self):
+        page=QWidget()
+        f=QFormLayout(page)
+
+        self.dtmf_enabled=QCheckBox("DTMF-Steuerung aktiv")
+        self.dtmf_suppress_voip=QCheckBox("DTMF-Töne nicht an VoIP übertragen")
+        self.dtmf_suppress_voip.setChecked(True)
+        self.dtmf_start_char=QLineEdit("*"); self.dtmf_start_char.setMaxLength(1)
+        self.dtmf_end_char=QLineEdit("#"); self.dtmf_end_char.setMaxLength(1)
+        self.dtmf_interdigit_ms=QSpinBox(); self.dtmf_interdigit_ms.setRange(500,10000); self.dtmf_interdigit_ms.setValue(2000); self.dtmf_interdigit_ms.setSuffix(" ms")
+        self.dtmf_session_max_s=QSpinBox(); self.dtmf_session_max_s.setRange(2,60); self.dtmf_session_max_s.setValue(10); self.dtmf_session_max_s.setSuffix(" s")
+        self.dtmf_release_ms=QSpinBox(); self.dtmf_release_ms.setRange(0,2000); self.dtmf_release_ms.setValue(250); self.dtmf_release_ms.setSuffix(" ms")
+        self.dtmf_status=QLabel("DTMF: bereit")
+        self.dtmf_status.setWordWrap(True)
+
+        self.dtmf_enabled.toggled.connect(self._apply_dtmf_detector_settings)
+        self.dtmf_suppress_voip.toggled.connect(self._apply_dtmf_detector_settings)
+
+        f.addRow("",self.dtmf_enabled)
+        f.addRow("",self.dtmf_suppress_voip)
+        f.addRow("Startzeichen:",self.dtmf_start_char)
+        f.addRow("Abschlusszeichen:",self.dtmf_end_char)
+        f.addRow("Timeout zwischen Zeichen:",self.dtmf_interdigit_ms)
+        f.addRow("Maximale DTMF-Session:",self.dtmf_session_max_s)
+        f.addRow("VoIP-Freigabe nach Code:",self.dtmf_release_ms)
+        f.addRow("",self.dtmf_status)
+
+        note=QLabel(
+            "Standard: * startet eine Steuersitzung und # beendet sie. "
+            "Sobald die Sitzung begonnen hat, wird Funk→VoIP stummgeschaltet. "
+            "Die einzelnen DTMF-Töne werden mit kurzem Audio-Lookahead ebenfalls unterdrückt, "
+            "damit TeamSpeak/Mumble nicht mit Steuertönen zugespammt werden."
+        )
+        note.setWordWrap(True)
+        f.addRow("",note)
+
+        f.addRow(QLabel("<b>DTMF-AUTH (optional)</b>"))
+        self.dtmf_auth_enabled=QCheckBox("DTMF-Befehle können per AUTH geschützt werden")
+        self.dtmf_auth_method=QComboBox()
+        self.dtmf_auth_method.addItem("PIN","pin")
+        self.dtmf_auth_method.addItem("TOTP (Authenticator-App)","totp")
+        self.dtmf_auth_prefix=QLineEdit("*00*")
+        self.dtmf_auth_logout_code=QLineEdit("*00*0#")
+        self.dtmf_auth_valid_s=QSpinBox(); self.dtmf_auth_valid_s.setRange(10,3600); self.dtmf_auth_valid_s.setValue(180); self.dtmf_auth_valid_s.setSuffix(" s")
+        self.dtmf_auth_max_attempts=QSpinBox(); self.dtmf_auth_max_attempts.setRange(1,10); self.dtmf_auth_max_attempts.setValue(3)
+        self.dtmf_auth_lockout_s=QSpinBox(); self.dtmf_auth_lockout_s.setRange(10,3600); self.dtmf_auth_lockout_s.setValue(60); self.dtmf_auth_lockout_s.setSuffix(" s")
+        self.dtmf_auth_pin_edit=QLineEdit()
+        self.dtmf_auth_pin_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.dtmf_auth_pin_edit.setPlaceholderText("neuen PIN eingeben – 3 bis 12 Ziffern")
+        self.dtmf_auth_status=QLabel("AUTH: nicht aktiv")
+        self.dtmf_auth_status.setWordWrap(True)
+        pin_btn=QPushButton("PIN übernehmen")
+        pin_btn.clicked.connect(self._set_dtmf_auth_pin_from_ui)
+        pinrow=QHBoxLayout(); pinrow.addWidget(self.dtmf_auth_pin_edit,1); pinrow.addWidget(pin_btn)
+        f.addRow("",self.dtmf_auth_enabled)
+        f.addRow("AUTH-Verfahren:",self.dtmf_auth_method)
+        f.addRow("AUTH-Präfix:",self.dtmf_auth_prefix)
+        f.addRow("AUTH beenden:",self.dtmf_auth_logout_code)
+        f.addRow("AUTH-Gültigkeit:",self.dtmf_auth_valid_s)
+        f.addRow("Fehlversuche max.:",self.dtmf_auth_max_attempts)
+        f.addRow("Sperrzeit:",self.dtmf_auth_lockout_s)
+        f.addRow("PIN:",pinrow)
+
+        self.dtmf_totp_digits=QSpinBox(); self.dtmf_totp_digits.setRange(6,8); self.dtmf_totp_digits.setValue(6)
+        self.dtmf_totp_period=QSpinBox(); self.dtmf_totp_period.setRange(15,120); self.dtmf_totp_period.setValue(30); self.dtmf_totp_period.setSuffix(" s")
+        self.dtmf_totp_window=QSpinBox(); self.dtmf_totp_window.setRange(0,2); self.dtmf_totp_window.setValue(1)
+        self.dtmf_totp_label=QLineEdit("FunkGateway")
+        self.dtmf_totp_account=QLineEdit("DTMF")
+        self.dtmf_totp_secret_view=QLineEdit(); self.dtmf_totp_secret_view.setReadOnly(True)
+        self.dtmf_totp_uri_view=QLineEdit(); self.dtmf_totp_uri_view.setReadOnly(True)
+        gen_totp_btn=QPushButton("TOTP-Geheimnis erzeugen")
+        gen_totp_btn.clicked.connect(self._generate_dtmf_totp_secret)
+        copy_uri_btn=QPushButton("otpauth-URI kopieren")
+        copy_uri_btn.clicked.connect(self._copy_dtmf_totp_uri)
+        qr_btn=QPushButton("QR-Code anzeigen")
+        qr_btn.clicked.connect(self._show_dtmf_totp_qr)
+        totp_btns=QHBoxLayout()
+        totp_btns.addWidget(gen_totp_btn)
+        totp_btns.addWidget(copy_uri_btn)
+        totp_btns.addWidget(qr_btn)
+        f.addRow("TOTP-Ziffern:",self.dtmf_totp_digits)
+        f.addRow("TOTP-Zeitraum:",self.dtmf_totp_period)
+        f.addRow("TOTP-Toleranz ± Schritte:",self.dtmf_totp_window)
+        f.addRow("TOTP-Anzeigename:",self.dtmf_totp_label)
+        f.addRow("TOTP-Konto:",self.dtmf_totp_account)
+        f.addRow("TOTP-Geheimnis:",self.dtmf_totp_secret_view)
+        f.addRow("Authenticator-URI:",self.dtmf_totp_uri_view)
+        f.addRow("",totp_btns)
+
+        f.addRow("",self.dtmf_auth_status)
+
+        auth_note=QLabel(
+            "PIN: Beispiel Präfix *00*, PIN 4711 → *00*4711#. "
+            "TOTP: denselben Präfix mit dem aktuellen Authenticator-Code senden. "
+            "TOTP funktioniert offline, benötigt aber eine korrekte Systemzeit. "
+            "Bereits erfolgreich verwendete TOTP-Zeitschritte werden gegen Wiederholung gesperrt."
+        )
+        auth_note.setWordWrap(True)
+        f.addRow("",auth_note)
+
+        self.dtmf_auth_success_wav=QLineEdit()
+        self.dtmf_auth_required_wav=QLineEdit()
+        self.dtmf_auth_failed_wav=QLineEdit()
+        for label_text,field in (
+            ("Ansage „AUTH erfolgreich“:",self.dtmf_auth_success_wav),
+            ("Ansage „AUTH erforderlich“:",self.dtmf_auth_required_wav),
+            ("Ansage „AUTH fehlgeschlagen“:",self.dtmf_auth_failed_wav),
+        ):
+            b=QPushButton("…")
+            b.clicked.connect(lambda _checked=False, fld=field:self.choose_protection_wav(fld))
+            rr=QHBoxLayout(); rr.addWidget(field,1); rr.addWidget(b)
+            f.addRow(label_text,rr)
+
+        f.addRow(QLabel("<b>AUTH-Pflicht pro Funktion</b>"))
+        self.dtmf_auth_req_parrot=QCheckBox("Papagei EIN")
+        self.dtmf_auth_req_voip=QCheckBox("Normaler VoIP-/Gateway-Betrieb")
+        self.dtmf_auth_req_ts_mute=QCheckBox("TeamSpeak MUTE")
+        self.dtmf_auth_req_ts_unmute=QCheckBox("TeamSpeak UNMUTE")
+        self.dtmf_auth_req_ts_deaf=QCheckBox("TeamSpeak DEAF")
+        self.dtmf_auth_req_ts_undeaf=QCheckBox("TeamSpeak UNDEAF")
+        self.dtmf_auth_req_mumble_mute=QCheckBox("Mumble MUTE")
+        self.dtmf_auth_req_mumble_unmute=QCheckBox("Mumble UNMUTE")
+        self.dtmf_auth_req_mumble_deaf=QCheckBox("Mumble DEAF")
+        self.dtmf_auth_req_mumble_undeaf=QCheckBox("Mumble UNDEAF")
+        for cb in (
+            self.dtmf_auth_req_parrot,self.dtmf_auth_req_voip,
+            self.dtmf_auth_req_ts_mute,self.dtmf_auth_req_ts_unmute,
+            self.dtmf_auth_req_ts_deaf,self.dtmf_auth_req_ts_undeaf,
+            self.dtmf_auth_req_mumble_mute,self.dtmf_auth_req_mumble_unmute,
+            self.dtmf_auth_req_mumble_deaf,self.dtmf_auth_req_mumble_undeaf,
+        ):
+            cb.setChecked(True)
+            f.addRow("",cb)
+
+        f.addRow(QLabel("<b>Betriebsart</b>"))
+        self.dtmf_code_parrot_on=QLineEdit("*91#")
+        self.dtmf_code_voip_on=QLineEdit("*90#")
+        f.addRow("Papagei EIN:",self.dtmf_code_parrot_on)
+        f.addRow("Normaler VoIP-Betrieb:",self.dtmf_code_voip_on)
+        f.addRow(QLabel("<b>TeamSpeak – lokaler Gateway-Client</b>"))
+        self.dtmf_code_ts_mute=QLineEdit("*51#")
+        self.dtmf_code_ts_unmute=QLineEdit("*52#")
+        self.dtmf_code_ts_deaf=QLineEdit("*53#")
+        self.dtmf_code_ts_undeaf=QLineEdit("*54#")
+        f.addRow("TS Mikrofon MUTE:",self.dtmf_code_ts_mute)
+        f.addRow("TS Mikrofon UNMUTE:",self.dtmf_code_ts_unmute)
+        f.addRow("TS DEAF / Ausgabe stumm:",self.dtmf_code_ts_deaf)
+        f.addRow("TS UNDEAF:",self.dtmf_code_ts_undeaf)
+
+        f.addRow(QLabel("<b>Mumble – lokaler Gateway-Client</b>"))
+        self.dtmf_code_mumble_mute=QLineEdit("*61#")
+        self.dtmf_code_mumble_unmute=QLineEdit("*62#")
+        self.dtmf_code_mumble_deaf=QLineEdit("*63#")
+        self.dtmf_code_mumble_undeaf=QLineEdit("*64#")
+        f.addRow("Mumble MUTE:",self.dtmf_code_mumble_mute)
+        f.addRow("Mumble UNMUTE:",self.dtmf_code_mumble_unmute)
+        f.addRow("Mumble DEAF:",self.dtmf_code_mumble_deaf)
+        f.addRow("Mumble UNDEAF:",self.dtmf_code_mumble_undeaf)
+
+        f.addRow(QLabel("<b>Vollzugsmeldung über Funk</b>"))
+        self.dtmf_ack_enabled=QCheckBox("Nach ausgeführtem DTMF-Befehl Bestätigung über Funk senden")
+        self.dtmf_ack_enabled.setChecked(True)
+        self.dtmf_ack_tail_ms=QSpinBox()
+        self.dtmf_ack_tail_ms.setRange(0,5000)
+        self.dtmf_ack_tail_ms.setValue(2500)
+        self.dtmf_ack_tail_ms.setSuffix(" ms")
+        self.dtmf_ack_tail_ms.setToolTip(
+            "PTT-Nachlauf nach dem Ende der Vollzugsmeldungs-WAV. "
+            "Bei virtuellen PulseAudio/PipeWire-Sinks kann noch Audio gepuffert sein. "
+            "Standard: 2500 ms."
+        )
+        self.dtmf_ack_parrot_wav=QLineEdit()
+        self.dtmf_ack_voip_wav=QLineEdit()
+        self.dtmf_ack_default_wav=QLineEdit()
+        ack_parrot_btn=QPushButton("…")
+        ack_voip_btn=QPushButton("…")
+        ack_default_btn=QPushButton("…")
+        ack_parrot_btn.clicked.connect(lambda:self.choose_protection_wav(self.dtmf_ack_parrot_wav))
+        ack_voip_btn.clicked.connect(lambda:self.choose_protection_wav(self.dtmf_ack_voip_wav))
+        ack_default_btn.clicked.connect(lambda:self.choose_protection_wav(self.dtmf_ack_default_wav))
+        f.addRow("PTT-Nachlauf Vollzugsmeldung:",self.dtmf_ack_tail_ms)
+        rr=QHBoxLayout(); rr.addWidget(self.dtmf_ack_parrot_wav,1); rr.addWidget(ack_parrot_btn)
+        f.addRow("Ansage „Papagei aktiv“:",rr)
+        rr=QHBoxLayout(); rr.addWidget(self.dtmf_ack_voip_wav,1); rr.addWidget(ack_voip_btn)
+        f.addRow("Ansage „Gateway aktiv“:",rr)
+        rr=QHBoxLayout(); rr.addWidget(self.dtmf_ack_default_wav,1); rr.addWidget(ack_default_btn)
+        f.addRow("Optionale Standard-Bestätigung:",rr)
+
+        ack_note=QLabel(
+            "Für Papagei EIN und normalen VoIP-/Gateway-Betrieb ist eine Funk-Bestätigung "
+            "besonders sinnvoll. Die Ansage wird erst nach erfolgreicher Ausführung des "
+            "DTMF-Befehls gesendet. Ist keine WAV hinterlegt, wird nur geloggt. "
+            "Der PTT-Nachlauf hält den Sender nach dem WAV-Ende noch kurz offen, damit "
+            "gepuffertes Audio im virtuellen Audiosystem vollständig über Funk herausläuft."
+        )
+        ack_note.setWordWrap(True)
+        f.addRow("",ack_note)
+
+        f.addRow(QLabel("<b>Raumwechsel per DTMF</b>"))
+        rooms_note=QLabel(
+            "TeamSpeak-Räume werden über ClientQuery geladen. "
+            "Mumble-Räume werden bei direktem Ice/SSH aus der Serverliste geladen. "
+            "Der eingeschränkte Mumble-Bridge-Modus erlaubt absichtlich keine beliebigen Raumwechsel."
+        )
+        rooms_note.setWordWrap(True)
+        f.addRow("",rooms_note)
+
+        load_rooms=QPushButton("TeamSpeak-/Mumble-Raumlisten für DTMF laden")
+        load_rooms.clicked.connect(self.refresh_dtmf_room_lists)
+        f.addRow(load_rooms)
+
+        self.dtmf_ts_room_rows=[]
+        self.dtmf_mumble_room_rows=[]
+        self.dtmf_ts_room_auth=[]
+        self.dtmf_mumble_room_auth=[]
+        for i in range(1,6):
+            code=QLineEdit()
+            code.setPlaceholderText(f"z. B. *1{i}#")
+            combo=QComboBox(); combo.addItem("TeamSpeak-Raumliste laden",None)
+            auth_cb=QCheckBox("AUTH"); auth_cb.setChecked(True)
+            row=QHBoxLayout(); row.addWidget(code); row.addWidget(combo,1); row.addWidget(auth_cb)
+            f.addRow(f"TS Raum {i} – Code / Ziel:",row)
+            self.dtmf_ts_room_rows.append((code,combo))
+            self.dtmf_ts_room_auth.append(auth_cb)
+
+        for i in range(1,6):
+            code=QLineEdit()
+            code.setPlaceholderText(f"z. B. *2{i}#")
+            combo=QComboBox(); combo.addItem("Mumble-Raumliste laden",None)
+            auth_cb=QCheckBox("AUTH"); auth_cb.setChecked(True)
+            row=QHBoxLayout(); row.addWidget(code); row.addWidget(combo,1); row.addWidget(auth_cb)
+            f.addRow(f"Mumble Raum {i} – Code / Ziel:",row)
+            self.dtmf_mumble_room_rows.append((code,combo))
+            self.dtmf_mumble_room_auth.append(auth_cb)
+
+        self.dtmf_test_code=QLineEdit()
+        self.dtmf_test_code.setPlaceholderText("*91#")
+        test_btn=QPushButton("DTMF-Code intern testen")
+        test_btn.clicked.connect(lambda:self._execute_dtmf_code(self._clean_dtmf_code(self.dtmf_test_code.text()),test_only=True))
+        tr=QHBoxLayout(); tr.addWidget(self.dtmf_test_code); tr.addWidget(test_btn)
+        f.addRow("Test ohne Funk:",tr)
+
+        pdf_btn=QPushButton("DTMF-Code-Liste als PDF speichern …")
+        pdf_btn.setToolTip(
+            "Erstellt eine druckfertige A4-PDF mit allen aktuell eingestellten "
+            "DTMF-Codes einschließlich TeamSpeak-/Mumble-Raumwechseln."
+        )
+        pdf_btn.clicked.connect(self.export_dtmf_codes_pdf)
+        f.addRow("",pdf_btn)
+
+        self.tabs.addTab(page,"DTMF")
+
     def build_protection(self):
         w=QWidget()
         outer=QVBoxLayout(w)
@@ -1009,16 +1393,39 @@ class MainWindow(QMainWindow):
             self.gateway_state_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 2px solid #555; border-radius: 8px;")
 
     def _refresh_rx_forward_mute(self):
-        muted=bool(self.protection_muted or self.return_guard_muted)
+        parrot_muted=bool(
+            hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked()
+            and hasattr(self,"parrot_mute_voip") and self.parrot_mute_voip.isChecked()
+        )
+        dtmf_muted=bool(getattr(self,"dtmf_session_muted",False))
+        muted=bool(self.protection_muted or self.return_guard_muted or parrot_muted or dtmf_muted)
         if self.rx_detector and hasattr(self.rx_detector,"set_output_muted"):
             self.rx_detector.set_output_muted(muted)
 
     def _set_rx_forward_muted(self, muted):
+        # Compatibility helper used by the existing protection logic.
+        if muted:
+            self.return_guard_muted = self.return_guard_muted
         self._refresh_rx_forward_mute()
 
-    def _set_tx_forward_muted(self, muted):
+    def _set_tx_forward_muted(self, muted=False):
+        """Mute the mixed FunkGateway_TX.monitor -> radio bridge when required.
+
+        In Papagei mode we must mute the *whole* monitor bridge, not merely the
+        TeamSpeak sink-input.  Otherwise any VoIP audio already mixed into the
+        null-sink can ride along whenever PTT is keyed by Papagei/ACK/beacon.
+        Internal Papagei/ACK/beacon WAVs bypass this bridge and are played
+        directly to the selected radio output.
+        """
+        parrot_isolation=bool(
+            hasattr(self,"parrot_enabled")
+            and self.parrot_enabled.isChecked()
+            and hasattr(self,"parrot_mute_voip")
+            and self.parrot_mute_voip.isChecked()
+        )
+        effective=bool(muted or self.protection_muted or parrot_isolation)
         if self.bridge and hasattr(self.bridge,"set_output_muted"):
-            self.bridge.set_output_muted(bool(muted))
+            self.bridge.set_output_muted(effective)
 
     def play_protection_announcement(self, path, label):
         p=Path(str(path).strip()) if str(path).strip() else None
@@ -1063,6 +1470,932 @@ class MainWindow(QMainWindow):
             self.protection_announcement_busy=False
             self.protection_announcement_proc=None
             self.log(f"Schutzansage fehlgeschlagen ({label}): {e}")
+
+    @staticmethod
+    def _clean_dtmf_code(value):
+        allowed=set("0123456789*#ABCD")
+        return "".join(ch for ch in str(value).upper().replace(" ","") if ch in allowed)
+
+    def _apply_dtmf_detector_settings(self,*_args):
+        if self.rx_detector and hasattr(self.rx_detector,"configure_dtmf"):
+            self.rx_detector.configure_dtmf(
+                self.dtmf_enabled.isChecked(),
+                self.dtmf_suppress_voip.isChecked(),
+                200
+            )
+
+    def _on_dtmf_digit(self,digit):
+        if not hasattr(self,"dtmf_enabled") or not self.dtmf_enabled.isChecked():
+            return
+        digit=str(digit).upper()
+        now=time.monotonic()
+        start=(self.dtmf_start_char.text().strip() or "*")[0].upper()
+        end=(self.dtmf_end_char.text().strip() or "#")[0].upper()
+
+        auth_prefix=self._clean_dtmf_code(self.dtmf_auth_prefix.text()) if hasattr(self,"dtmf_auth_prefix") else "*00*"
+        auth_sensitive=bool(self.dtmf_session_active and self.dtmf_buffer.startswith(auth_prefix))
+        if auth_sensitive:
+            self.log("DTMF erkannt: [AUTH-Zeichen]")
+        else:
+            self.log(f"DTMF erkannt: {digit}")
+
+        if not self.dtmf_session_active:
+            if digit != start:
+                self.dtmf_status.setText(f"DTMF: einzelnes Zeichen {digit} unterdrückt / geloggt")
+                return
+            self.dtmf_release_token += 1
+            self.dtmf_session_active=True
+            self.dtmf_control_rx_active=True
+            self.dtmf_session_muted=True
+            self.dtmf_buffer=digit
+            self.dtmf_session_started=now
+            self.dtmf_last_digit=now
+            self._refresh_rx_forward_mute()
+            self.dtmf_status.setText(f"DTMF: Steuersitzung aktiv – {self.dtmf_buffer}")
+            self.log(f"DTMF-Steuersitzung gestartet: {digit} – Funk→VoIP stumm.")
+            return
+
+        self.dtmf_buffer += digit
+        self.dtmf_last_digit=now
+        self.dtmf_status.setText(f"DTMF: {self.dtmf_buffer}")
+
+        if len(self.dtmf_buffer) > 32:
+            self._finish_dtmf_session("zu viele Zeichen – verworfen")
+            return
+
+        if digit == end:
+            code=self._clean_dtmf_code(self.dtmf_buffer)
+            if self._is_dtmf_auth_sequence(code):
+                self.log("DTMF-AUTH-Sequenz vollständig: ****")
+            else:
+                self.log(f"DTMF-Code vollständig: {code}")
+            try:
+                self._execute_dtmf_code(code)
+            except Exception as e:
+                # A command handler must never leave the DTMF session hanging.
+                self.log(f"DTMF-Code {code}: interner Fehler bei der Ausführung: {e}")
+            finally:
+                self._finish_dtmf_session("Code abgeschlossen")
+
+    def _finish_dtmf_session(self,reason):
+        code=self.dtmf_buffer
+        self.dtmf_session_active=False
+        self.dtmf_buffer=""
+        self.dtmf_session_started=None
+        self.dtmf_last_digit=None
+        self.dtmf_release_token += 1
+        token=self.dtmf_release_token
+        delay=self.dtmf_release_ms.value() if hasattr(self,"dtmf_release_ms") else 250
+        self.dtmf_status.setText(f"DTMF: {reason}; VoIP-Freigabe in {delay} ms")
+        self.log(f"DTMF: {reason} ({code or 'leer'}); VoIP-Freigabe nach {delay} ms.")
+
+        def release():
+            if token != self.dtmf_release_token:
+                return
+            if self.dtmf_session_active:
+                return
+            self.dtmf_session_muted=False
+            self._refresh_rx_forward_mute()
+            self.dtmf_status.setText("DTMF: bereit")
+        QTimer.singleShot(delay,release)
+
+    def _dtmf_tick(self,now):
+        if hasattr(self,"dtmf_auth_enabled") and self.dtmf_auth_enabled.isChecked():
+            if self.dtmf_auth_active_until and now >= self.dtmf_auth_active_until:
+                self.dtmf_auth_active_until=0.0
+                if not self.dtmf_auth_expiry_logged:
+                    self.log("DTMF-AUTH: Freigabe abgelaufen.")
+                    self.dtmf_auth_status.setText("AUTH: abgelaufen")
+                    self.dtmf_auth_expiry_logged=True
+            if self.dtmf_auth_locked_until and now >= self.dtmf_auth_locked_until:
+                self.dtmf_auth_locked_until=0.0
+                self.dtmf_auth_fail_count=0
+                self.log("DTMF-AUTH: Sperrzeit beendet.")
+                self.dtmf_auth_status.setText("AUTH: wieder bereit")
+
+        if not getattr(self,"dtmf_session_active",False):
+            return
+        if self.dtmf_last_digit is not None:
+            if (now-self.dtmf_last_digit)*1000 >= self.dtmf_interdigit_ms.value():
+                self._finish_dtmf_session("Timeout zwischen DTMF-Zeichen – unvollständiger Code verworfen")
+                return
+        if self.dtmf_session_started is not None:
+            if now-self.dtmf_session_started >= self.dtmf_session_max_s.value():
+                self._finish_dtmf_session("maximale DTMF-Session erreicht – Code verworfen")
+
+    @staticmethod
+    def _totp_secret_bytes(secret_b32):
+        text="".join(ch for ch in str(secret_b32).upper().strip() if ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
+        if not text:
+            return b""
+        pad="="*((8-(len(text)%8))%8)
+        return base64.b32decode(text+pad,casefold=True)
+
+    def _generate_dtmf_totp_secret(self):
+        if self.dtmf_totp_secret:
+            answer=QMessageBox.warning(
+                self,
+                "DTMF-TOTP",
+                "Es existiert bereits ein TOTP-Geheimnis.\n\n"
+                "Wenn ein neues Geheimnis erzeugt wird, funktionieren die bisher "
+                "in Google Authenticator, Aegis, 2FAS usw. gespeicherten Codes nicht mehr.\n\n"
+                "Wirklich ein neues TOTP-Geheimnis erzeugen?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if answer != QMessageBox.Yes:
+                self.log("DTMF-TOTP: Neuerzeugung abgebrochen – vorhandenes Geheimnis bleibt erhalten.")
+                return
+
+        self.dtmf_totp_secret=base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+        self.dtmf_totp_last_counter=-1
+        self._refresh_dtmf_totp_uri()
+        self.save_cfg()
+        self.log("DTMF-TOTP: neues Geheimnis erzeugt.")
+        QMessageBox.information(
+            self,
+            "DTMF-TOTP",
+            "Neues TOTP-Geheimnis erzeugt.\n"
+            "Die bisherige Authenticator-Einrichtung ist damit ungültig.\n"
+            "Bitte die neue otpauth-URI in der Authenticator-App einrichten."
+        )
+
+    def _dtmf_totp_uri(self):
+        from urllib.parse import quote
+        if not self.dtmf_totp_secret:
+            return ""
+        issuer=self.dtmf_totp_label.text().strip() or "FunkGateway"
+        account=self.dtmf_totp_account.text().strip() or "DTMF"
+        label=f"{issuer}:{account}"
+        return (
+            "otpauth://totp/"+quote(label,safe="")+
+            "?secret="+quote(self.dtmf_totp_secret,safe="")+
+            "&issuer="+quote(issuer,safe="")+
+            f"&digits={self.dtmf_totp_digits.value()}&period={self.dtmf_totp_period.value()}&algorithm=SHA1"
+        )
+
+    def _refresh_dtmf_totp_uri(self):
+        self.dtmf_totp_secret_view.setText(self.dtmf_totp_secret)
+        self.dtmf_totp_uri_view.setText(self._dtmf_totp_uri())
+
+    def _copy_dtmf_totp_uri(self):
+        uri=self._dtmf_totp_uri()
+        if not uri:
+            QMessageBox.warning(self,"DTMF-TOTP","Bitte zuerst ein TOTP-Geheimnis erzeugen.")
+            return
+        QApplication.clipboard().setText(uri)
+        self.log("DTMF-TOTP: otpauth-URI in die Zwischenablage kopiert.")
+
+    def _show_dtmf_totp_qr(self):
+        uri=self._dtmf_totp_uri()
+        if not uri:
+            QMessageBox.warning(self,"DTMF-TOTP","Bitte zuerst ein TOTP-Geheimnis erzeugen.")
+            return
+
+        qrencode=shutil.which("qrencode")
+        if not qrencode:
+            QMessageBox.critical(
+                self,
+                "DTMF-TOTP",
+                "Der QR-Code kann nicht erzeugt werden, weil 'qrencode' fehlt.\n\n"
+                "Unter Ubuntu/Debian installieren mit:\n"
+                "sudo apt install qrencode"
+            )
+            self.log("DTMF-TOTP: QR-Code nicht erzeugt – qrencode fehlt.")
+            return
+
+        try:
+            qr_dir=CFG_DIR / "totp"
+            qr_dir.mkdir(parents=True,exist_ok=True)
+            qr_path=qr_dir / "funkgateway-totp-qr.png"
+            subprocess.run(
+                [qrencode,"-o",str(qr_path),"-s","8","-m","2",uri],
+                check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                text=True,timeout=10
+            )
+
+            pix=QPixmap(str(qr_path))
+            if pix.isNull():
+                raise RuntimeError("QR-PNG konnte nicht geladen werden")
+
+            dlg=QDialog(self)
+            dlg.setWindowTitle("FunkGateway – TOTP QR-Code")
+            layout=QVBoxLayout(dlg)
+            info=QLabel(
+                "Diesen QR-Code mit Google Authenticator, Aegis, 2FAS, "
+                "Microsoft Authenticator oder einer anderen TOTP-App scannen."
+            )
+            info.setWordWrap(True)
+            layout.addWidget(info)
+            image_label=QLabel()
+            image_label.setAlignment(Qt.AlignCenter)
+            image_label.setPixmap(pix)
+            layout.addWidget(image_label)
+            warn=QLabel(
+                "Wichtig: Der QR-Code enthält das geheime TOTP-Schlüsselmaterial. "
+                "Nicht weitergeben oder öffentlich speichern."
+            )
+            warn.setWordWrap(True)
+            layout.addWidget(warn)
+            buttons=QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(dlg.reject)
+            layout.addWidget(buttons)
+            dlg.adjustSize()
+            self.log("DTMF-TOTP: QR-Code angezeigt.")
+            dlg.exec()
+        except subprocess.CalledProcessError as e:
+            err=(e.stderr or "").strip()
+            self.log(f"DTMF-TOTP: QR-Code-Erzeugung fehlgeschlagen: {err or e}")
+            QMessageBox.critical(self,"DTMF-TOTP",f"QR-Code konnte nicht erzeugt werden:\n{err or e}")
+        except Exception as e:
+            self.log(f"DTMF-TOTP: QR-Code-Anzeige fehlgeschlagen: {e}")
+            QMessageBox.critical(self,"DTMF-TOTP",f"QR-Code konnte nicht angezeigt werden:\n{e}")
+
+    def _totp_code_for_counter(self,counter):
+        secret=self._totp_secret_bytes(self.dtmf_totp_secret)
+        if not secret:
+            return None
+        digest=hmac.new(secret,struct.pack(">Q",int(counter)),hashlib.sha1).digest()
+        off=digest[-1]&0x0F
+        binary=((digest[off]&0x7F)<<24)|((digest[off+1]&0xFF)<<16)|((digest[off+2]&0xFF)<<8)|(digest[off+3]&0xFF)
+        digits=self.dtmf_totp_digits.value()
+        return str(binary%(10**digits)).zfill(digits)
+
+    def _verify_dtmf_totp(self,code):
+        code=str(code)
+        if not self.dtmf_totp_secret or not code.isdigit() or len(code)!=self.dtmf_totp_digits.value():
+            return False,None
+        period=max(1,self.dtmf_totp_period.value())
+        current=int(time.time()//period)
+        offsets=[0]
+        for i in range(1,self.dtmf_totp_window.value()+1):
+            offsets.extend([-i,i])
+        for off in offsets:
+            counter=current+off
+            expected=self._totp_code_for_counter(counter)
+            if expected and hmac.compare_digest(expected,code):
+                if counter<=self.dtmf_totp_last_counter:
+                    return False,"replay"
+                return True,counter
+        return False,None
+
+    def _set_dtmf_auth_pin_from_ui(self):
+        pin=self.dtmf_auth_pin_edit.text().strip()
+        if not pin.isdigit() or not (3 <= len(pin) <= 12):
+            QMessageBox.warning(self,"DTMF-AUTH","Der PIN muss aus 3 bis 12 Ziffern bestehen.")
+            return
+        salt=secrets.token_hex(16)
+        digest=hashlib.pbkdf2_hmac("sha256",pin.encode("utf-8"),bytes.fromhex(salt),120000)
+        self.dtmf_auth_pin_salt=salt
+        self.dtmf_auth_pin_hash=digest.hex()
+        self.dtmf_auth_pin_edit.clear()
+        self.dtmf_auth_fail_count=0
+        self.dtmf_auth_locked_until=0.0
+        self.dtmf_auth_active_until=0.0
+        self.dtmf_auth_status.setText("AUTH: PIN gesetzt; noch nicht angemeldet")
+        self.save_cfg()
+        self.log("DTMF-AUTH: neuer PIN gespeichert (nicht im Klartext).")
+
+    def _dtmf_auth_pin_ok(self,pin):
+        if not self.dtmf_auth_pin_salt or not self.dtmf_auth_pin_hash:
+            return False
+        try:
+            got=hashlib.pbkdf2_hmac(
+                "sha256",str(pin).encode("utf-8"),
+                bytes.fromhex(self.dtmf_auth_pin_salt),120000
+            ).hex()
+            return hmac.compare_digest(got,self.dtmf_auth_pin_hash)
+        except Exception:
+            return False
+
+    def _dtmf_auth_is_active(self):
+        if not self.dtmf_auth_enabled.isChecked():
+            return True
+        return bool(self.dtmf_auth_active_until and time.monotonic() < self.dtmf_auth_active_until)
+
+    def _is_dtmf_auth_sequence(self,code):
+        code=self._clean_dtmf_code(code)
+        prefix=self._clean_dtmf_code(self.dtmf_auth_prefix.text())
+        logout=self._clean_dtmf_code(self.dtmf_auth_logout_code.text())
+        return bool((prefix and code.startswith(prefix)) or (logout and code==logout))
+
+    def _dtmf_auth_radio_message(self,path,label):
+        path=str(path or "").strip()
+        if not path:
+            return
+        if not Path(path).is_file():
+            self.log(f"DTMF-AUTH-Ansage '{label}' nicht gesendet: Datei fehlt: {path}")
+            return
+        delay=max(300,self.dtmf_release_ms.value()+100)
+        QTimer.singleShot(delay,lambda p=path,l=label:self._send_dtmf_ack(p,l))
+
+    def _handle_dtmf_auth_code(self,code,test_only=False):
+        code=self._clean_dtmf_code(code)
+        prefix=self._clean_dtmf_code(self.dtmf_auth_prefix.text())
+        logout=self._clean_dtmf_code(self.dtmf_auth_logout_code.text())
+        end=(self.dtmf_end_char.text().strip() or "#")[0].upper()
+
+        if logout and code==logout:
+            if test_only:
+                self.log("DTMF-Test: AUTH würde beendet.")
+                return True
+            self.dtmf_auth_active_until=0.0
+            self.dtmf_auth_expiry_logged=False
+            self.dtmf_auth_status.setText("AUTH: beendet")
+            self.log("DTMF-AUTH: manuell beendet.")
+            return True
+
+        if not prefix or not code.startswith(prefix) or not code.endswith(end):
+            return False
+
+        if test_only:
+            self.log("DTMF-Test: AUTH-Sequenz erkannt; PIN wird im Test nicht geprüft.")
+            return True
+
+        now=time.monotonic()
+        if self.dtmf_auth_locked_until and now < self.dtmf_auth_locked_until:
+            rest=max(1,int(self.dtmf_auth_locked_until-now))
+            self.log(f"DTMF-AUTH: Anmeldung während Sperrzeit abgewiesen ({rest} s Rest).")
+            self.dtmf_auth_status.setText(f"AUTH: gesperrt – noch {rest} s")
+            self._dtmf_auth_radio_message(self.dtmf_auth_failed_wav.text(),"AUTH fehlgeschlagen")
+            return True
+
+        method=self.dtmf_auth_method.currentData() or "pin"
+        if method=="totp" and not self.dtmf_totp_secret:
+            self.log("DTMF-AUTH: kein TOTP-Geheimnis konfiguriert – Anmeldung abgewiesen.")
+            self.dtmf_auth_status.setText("AUTH: kein TOTP-Geheimnis")
+            self._dtmf_auth_radio_message(self.dtmf_auth_failed_wav.text(),"AUTH fehlgeschlagen")
+            return True
+        if method=="pin" and not self.dtmf_auth_pin_hash:
+            self.log("DTMF-AUTH: kein PIN konfiguriert – Anmeldung abgewiesen.")
+            self.dtmf_auth_status.setText("AUTH: kein PIN konfiguriert")
+            self._dtmf_auth_radio_message(self.dtmf_auth_failed_wav.text(),"AUTH fehlgeschlagen")
+            return True
+
+        auth_value=code[len(prefix):-1]
+        verified=False
+        replay=False
+        accepted_counter=None
+        if method=="totp":
+            ok,info=self._verify_dtmf_totp(auth_value)
+            verified=bool(ok)
+            replay=(info=="replay")
+            if verified:
+                accepted_counter=int(info)
+        else:
+            verified=self._dtmf_auth_pin_ok(auth_value)
+
+        if verified:
+            if accepted_counter is not None:
+                self.dtmf_totp_last_counter=accepted_counter
+            self.dtmf_auth_fail_count=0
+            self.dtmf_auth_locked_until=0.0
+            self.dtmf_auth_active_until=now+self.dtmf_auth_valid_s.value()
+            self.dtmf_auth_expiry_logged=False
+            method_label="TOTP" if method=="totp" else "PIN"
+            self.dtmf_auth_status.setText(f"AUTH: {method_label} erfolgreich – {self.dtmf_auth_valid_s.value()} s")
+            self.log(f"DTMF-AUTH ({method_label}): erfolgreich – Freigabe für {self.dtmf_auth_valid_s.value()} s.")
+            self._dtmf_auth_radio_message(self.dtmf_auth_success_wav.text(),"AUTH erfolgreich")
+            self.save_cfg()
+            return True
+
+        self.dtmf_auth_fail_count += 1
+        if replay:
+            self.log("DTMF-AUTH (TOTP): bereits benutzter Zeitschritt – Replay abgewiesen.")
+            self.dtmf_auth_status.setText("AUTH: TOTP bereits benutzt")
+        else:
+            self.log(f"DTMF-AUTH ({'TOTP' if method=='totp' else 'PIN'}): Anmeldung fehlgeschlagen.")
+        if self.dtmf_auth_fail_count >= self.dtmf_auth_max_attempts.value():
+            self.dtmf_auth_locked_until=now+self.dtmf_auth_lockout_s.value()
+            self.dtmf_auth_fail_count=0
+            self.dtmf_auth_status.setText(f"AUTH: {self.dtmf_auth_lockout_s.value()} s gesperrt")
+            self.log(f"DTMF-AUTH: zu viele Fehlversuche – {self.dtmf_auth_lockout_s.value()} s gesperrt.")
+        else:
+            self.dtmf_auth_status.setText("AUTH: Anmeldung fehlgeschlagen")
+        self._dtmf_auth_radio_message(self.dtmf_auth_failed_wav.text(),"AUTH fehlgeschlagen")
+        return True
+
+    def _dtmf_auth_required_for_fixed(self,label):
+        mapping={
+            "Papagei EIN":self.dtmf_auth_req_parrot,
+            "VoIP-Betrieb":self.dtmf_auth_req_voip,
+            "TeamSpeak MUTE":self.dtmf_auth_req_ts_mute,
+            "TeamSpeak UNMUTE":self.dtmf_auth_req_ts_unmute,
+            "TeamSpeak DEAF":self.dtmf_auth_req_ts_deaf,
+            "TeamSpeak UNDEAF":self.dtmf_auth_req_ts_undeaf,
+            "Mumble MUTE":self.dtmf_auth_req_mumble_mute,
+            "Mumble UNMUTE":self.dtmf_auth_req_mumble_unmute,
+            "Mumble DEAF":self.dtmf_auth_req_mumble_deaf,
+            "Mumble UNDEAF":self.dtmf_auth_req_mumble_undeaf,
+        }
+        cb=mapping.get(label)
+        return bool(cb and cb.isChecked())
+
+    def _deny_dtmf_for_auth(self,code,label):
+        self.log(f"DTMF-Code {code} → {label}: AUTH erforderlich – keine Aktion.")
+        self.dtmf_status.setText(f"DTMF: AUTH erforderlich für {label}")
+        self.dtmf_auth_status.setText("AUTH: erforderlich")
+        self._dtmf_auth_radio_message(self.dtmf_auth_required_wav.text(),"AUTH erforderlich")
+        return False
+
+    def _dtmf_fixed_actions(self):
+        return [
+            (self._clean_dtmf_code(self.dtmf_code_parrot_on.text()),"Papagei EIN",lambda:self.parrot_enabled.setChecked(True),"parrot"),
+            (self._clean_dtmf_code(self.dtmf_code_voip_on.text()),"VoIP-Betrieb",lambda:self.parrot_enabled.setChecked(False),"voip"),
+            (self._clean_dtmf_code(self.dtmf_code_ts_mute.text()),"TeamSpeak MUTE",lambda:self._dtmf_ts_mute(True),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_ts_unmute.text()),"TeamSpeak UNMUTE",lambda:self._dtmf_ts_mute(False),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_ts_deaf.text()),"TeamSpeak DEAF",lambda:self._dtmf_ts_deaf(True),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_ts_undeaf.text()),"TeamSpeak UNDEAF",lambda:self._dtmf_ts_deaf(False),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_mumble_mute.text()),"Mumble MUTE",lambda:self._dtmf_mumble_mute(True),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_mumble_unmute.text()),"Mumble UNMUTE",lambda:self._dtmf_mumble_mute(False),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_mumble_deaf.text()),"Mumble DEAF",lambda:self._dtmf_mumble_deaf(True),"default"),
+            (self._clean_dtmf_code(self.dtmf_code_mumble_undeaf.text()),"Mumble UNDEAF",lambda:self._dtmf_mumble_deaf(False),"default"),
+        ]
+
+    def _execute_dtmf_code(self,code,test_only=False):
+        code=self._clean_dtmf_code(code)
+        if not code:
+            self.log("DTMF: leerer Code – keine Aktion.")
+            return False
+
+        if self.dtmf_auth_enabled.isChecked() and self._is_dtmf_auth_sequence(code):
+            return self._handle_dtmf_auth_code(code,test_only=test_only)
+
+        matches=[]
+        for configured,label,func,ack_kind in self._dtmf_fixed_actions():
+            if configured and configured == code:
+                matches.append((label,func,ack_kind,self._dtmf_auth_required_for_fixed(label)))
+
+        for i,(edit,combo) in enumerate(self.dtmf_ts_room_rows,1):
+            configured=self._clean_dtmf_code(edit.text())
+            cid=combo.currentData()
+            if configured and configured == code and cid is not None:
+                name=combo.currentText().split("  (CID",1)[0]
+                matches.append((f"TeamSpeak Raum {name}",lambda cid=int(cid),name=name:self._dtmf_move_ts_room(cid,name),"default",self.dtmf_ts_room_auth[i-1].isChecked()))
+
+        for i,(edit,combo) in enumerate(self.dtmf_mumble_room_rows,1):
+            configured=self._clean_dtmf_code(edit.text())
+            cid=combo.currentData()
+            if configured and configured == code and cid is not None:
+                name=combo.currentText().split("  (CID",1)[0]
+                matches.append((f"Mumble Raum {name}",lambda cid=int(cid),name=name:self._dtmf_move_mumble_room(cid,name),"default",self.dtmf_mumble_room_auth[i-1].isChecked()))
+
+        if not matches:
+            self.log(f"DTMF-Code {code}: unbekannt – keine Aktion.")
+            self.dtmf_status.setText(f"DTMF: unbekannter Code {code}")
+            return False
+        if len(matches) > 1:
+            labels=", ".join(x[0] for x in matches)
+            self.log(f"DTMF-Code {code}: mehrdeutig ({labels}) – aus Sicherheitsgründen keine Aktion.")
+            self.dtmf_status.setText(f"DTMF: Code {code} ist mehrfach vergeben")
+            return False
+
+        label,func,ack_kind,requires_auth=matches[0]
+        if test_only:
+            auth_txt=" / AUTH erforderlich" if requires_auth and self.dtmf_auth_enabled.isChecked() else ""
+            self.log(f"DTMF-Test {code}: würde ausführen → {label}{auth_txt}")
+            self.dtmf_status.setText(f"DTMF-Test: {code} → {label}{auth_txt}")
+            return True
+        if self.dtmf_auth_enabled.isChecked() and requires_auth and not self._dtmf_auth_is_active():
+            return self._deny_dtmf_for_auth(code,label)
+        try:
+            func()
+            self.log(f"DTMF-Code {code} → {label}")
+            self.dtmf_status.setText(f"DTMF: {code} → {label}")
+            self.save_cfg()
+            self._schedule_dtmf_ack(label,ack_kind)
+            return True
+        except Exception as e:
+            self.log(f"DTMF-Code {code}: Aktion '{label}' fehlgeschlagen: {e}")
+            self.dtmf_status.setText(f"DTMF-Fehler: {label}: {e}")
+            return False
+
+    def _dtmf_ack_path(self,kind):
+        if kind=="parrot":
+            return self.dtmf_ack_parrot_wav.text().strip()
+        if kind=="voip":
+            return self.dtmf_ack_voip_wav.text().strip()
+        return self.dtmf_ack_default_wav.text().strip()
+
+    def _schedule_dtmf_ack(self,label,kind):
+        if not self.dtmf_ack_enabled.isChecked():
+            return
+        path=self._dtmf_ack_path(kind)
+        if not path:
+            self.log(f"DTMF-Vollzugsmeldung für '{label}' nicht gesendet: keine WAV hinterlegt.")
+            return
+        if not Path(path).is_file():
+            self.log(f"DTMF-Vollzugsmeldung für '{label}' nicht gesendet: Datei fehlt: {path}")
+            return
+
+        generation=None
+        if kind in ("parrot","voip"):
+            # Mode changes supersede older pending mode confirmations.
+            self.dtmf_mode_ack_generation += 1
+            generation=self.dtmf_mode_ack_generation
+            self.dtmf_mode_ack_pending=True
+            if kind=="parrot":
+                self._abort_parrot_recording_for_dtmf_ack()
+        delay=max(300,self.dtmf_release_ms.value()+100)
+        self.log(f"DTMF-Vollzugsmeldung vorgemerkt: {label} in {delay} ms.")
+        QTimer.singleShot(
+            delay,
+            lambda p=path,l=label,k=kind,g=generation:self._send_dtmf_ack(p,l,k,g)
+        )
+
+    def _send_dtmf_ack(self,path,label,kind=None,generation=None):
+        if kind in ("parrot","voip") and generation != self.dtmf_mode_ack_generation:
+            self.dtmf_ack_waiting_labels.discard(label)
+            self.log(f"DTMF-Vollzugsmeldung '{label}' verworfen: neuerer Betriebsart-Befehl liegt vor.")
+            return
+        if self.protection_muted:
+            if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
+                self.dtmf_mode_ack_pending=False
+            self.log(f"DTMF-Vollzugsmeldung '{label}' entfällt: Gateway-Schutz ist aktiv.")
+            return
+        # Wait only on real live activity.  rx_was_active is intentionally not
+        # used here because it can remain sticky after a control transmission.
+        if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
+            # A mode confirmation has priority over a Papagei cycle.  A stale
+            # recording must never postpone "Papagei aktiv"/"Gateway aktiv".
+            if getattr(self,"parrot_recording",False) or getattr(self,"parrot_guard_buffering",False):
+                self._abort_parrot_recording_for_dtmf_ack()
+
+        busy=bool(
+            self.tx
+            or self.outgoing_audio_active
+            or self.rx_active_since is not None
+            or getattr(self,"dtmf_control_rx_active",False)
+            or getattr(self,"dtmf_session_active",False)
+            or getattr(self,"return_guard_candidate",False)
+            or (
+                kind not in ("parrot","voip")
+                and (
+                    getattr(self,"parrot_recording",False)
+                    or getattr(self,"parrot_cycle_active",False)
+                )
+            )
+        )
+        if busy:
+            if label not in self.dtmf_ack_waiting_labels:
+                self.dtmf_ack_waiting_labels.add(label)
+                self.log(f"DTMF-Vollzugsmeldung '{label}' wartet auf Funkende/freie Aussendung.")
+            QTimer.singleShot(
+                250,
+                lambda p=path,l=label,k=kind,g=generation:self._send_dtmf_ack(p,l,k,g)
+            )
+            return
+
+        if label in self.dtmf_ack_waiting_labels:
+            self.dtmf_ack_waiting_labels.discard(label)
+            self.log(f"DTMF-Vollzugsmeldung '{label}': Kanal frei – sende Bestätigung.")
+        try:
+            self.outgoing_audio_active=True
+            if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+                with self.parrot_capture_lock:
+                    self.parrot_prebuffer.clear()
+                self.active_tx_kind="parrot"
+            else:
+                self.active_tx_kind="protection"
+            self.set_ptt(True)
+            self.log(f"DTMF-Vollzugsmeldung: PTT EIN → {label}")
+            lead=max(0,self.parrot_lead_ms.value() if hasattr(self,"parrot_lead_ms") else 500)
+            ack_proc={"proc":None,"finished":False}
+
+            def finish():
+                if ack_proc["finished"]:
+                    return
+                ack_proc["finished"]=True
+                try:
+                    if self.tx:
+                        self.set_ptt(False)
+                finally:
+                    self.outgoing_audio_active=False
+                    if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+                        with self.parrot_capture_lock:
+                            self.parrot_prebuffer.clear()
+                    if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
+                        self.dtmf_mode_ack_pending=False
+                    self.log(f"DTMF-Vollzugsmeldung beendet: {label}")
+
+            def wait_for_audio_end():
+                proc=ack_proc["proc"]
+                if proc is None:
+                    QTimer.singleShot(100,wait_for_audio_end)
+                    return
+
+                rc=proc.poll()
+                if rc is None:
+                    QTimer.singleShot(100,wait_for_audio_end)
+                    return
+
+                if rc == 0:
+                    self.log(f"DTMF-Vollzugsmeldung WAV beendet: {label}")
+                else:
+                    self.log(f"DTMF-Vollzugsmeldung WAV-Player beendet mit Exit-Code {rc}: {label}")
+
+                # paplay may finish before all audio buffered in the virtual
+                # PipeWire/PulseAudio path has physically left the RF output.
+                # Keep PTT keyed for a configurable drain tail.
+                tail=max(0,self.dtmf_ack_tail_ms.value() if hasattr(self,"dtmf_ack_tail_ms") else 2500)
+                self.log(f"DTMF-Vollzugsmeldung: WAV-Player fertig – PTT-Nachlauf {tail} ms.")
+                QTimer.singleShot(tail,finish)
+
+            def play():
+                try:
+                    ack_proc["proc"]=self.play_to_virtual(path,kind="dtmf_ack")
+                    self.log(f"DTMF-Vollzugsmeldung Wiedergabe gestartet: {label}")
+                    QTimer.singleShot(100,wait_for_audio_end)
+                except Exception as e:
+                    self.log(f"DTMF-Vollzugsmeldung '{label}' fehlgeschlagen: {e}")
+                    QTimer.singleShot(500,finish)
+
+            QTimer.singleShot(lead,play)
+        except Exception as e:
+            self.outgoing_audio_active=False
+            if self.tx:
+                self.set_ptt(False)
+            if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
+                self.dtmf_mode_ack_pending=False
+            self.log(f"DTMF-Vollzugsmeldung '{label}' konnte nicht gestartet werden: {e}")
+
+    def _dtmf_ts_mute(self,enabled):
+        if not self.ts_enabled.isChecked():
+            raise RuntimeError("TeamSpeak-Modul ist ausgeschaltet")
+        self._configure_teamspeak()
+        self.ts_client.set_input_muted(bool(enabled))
+
+    def _dtmf_ts_deaf(self,enabled):
+        if not self.ts_enabled.isChecked():
+            raise RuntimeError("TeamSpeak-Modul ist ausgeschaltet")
+        self._configure_teamspeak()
+        self.ts_client.set_output_muted(bool(enabled))
+
+    def _dtmf_mumble_mute(self,enabled):
+        if not self.mumble_enabled.isChecked():
+            raise RuntimeError("Mumble-Modul ist ausgeschaltet")
+        if not self.mumble_local.running():
+            raise RuntimeError("Mumble-Client ist nicht gestartet")
+        self.mumble_local.set_muted(bool(enabled))
+
+    def _dtmf_mumble_deaf(self,enabled):
+        if not self.mumble_enabled.isChecked():
+            raise RuntimeError("Mumble-Modul ist ausgeschaltet")
+        if not self.mumble_local.running():
+            raise RuntimeError("Mumble-Client ist nicht gestartet")
+        self.mumble_local.set_deaf(bool(enabled))
+
+    def _dtmf_move_ts_room(self,cid,name):
+        if not self.ts_enabled.isChecked():
+            raise RuntimeError("TeamSpeak-Modul ist ausgeschaltet")
+        self._configure_teamspeak()
+        self.ts_client.move_self(int(cid))
+        self.log(f"DTMF: TeamSpeak Gateway in '{name}' (CID {cid}) verschoben.")
+
+    def _dtmf_move_mumble_room(self,cid,name):
+        if not self.mumble_enabled.isChecked():
+            raise RuntimeError("Mumble-Modul ist ausgeschaltet")
+        mode=self.mumble_ice_mode.currentData()
+        if mode == "bridge":
+            raise RuntimeError("Mumble-Bridge erlaubt absichtlich keine beliebigen DTMF-Raumwechsel")
+        if mode not in ("direct","ssh"):
+            raise RuntimeError("Für freie Mumble-Raumwechsel muss direktes Ice oder Ice über SSH eingerichtet sein")
+        read=self.mumble_read_secret.text()
+        write=self.mumble_write_secret.text()
+        if not read or not write:
+            raise RuntimeError("Mumble Ice Read- und Write-Secret werden für den Raumwechsel benötigt")
+        host,port=self._mumble_ice_endpoint()
+        gateway=self._mumble_gateway_name_value()
+        self._begin_mumble_room_change_guard(8.0)
+        old=self.mumble_ice.move_gateway(
+            host,port,self.mumble_slice.text(),read,write,gateway,int(cid),
+            self.mumble_ice_server_id.value()
+        )
+        self.log(f"DTMF: Mumble Gateway verschoben: CID {old} → {cid} ({name}).")
+
+    @staticmethod
+    def _fill_dtmf_room_combos(rows,channels,system):
+        for edit,combo in rows:
+            old=combo.currentData()
+            old_text=combo.currentText()
+            combo.clear()
+            found=-1
+            for item in channels:
+                if system=="ts":
+                    cid,name=item
+                    text=f"{name}  (CID {cid})"
+                else:
+                    cid,name,parent=item
+                    text=f"{name}  (CID {cid}, Parent {parent})"
+                combo.addItem(text,int(cid))
+                if old is not None and int(old)==int(cid):
+                    found=combo.count()-1
+            if found >= 0:
+                combo.setCurrentIndex(found)
+            elif old is not None:
+                combo.addItem(old_text or f"Gespeicherter Raum CID {old}",int(old))
+                combo.setCurrentIndex(combo.count()-1)
+            elif not channels:
+                combo.addItem(f"Keine {system.upper()}-Räume geladen",None)
+
+    def refresh_dtmf_room_lists(self):
+        # TeamSpeak
+        try:
+            self._configure_teamspeak()
+            ts_channels=self.ts_client.channels()
+            self._fill_dtmf_room_combos(self.dtmf_ts_room_rows,ts_channels,"ts")
+            self.log(f"DTMF: TeamSpeak-Raumliste geladen ({len(ts_channels)} Räume).")
+        except Exception as e:
+            self.log(f"DTMF: TeamSpeak-Raumliste nicht verfügbar: {e}")
+
+        # Mumble
+        try:
+            mode=self.mumble_ice_mode.currentData()
+            if mode == "bridge":
+                self.log("DTMF: Mumble-Bridge – freie Raumliste absichtlich nicht verfügbar.")
+                self._fill_dtmf_room_combos(self.dtmf_mumble_room_rows,[],"mumble")
+                return
+            if mode not in ("direct","ssh"):
+                raise RuntimeError("direktes Ice/SSH ist nicht eingerichtet")
+            read=self.mumble_read_secret.text()
+            if not read:
+                raise RuntimeError("Ice Read-Secret fehlt")
+            host,port=self._mumble_ice_endpoint()
+            channels=self.mumble_ice.channels(
+                host,port,self.mumble_slice.text(),read,self.mumble_ice_server_id.value()
+            )
+            self.mumble_channels=channels
+            self._fill_dtmf_room_combos(self.dtmf_mumble_room_rows,channels,"mumble")
+            self.log(f"DTMF: Mumble-Raumliste geladen ({len(channels)} Räume).")
+        except Exception as e:
+            self.log(f"DTMF: Mumble-Raumliste nicht verfügbar: {e}")
+
+    def _dtmf_print_rows(self):
+        """Return all configured DTMF entries in a stable printable order."""
+        rows=[
+            ("Betriebsart","Papagei EIN",self.dtmf_code_parrot_on.text(),""),
+            ("Betriebsart","Normaler VoIP-Betrieb",self.dtmf_code_voip_on.text(),""),
+            ("TeamSpeak","Mikrofon MUTE",self.dtmf_code_ts_mute.text(),"lokaler Gateway-Client"),
+            ("TeamSpeak","Mikrofon UNMUTE",self.dtmf_code_ts_unmute.text(),"lokaler Gateway-Client"),
+            ("TeamSpeak","DEAF / Ausgabe stumm",self.dtmf_code_ts_deaf.text(),"lokaler Gateway-Client"),
+            ("TeamSpeak","UNDEAF",self.dtmf_code_ts_undeaf.text(),"lokaler Gateway-Client"),
+            ("Mumble","MUTE",self.dtmf_code_mumble_mute.text(),"lokaler Gateway-Client"),
+            ("Mumble","UNMUTE",self.dtmf_code_mumble_unmute.text(),"lokaler Gateway-Client"),
+            ("Mumble","DEAF",self.dtmf_code_mumble_deaf.text(),"lokaler Gateway-Client"),
+            ("Mumble","UNDEAF",self.dtmf_code_mumble_undeaf.text(),"lokaler Gateway-Client"),
+        ]
+
+        for i,(edit,combo) in enumerate(self.dtmf_ts_room_rows,1):
+            target=combo.currentText().strip()
+            if combo.currentData() is not None:
+                target=f"{target}"
+            elif not target or "laden" in target.lower() or "keine " in target.lower():
+                target="kein Ziel gewählt"
+            rows.append(("TeamSpeak Raumwechsel",f"Raumplatz {i}",edit.text(),target))
+
+        for i,(edit,combo) in enumerate(self.dtmf_mumble_room_rows,1):
+            target=combo.currentText().strip()
+            if combo.currentData() is not None:
+                target=f"{target}"
+            elif not target or "laden" in target.lower() or "keine " in target.lower():
+                target="kein Ziel gewählt"
+            rows.append(("Mumble Raumwechsel",f"Raumplatz {i}",edit.text(),target))
+
+        return rows
+
+    def export_dtmf_codes_pdf(self):
+        """Create a compact A4 sheet with every currently configured DTMF code."""
+        default_name=f"FunkGateway-DTMF-Codes-{VERSION}.pdf"
+        path,_=QFileDialog.getSaveFileName(
+            self,
+            "DTMF-Code-Liste als PDF speichern",
+            str(Path.home()/default_name),
+            "PDF-Datei (*.pdf)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+
+        start=html.escape((self.dtmf_start_char.text().strip() or "*")[:1])
+        end=html.escape((self.dtmf_end_char.text().strip() or "#")[:1])
+        generated=datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        rows_html=[]
+        for group,action,code,target in self._dtmf_print_rows():
+            cleaned=self._clean_dtmf_code(code)
+            shown=html.escape(cleaned) if cleaned else "<i>nicht belegt</i>"
+            target_html=html.escape(str(target)) if target else ""
+            rows_html.append(
+                "<tr>"
+                f"<td>{html.escape(group)}</td>"
+                f"<td>{html.escape(action)}</td>"
+                f"<td class='code'>{shown}</td>"
+                f"<td>{target_html}</td>"
+                "</tr>"
+            )
+
+        doc_html=f"""
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+          body {{ font-family: sans-serif; font-size: 9.5pt; color: #111; }}
+          h1 {{ font-size: 18pt; margin-bottom: 2px; }}
+          h2 {{ font-size: 11pt; margin-top: 0; color: #444; }}
+          .meta {{ margin: 8px 0 12px 0; padding: 7px; background: #f1f1f1; }}
+          table {{ width: 100%; border-collapse: collapse; }}
+          th {{ background: #dedede; font-weight: bold; padding: 5px; border: 1px solid #777; }}
+          td {{ padding: 5px; border: 1px solid #999; vertical-align: top; }}
+          td.code {{ font-family: monospace; font-size: 11pt; font-weight: bold; text-align: center; white-space: nowrap; }}
+          .small {{ font-size: 8pt; color: #555; margin-top: 10px; }}
+        </style>
+        </head>
+        <body>
+          <h1>FunkGateway - DTMF-Codeliste</h1>
+          <h2>Version {html.escape(VERSION)}</h2>
+          <div class="meta">
+            <b>Startzeichen:</b> {start}
+            &nbsp;&nbsp;&nbsp;
+            <b>Abschlusszeichen:</b> {end}
+            &nbsp;&nbsp;&nbsp;
+            <b>Zeichen-Timeout:</b> {self.dtmf_interdigit_ms.value()} ms
+            <br>
+            <b>DTMF-Steuerung:</b> {"aktiv" if self.dtmf_enabled.isChecked() else "deaktiviert"}
+            &nbsp;&nbsp;&nbsp;
+            <b>DTMF zu VoIP unterdrücken:</b> {"ja" if self.dtmf_suppress_voip.isChecked() else "nein"}
+          </div>
+
+          <table>
+            <tr>
+              <th>Bereich</th>
+              <th>Funktion</th>
+              <th>DTMF-Code</th>
+              <th>Ziel / Hinweis</th>
+            </tr>
+            {''.join(rows_html)}
+          </table>
+
+          <p class="small">
+            Erstellt am {generated}. Die Liste entspricht den aktuell in FunkGateway
+            eingestellten Codes. Nicht belegte Raumplätze werden ausdrücklich angezeigt.
+          </p>
+        </body>
+        </html>
+        """
+
+        try:
+            printer=QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(path)
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+            printer.setPageMargins(QMarginsF(10,10,10,10),QPageLayout.Unit.Millimeter)
+
+            doc=QTextDocument()
+            doc.setDocumentMargin(8)
+            doc.setHtml(doc_html)
+            doc.print_(printer)
+
+            if not Path(path).exists() or Path(path).stat().st_size < 500:
+                raise RuntimeError("PDF-Datei wurde nicht korrekt erzeugt")
+
+            self.log(f"DTMF-Codeliste als PDF gespeichert: {path}")
+            QMessageBox.information(
+                self,
+                "DTMF-Codeliste",
+                f"Druckfertige DTMF-Code-Liste gespeichert:\n{path}"
+            )
+        except Exception as e:
+            self.log(f"DTMF-PDF konnte nicht erstellt werden: {e}")
+            QMessageBox.critical(
+                self,
+                "DTMF-Codeliste",
+                f"Die PDF konnte nicht erstellt werden:\n{e}"
+            )
+
+    def _save_dtmf_room_rows(self,rows):
+        result=[]
+        for edit,combo in rows:
+            result.append({
+                "code":self._clean_dtmf_code(edit.text()),
+                "cid":combo.currentData(),
+                "name":combo.currentText(),
+            })
+        return result
+
+    @staticmethod
+    def _load_dtmf_room_rows(saved,rows,label):
+        if not isinstance(saved,list):
+            return
+        for item,(edit,combo) in zip(saved,rows):
+            if not isinstance(item,dict):
+                continue
+            edit.setText(str(item.get("code","")))
+            cid=item.get("cid")
+            name=str(item.get("name","")).strip()
+            if cid is not None:
+                combo.clear()
+                combo.addItem(name or f"Gespeicherter {label}-Raum CID {cid}",int(cid))
 
     def mute_gateway(self, reason, announce_path=""):
         if self.protection_muted and self.protection_reason == reason:
@@ -1200,7 +2533,7 @@ class MainWindow(QMainWindow):
                     self.protection_rx_free_since=None
                     self._set_big_rx_status(bool(self.rx_was_active))
         # Repeat room announcement for automatically entered TeamSpeak/Mumble rooms.
-        if (self.protection_muted and self.protection_reason in ("Dauer-RX","Selbstrücklauf")
+        if (self.protection_muted and self.protection_reason == "Dauer-RX"
                 and (self.protection_auto_move_active or self.protection_mumble_auto_move_active)
                 and self.protect_room_repeat.isChecked()
                 and self.protection_last_room_announcement
@@ -1662,8 +2995,7 @@ class MainWindow(QMainWindow):
                 target=f"{user}@{host}" if user else host
                 remote_cmd="""for f in \
 \"$HOME/MumbleFunk/murmur.ini\" \
-\"$HOME/murmur.ini\" \
-\"/etc/mumble-server.ini\" \
+\"$HOME/murmur.ini\" \\"/etc/mumble-server.ini\" \
 \"/etc/mumble-server/mumble-server.ini\" \
 \"/etc/murmur.ini\"; do
   if [ -r \"$f\" ]; then
@@ -2065,18 +3397,98 @@ done"""
             self.protection_mumble_auto_move_active=False; self.protection_previous_mumble_channel=None
 
     def build_log(self):
-        w=QWidget(); v=QVBoxLayout(w); self.logbox=QTextEdit(); self.logbox.setReadOnly(True)
+        w=QWidget(); v=QVBoxLayout(w)
+        self.logbox=QTextEdit(); self.logbox.setReadOnly(True)
+
+        controls=QHBoxLayout()
+        self.verbose_log=QCheckBox("Ausführliches Log")
+        self.verbose_log.setChecked(False)
+        self.verbose_log.setToolTip(
+            "Ohne Haken zeigt die Protokollansicht nur wichtige Betriebsereignisse "
+            "wie PTT EIN/AUS, Sprecher, DTMF-Aktionen, Betriebsartwechsel, Schutz- "
+            "und Fehlermeldungen. Mit Haken werden zusätzlich technische Detailmeldungen angezeigt. "
+            "Die Logdatei auf der Festplatte bleibt unabhängig davon vollständig."
+        )
         clear=QPushButton("Anzeige leeren"); clear.clicked.connect(self.logbox.clear)
-        v.addWidget(self.logbox); v.addWidget(clear); self.tabs.addTab(w,"Protokoll")
+        controls.addWidget(self.verbose_log)
+        controls.addStretch(1)
+        controls.addWidget(clear)
+
+        hint=QLabel(
+            "Kompaktmodus: wichtige Grundfunktionen. "
+            "„Ausführliches Log“ zeigt zusätzlich Diagnose- und Ablaufdetails. "
+            "Die gespeicherte Logdatei enthält weiterhin alle Meldungen."
+        )
+        hint.setWordWrap(True)
+
+        v.addLayout(controls)
+        v.addWidget(hint)
+        v.addWidget(self.logbox)
+        self.tabs.addTab(w,"Protokoll")
 
     def build_help(self):
         w=QWidget(); v=QVBoxLayout(w); h=QTextEdit(); h.setReadOnly(True); h.setHtml(HELP_HTML)
         v.addWidget(h); self.tabs.addTab(w,"Hilfe")
 
+    @staticmethod
+    def _is_compact_log_message(msg):
+        """Return True for messages that belong in the normal compact log view."""
+        m=str(msg)
+        low=m.lower()
+
+        # Always surface anything that looks like an error/problem.
+        error_tokens=(
+            "fehler","fehlgeschlagen","konnte nicht","nicht gefunden","warnung",
+            "timeout","abgebrochen","blockiert","störung","not-aus","tot "
+        )
+        if any(token in low for token in error_tokens):
+            return True
+
+        # Core radio operation and user-visible state changes.
+        prefixes=(
+            "PTT EIN","PTT AUS",
+            "TeamSpeak spricht:","Mumble spricht:",
+            "DTMF-Code ","DTMF-Code vollständig:",
+            "DTMF-AUTH","AUTH ",
+            "Gateway gestartet","Gateway gestoppt",
+            "FunkGateway ","Funk-RX aktiv:",
+            "Papagei: RX begonnen","Papagei: Aufnahme beendet",
+            "Papagei: Wiedergabe gestartet","Papagei: Wiedergabe beendet",
+            "Papagei: bereit","Papagei-Isolation:",
+            "Dauer-RX:","Selbstrücklauf-Schutz",
+            "TeamSpeak aktiver Channel:","Mumble aktiver Channel:",
+            "TeamSpeak Raum ","Mumble Raum ",
+            "Rogerbeep ","Rufzeichenbake ","Papageibake ",
+        )
+        if any(m.startswith(prefix) for prefix in prefixes):
+            return True
+
+        # Important DTMF acknowledgement states, but not every retry/detail.
+        if m.startswith("DTMF-Vollzugsmeldung"):
+            important=(
+                "PTT EIN","Wiedergabe gestartet","WAV beendet","beendet:",
+                "Kanal frei","fehlgeschlagen"
+            )
+            return any(token in m for token in important)
+
+        # Mode switches should always be visible.
+        if ("Papagei EIN" in m or "VoIP-Betrieb" in m) and "DTMF" in m:
+            return True
+
+        return False
+
     def log(self,msg):
-        ts=datetime.now().strftime("%H:%M:%S"); self.logbox.append(f"[{ts}] {msg}")
+        ts=datetime.now().strftime("%H:%M:%S")
+
+        # The on-screen view is compact by default.  The checkbox only controls
+        # visibility; the persistent logfile below always receives every entry.
+        verbose=bool(hasattr(self,"verbose_log") and self.verbose_log.isChecked())
+        if verbose or self._is_compact_log_message(msg):
+            self.logbox.append(f"[{ts}] {msg}")
+
         ensure_cfg()
-        with open(LOG_FILE,"a",encoding="utf-8") as f: f.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
+        with open(LOG_FILE,"a",encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
 
 
     def refresh_ports(self):
@@ -2179,6 +3591,7 @@ done"""
                     "app": "",
                     "binary": "",
                     "media": "",
+                    "mute": False,
                 }
             elif current is not None:
                 if line.startswith("Sink:"):
@@ -2187,6 +3600,8 @@ done"""
                     current["app"] = line.split("=", 1)[1].strip().strip('"')
                 elif 'application.process.binary = ' in line:
                     current["binary"] = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("Mute:"):
+                    current["mute"] = line.split(":",1)[1].strip().lower() == "yes"
                 elif 'media.name = ' in line:
                     current["media"] = line.split("=", 1)[1].strip().strip('"')
         if current:
@@ -2310,23 +3725,111 @@ done"""
             self.log(f"{moved} Audioprogramm(e) automatisch zu FunkGateway_TX geroutet.")
         self.refresh_audio_streams()
 
-    def routing_watchdog_tick(self):
-        """Keep known voice applications on FunkGateway_TX while gateway runs.
+    @staticmethod
+    def _is_known_voip_stream(stream):
+        haystack=" ".join([
+            stream.get("app",""),
+            stream.get("binary",""),
+            stream.get("media","")
+        ]).lower()
+        known=(
+            "teamspeak","ts3client","mumble","frn","free radio network",
+            "zello","discord"
+        )
+        return any(token in haystack for token in known)
 
-        TeamSpeak can create a new playback stream after startup. PipeWire or
-        EasyEffects may then route that new stream to the default sink again.
-        While the gateway is running, this watchdog checks every 1.5 seconds
-        and moves only known voice/gateway applications back to FunkGateway_TX.
+    def _sync_parrot_voip_playback_mute(self):
+        """Physically mute VoIP playback streams while Papagei mode is active.
+
+        Merely suppressing the PTT trigger is insufficient: while PTT is keyed
+        for a Papagei replay/beacon/ACK, an unmuted TeamSpeak/Mumble stream on
+        FunkGateway_TX would be mixed into the RF audio.  Therefore known VoIP
+        sink-inputs themselves are muted during Papagei mode.
         """
-        if not self.bridge:
+        enabled=bool(
+            hasattr(self,"parrot_enabled")
+            and self.parrot_enabled.isChecked()
+            and hasattr(self,"parrot_mute_voip")
+            and self.parrot_mute_voip.isChecked()
+        )
+
+        if not enabled:
+            if not self.parrot_muted_voip_streams:
+                return
+            current={str(x["id"]):x for x in self._read_sink_inputs()}
+            for sid in list(self.parrot_muted_voip_streams):
+                if sid not in current:
+                    self.parrot_muted_voip_streams.discard(sid)
+                    continue
+                try:
+                    subprocess.run(
+                        ["pactl","set-sink-input-mute",str(sid),"0"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=3,
+                        check=True,
+                    )
+                    self.log(f"Papagei: VoIP-Wiedergabestream {sid} wieder freigegeben.")
+                except Exception as e:
+                    self.log(f"Papagei: VoIP-Wiedergabestream {sid} konnte nicht freigegeben werden: {e}")
+                finally:
+                    self.parrot_muted_voip_streams.discard(sid)
             return
-        if not hasattr(self, "auto_route") or not self.auto_route.isChecked():
+
+        sink_id=self._funkgateway_sink_id()
+        current_ids=set()
+        for stream in self._read_sink_inputs():
+            sid=str(stream.get("id",""))
+            if not sid:
+                continue
+            current_ids.add(sid)
+
+            # Only playback that is actually routed to FunkGateway_TX matters.
+            if sink_id and stream.get("sink") != str(sink_id):
+                continue
+            if not self._is_known_voip_stream(stream):
+                continue
+
+            # Preserve streams which were already muted by the user/application.
+            if stream.get("mute",False):
+                continue
+            if sid in self.parrot_muted_voip_streams:
+                continue
+
+            try:
+                subprocess.run(
+                    ["pactl","set-sink-input-mute",sid,"1"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                    check=True,
+                )
+                self.parrot_muted_voip_streams.add(sid)
+                name=stream.get("app") or stream.get("binary") or "VoIP"
+                self.log(f"Papagei: {name}-Wiedergabe auf FunkGateway_TX stummgeschaltet (Stream {sid}).")
+            except Exception as e:
+                self.log(f"Papagei: VoIP-Wiedergabestream {sid} konnte nicht stummgeschaltet werden: {e}")
+
+        # Forget IDs of streams that vanished while Papagei was active.
+        self.parrot_muted_voip_streams.intersection_update(current_ids)
+
+    def routing_watchdog_tick(self):
+        """Keep known voice applications routed correctly and enforce Papagei mute."""
+        if not self.bridge:
             return
 
         now=time.monotonic()
         if now-self.last_route_check < 1.5:
             return
         self.last_route_check=now
+
+        # This must run even when automatic routing is disabled: a newly
+        # created TeamSpeak/Mumble playback stream must not leak into RF while
+        # the Papagei is transmitting.
+        self._sync_parrot_voip_playback_mute()
+
+        if not hasattr(self, "auto_route") or not self.auto_route.isChecked():
+            return
 
         sink_id=self._funkgateway_sink_id()
         if not sink_id:
@@ -2336,20 +3839,9 @@ done"""
             if not sink_id:
                 return
 
-        known=(
-            "teamspeak","ts3client","mumble","frn","free radio network",
-            "zello","discord"
-        )
-
         changed=False
         for stream in self._read_sink_inputs():
-            haystack=" ".join([
-                stream.get("app",""),
-                stream.get("binary",""),
-                stream.get("media","")
-            ]).lower()
-
-            if not any(token in haystack for token in known):
+            if not self._is_known_voip_stream(stream):
                 continue
 
             if stream.get("sink") != sink_id:
@@ -2373,6 +3865,7 @@ done"""
 
         if changed:
             self.refresh_audio_streams()
+            self._sync_parrot_voip_playback_mute()
 
     def refresh_audio_devices(self):
         """Load real PipeWire/PulseAudio recording sources."""
@@ -2483,6 +3976,7 @@ done"""
             "roger":self.return_after_roger,
             "protection":self.return_after_protection,
             "manual":self.return_after_manual,
+            "parrot":self.parrot_return_guard if hasattr(self,"parrot_return_guard") else None,
         }
         box=mapping.get(kind)
         return bool(box and box.isChecked())
@@ -2501,7 +3995,6 @@ done"""
         self.return_guard_muted=True
         self._refresh_rx_forward_mute()
         self.log(f"Selbstrücklauf-Schutz gestartet nach {kind}: RX→VoIP für neue RX-Starts {ms} ms geschützt (Standard: 3500 ms).")
-
     def set_ptt(self,on):
         if self.tx==on: return
         try:
@@ -2646,6 +4139,17 @@ done"""
         return False,detail
 
     def on_audio_activity(self,active):
+        if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+            # Fremdes VoIP darf weder eine laufende Papagei-Aufnahme noch die
+            # Warte-/Wiedergabephase unterbrechen. Interne Papagei-/Baken-Audios
+            # bleiben erlaubt.
+            internal_parrot_audio = self.tx_source_hint in ("parrot","beacon")
+            block_external = bool(self.parrot_mute_voip.isChecked() or self.parrot_cycle_active)
+            if active and block_external and not internal_parrot_audio:
+                self.outgoing_audio_active=False
+                if self.diagnostic_mode.isChecked():
+                    self.log("Papagei: externes VoIP→HF während Papageizyklus blockiert.")
+                return
         self.outgoing_audio_active=bool(active)
         if self.mumble_room_guard_until and time.monotonic() < self.mumble_room_guard_until:
             if self.ptt and not self.protection_announcement_busy:
@@ -2695,7 +4199,7 @@ done"""
         # This avoids the misleading situation where the start page says
         # "FUNK KANAL FREI" although the gateway is intentionally still muted.
         if self.protection_muted:
-            if self.protection_reason in ("Dauer-RX","Selbstrücklauf"):
+            if self.protection_reason == "Dauer-RX":
                 if active:
                     text="STÖRUNG WEITERHIN VORHANDEN"
                     border="#9b1c1c"
@@ -2742,6 +4246,8 @@ done"""
         if not self.return_guard_muted:
             return
         if self.return_guard_candidate:
+            # Ein innerhalb des Schutzfensters begonnener RX bleibt bis zu seinem
+            # tatsächlichen Ende stumm, auch wenn die Zeit inzwischen abgelaufen ist.
             return
         if now >= self.return_guard_until:
             self.return_guard_muted=False
@@ -2781,9 +4287,777 @@ done"""
         self.log("Verlorener Durchgang: Wiederholungsansage wird über HF gesendet.")
         self.play_protection_announcement(p,"Durchgang nicht übertragen – bitte wiederholen")
 
+    def _parrot_busy(self):
+        return bool(self.parrot_recording or self.parrot_playing or self.parrot_beacon_in_progress or self.tx or self.outgoing_audio_active)
+
+    def _parrot_channel_busy(self):
+        return bool(self.rx_was_active or self._parrot_busy() or self.protection_muted or self.protection_announcement_busy or self.roger_busy or self.return_guard_muted)
+
+    def _parrot_mode_toggled(self,enabled):
+        # Recalculate the whole FunkGateway_TX.monitor -> radio bridge first.
+        # Papagei isolation must be active before any acknowledgement/replay.
+        self._set_tx_forward_muted(False)
+        if enabled:
+            self._ensure_parrot_capture()
+            self._sync_parrot_voip_playback_mute()
+            with self.parrot_capture_lock:
+                self.parrot_prebuffer.clear()
+
+            # If Papagei is enabled by *91# while that same RF carrier is still
+            # active, ignore the rest of that control transmission completely.
+            if getattr(self,"dtmf_session_active",False) or self.rx_was_active:
+                self.dtmf_parrot_wait_rx_free=True
+                self.log("Papagei: Aktivierung per DTMF – warte bis Funkende; Steuerdurchgang wird nicht aufgenommen.")
+            else:
+                self.dtmf_parrot_wait_rx_free=False
+        else:
+            self.dtmf_parrot_wait_rx_free=False
+            self._stop_parrot_capture()
+            self._sync_parrot_voip_playback_mute()
+            # Now that Papagei is off, release the mixed TX bridge unless a
+            # protection state still requires it to remain muted.
+            self._set_tx_forward_muted(False)
+
+    def _ensure_parrot_capture(self):
+        """Start one continuous raw RX capture used as the Papagei prebuffer."""
+        if not hasattr(self,"parrot_enabled") or not self.parrot_enabled.isChecked():
+            return False
+
+        src=self.rx_source.currentData() if hasattr(self,"rx_source") else None
+        if not src:
+            src=self.rx_source.currentText().strip() if hasattr(self,"rx_source") else ""
+        if not src:
+            self.log("Papagei: RX-Vorlaufpuffer wartet – keine RX-Quelle gewählt.")
+            return False
+
+        if self.parrot_capture_proc and self.parrot_capture_proc.poll() is None:
+            if self.parrot_capture_source == src:
+                return True
+            self._stop_parrot_capture()
+
+        self.parrot_capture_stop.clear()
+        self.parrot_capture_source=src
+        with self.parrot_capture_lock:
+            self.parrot_prebuffer.clear()
+
+        try:
+            proc=subprocess.Popen(
+                ["parec",f"--device={src}","--format=s16le","--rate=48000","--channels=1"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0
+            )
+            self.parrot_capture_proc=proc
+        except Exception as e:
+            self.parrot_capture_proc=None
+            self.log(f"Papagei: RX-Vorlaufpuffer konnte nicht gestartet werden: {e}")
+            return False
+
+        def worker():
+            proc_local=proc
+            try:
+                while not self.parrot_capture_stop.is_set() and proc_local.poll() is None:
+                    chunk=proc_local.stdout.read(4096)
+                    if not chunk:
+                        if proc_local.poll() is not None:
+                            break
+                        continue
+                    with self.parrot_capture_lock:
+                        # Während eigener Aussendungen keinen Rücklauf in den
+                        # Vorlaufpuffer aufnehmen.
+                        if (
+                            not self.parrot_playing
+                            and not self.parrot_beacon_in_progress
+                            and not self.outgoing_audio_active
+                            and not getattr(self,"dtmf_session_active",False)
+                            and not getattr(self,"dtmf_parrot_wait_rx_free",False)
+                            and not self.tx
+                        ):
+                            self.parrot_prebuffer.extend(chunk)
+                            excess=len(self.parrot_prebuffer)-self.parrot_capture_max_bytes
+                            if excess > 0:
+                                del self.parrot_prebuffer[:excess]
+
+                        if (self.parrot_recording or self.parrot_guard_buffering) and self.parrot_raw_handle:
+                            try:
+                                self.parrot_raw_handle.write(chunk)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        self.parrot_capture_thread=threading.Thread(
+            target=worker,
+            name="FunkGateway-Papagei-RX-Puffer",
+            daemon=True
+        )
+        self.parrot_capture_thread.start()
+        self.log(f"Papagei: RX-Vorlaufpuffer aktiv ({src}, max. 5 s).")
+        return True
+
+    def _stop_parrot_capture(self):
+        self.parrot_capture_stop.set()
+
+        proc=self.parrot_capture_proc
+        self.parrot_capture_proc=None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+
+        th=self.parrot_capture_thread
+        self.parrot_capture_thread=None
+        if th and th.is_alive():
+            try: th.join(timeout=1)
+            except Exception: pass
+
+        with self.parrot_capture_lock:
+            try:
+                if self.parrot_raw_handle and self.parrot_guard_buffering:
+                    self.parrot_raw_handle.close()
+            except Exception:
+                pass
+            if self.parrot_guard_buffering:
+                self.parrot_raw_handle=None
+            self.parrot_prebuffer.clear()
+        self.parrot_guard_buffering=False
+        self.parrot_guard_prebuffer_bytes=0
+        self.parrot_capture_source=None
+
+    def _parrot_prebuffer_snapshot(self):
+        wanted_ms=self.parrot_rx_prebuffer_ms.value()
+        wanted_bytes=int(96000*wanted_ms/1000)
+        if wanted_bytes <= 0:
+            return b""
+        with self.parrot_capture_lock:
+            return bytes(self.parrot_prebuffer[-wanted_bytes:])
+
+    def _parrot_begin_guard_candidate(self,now):
+        """Buffer an RX that starts inside the return-guard window."""
+        if not self._ensure_parrot_capture():
+            self.log("Papagei: Schutzfenster-RX erkannt, aber RX-Capture ist nicht verfügbar.")
+            return False
+
+        for p in (self.parrot_raw_file,self.parrot_temp_file):
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
+        pre=self._parrot_prebuffer_snapshot()
+        try:
+            self.parrot_raw_handle=open(self.parrot_raw_file,"wb")
+            if pre:
+                self.parrot_raw_handle.write(pre)
+                self.parrot_raw_handle.flush()
+        except Exception as e:
+            self.parrot_raw_handle=None
+            self.log(f"Papagei: Schutzfenster-Puffer konnte nicht geöffnet werden: {e}")
+            return False
+
+        self.parrot_guard_buffering=True
+        self.parrot_guard_prebuffer_bytes=len(pre)
+        self.return_guard_candidate=True
+        self.return_guard_rx_started=now
+        self.rx_was_active=True
+        self.rx_active_since=now
+        self.ts_commander_wanted=False
+        self.rx_status.setText("● PAPAGEI PRÜFT RÜCKLAUF")
+        self._set_big_rx_status(False,blocked=True)
+
+        delta=(now-(self.return_guard_tx_ended or now))*1000
+        self.log(
+            f"Papagei: RX innerhalb Selbstrücklauf-Schutz (+{delta:.0f} ms) – "
+            f"wird vorsorglich gepuffert ({len(pre)/96:.0f} ms Vorlauf)."
+        )
+        return True
+
+    def _parrot_discard_guard_candidate(self):
+        self.parrot_guard_buffering=False
+        with self.parrot_capture_lock:
+            try:
+                if self.parrot_raw_handle:
+                    self.parrot_raw_handle.flush()
+                    self.parrot_raw_handle.close()
+            except Exception:
+                pass
+            self.parrot_raw_handle=None
+        try:
+            if self.parrot_raw_file.exists():
+                self.parrot_raw_file.unlink()
+        except Exception:
+            pass
+        self.parrot_guard_prebuffer_bytes=0
+
+    def _parrot_promote_guard_candidate(self,now):
+        """Turn a long return-guard candidate into a normal Papagei recording."""
+        if not self.return_guard_candidate or not self.parrot_guard_buffering:
+            return False
+
+        started=self.return_guard_rx_started or now
+        duration_ms=(now-started)*1000
+        if duration_ms < self.return_real_passage_ms.value():
+            return False
+
+        # The already buffered candidate file becomes the live Papagei recording.
+        self.return_guard_candidate=False
+        self.return_guard_rx_started=None
+        self.return_guard_muted=False
+        self._refresh_rx_forward_mute()
+
+        self.parrot_guard_buffering=False
+        self.parrot_recording=True
+        self.parrot_cycle_active=True
+        self.parrot_rx_started=started
+        self.roger_pending_token += 1
+
+        self.rx_was_active=True
+        self.rx_active_since=started
+        self.rx_status.setText("● PAPAGEI NIMMT AUF")
+        self._set_big_rx_status(True)
+        self.ts_commander_wanted=False
+
+        buffered_bytes=0
+        try:
+            if self.parrot_raw_file.exists():
+                buffered_bytes=self.parrot_raw_file.stat().st_size
+        except Exception:
+            pass
+
+        self.log(
+            f"Papagei: Schutzfenster-RX ist echter Funkdurchgang "
+            f"({duration_ms:.0f} ms) – Puffer wird zur Aufnahme übernommen "
+            f"({buffered_bytes} Byte, Anfang bleibt erhalten)."
+        )
+        return True
+
+    def _abort_parrot_recording_for_dtmf_ack(self):
+        """Drop any stale Papagei capture so a mode acknowledgement has priority."""
+        if not (self.parrot_recording or self.parrot_guard_buffering):
+            with self.parrot_capture_lock:
+                self.parrot_prebuffer.clear()
+            return
+
+        self.parrot_recording=False
+        self.parrot_guard_buffering=False
+        self.parrot_cycle_active=False
+        self.parrot_rx_started=None
+        self.return_guard_candidate=False
+        self.return_guard_rx_started=None
+
+        with self.parrot_capture_lock:
+            try:
+                if self.parrot_raw_handle:
+                    self.parrot_raw_handle.flush()
+                    self.parrot_raw_handle.close()
+            except Exception:
+                pass
+            self.parrot_raw_handle=None
+            self.parrot_prebuffer.clear()
+
+        for p in (self.parrot_raw_file,self.parrot_temp_file):
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
+        self.log("Papagei: laufende/stale Aufnahme für DTMF-Vollzugsmeldung verworfen.")
+
+    def _parrot_start_recording(self):
+        if self.parrot_recording or self.parrot_playing or self.parrot_beacon_in_progress:
+            return
+
+        if not self._ensure_parrot_capture():
+            self.log("Papagei: Aufnahme abgebrochen – RX-Vorlaufpuffer nicht verfügbar.")
+            return
+
+        try:
+            if self.parrot_raw_file.exists():
+                self.parrot_raw_file.unlink()
+        except Exception:
+            pass
+        try:
+            if self.parrot_temp_file.exists():
+                self.parrot_temp_file.unlink()
+        except Exception:
+            pass
+
+        pre=self._parrot_prebuffer_snapshot()
+
+        try:
+            self.parrot_raw_handle=open(self.parrot_raw_file,"wb")
+            if pre:
+                self.parrot_raw_handle.write(pre)
+                self.parrot_raw_handle.flush()
+        except Exception as e:
+            self.parrot_raw_handle=None
+            self.log(f"Papagei: Aufnahme konnte nicht gestartet werden: {e}")
+            return
+
+        self.parrot_recording=True
+        self.parrot_cycle_active=True
+        # Alle eventuell noch geplanten normalen Rogerbeeps ungültig machen.
+        self.roger_pending_token += 1
+        self.parrot_rx_started=time.monotonic()
+        self.log(
+            f"Papagei: RX begonnen – Aufnahme gestartet "
+            f"(Vorlaufpuffer {len(pre)/96:.0f} ms / {len(pre)} Byte)."
+        )
+
+    def _parrot_stop_recording(self,reason="Funkende"):
+        if not self.parrot_recording:
+            return
+
+        self.parrot_recording=False
+        dur=(time.monotonic()-(self.parrot_rx_started or time.monotonic()))
+        self.parrot_rx_started=None
+
+        # Der kontinuierliche parec-Prozess bleibt für den nächsten Vorlaufpuffer
+        # aktiv. Nur die aktuelle Durchgangsdatei wird geschlossen.
+        with self.parrot_capture_lock:
+            try:
+                if self.parrot_raw_handle:
+                    self.parrot_raw_handle.flush()
+                    self.parrot_raw_handle.close()
+            except Exception:
+                pass
+            self.parrot_raw_handle=None
+
+        self.log(f"Papagei: Aufnahme beendet ({reason}) – erkannte RX-Dauer {dur:.1f} s.")
+
+        try:
+            raw=self.parrot_raw_file.read_bytes() if self.parrot_raw_file.exists() else b""
+            if len(raw) < 9600:
+                self.parrot_cycle_active=False
+                self.log(f"Papagei: Aufnahme zu kurz/leer ({len(raw)} Byte) – keine Rücksendung.")
+                return
+            with wave.open(str(self.parrot_temp_file),"wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(48000)
+                wf.writeframes(raw)
+            self.log(
+                f"Papagei: WAV bereit – {len(raw)} Byte Audiodaten "
+                f"(inkl. bis zu {self.parrot_rx_prebuffer_ms.value()} ms RX-Vorlauf)."
+            )
+        except Exception as e:
+            self.parrot_cycle_active=False
+            self.log(f"Papagei: WAV-Erstellung fehlgeschlagen: {e}")
+            return
+        finally:
+            try:
+                if self.parrot_raw_file.exists():
+                    self.parrot_raw_file.unlink()
+            except Exception:
+                pass
+
+        QTimer.singleShot(self.parrot_delay_ms.value(),self._parrot_playback)
+
+    def _parrot_playback(self):
+        if not self.parrot_enabled.isChecked():
+            self.parrot_cycle_active=False
+            return
+        if self.rx_was_active or self.tx or self.outgoing_audio_active or self.protection_announcement_busy:
+            QTimer.singleShot(250,self._parrot_playback)
+            return
+        if not self.parrot_temp_file.exists():
+            self.parrot_cycle_active=False
+            self.log("Papagei: Wiedergabe abgebrochen – WAV-Datei fehlt.")
+            return
+
+        self.parrot_playing=True
+        self.parrot_cycle_active=True
+        self.roger_pending_token += 1
+        self.active_tx_kind="parrot"
+        with self.parrot_capture_lock:
+            self.parrot_prebuffer.clear()
+
+        try:
+            self.set_ptt(True)
+            lead=self.parrot_lead_ms.value()
+            self.log(f"Papagei: PTT EIN – Vorlauf {lead} ms vor Wiedergabe.")
+        except Exception as e:
+            self.parrot_playing=False
+            self.parrot_cycle_active=False
+            self.log(f"Papagei: PTT konnte nicht eingeschaltet werden: {e}")
+            return
+
+        def finish_cycle():
+            # PTT bleibt bis nach optionalem Rogerbeep und Nachlauf eingeschaltet.
+            def release_ptt():
+                try:
+                    if self.tx:
+                        self.set_ptt(False)
+                except Exception as e:
+                    self.log(f"Papagei: PTT AUS fehlgeschlagen: {e}")
+                self.parrot_playing=False
+                self.parrot_cycle_active=False
+                self.log("Papagei: bereit.")
+
+            QTimer.singleShot(max(100,self.hang.value()),release_ptt)
+
+        def play_inline_roger():
+            if not self.parrot_roger.isChecked():
+                finish_cycle()
+                return
+            try:
+                sink=self.target_sink.currentData()
+                if not sink:
+                    self.log("Papagei: Rogerbeep übersprungen – kein Funkgeräte-Ausgang gewählt.")
+                    finish_cycle()
+                    return
+                path=self._prepare_roger_file()
+                volume=max(1,min(100,self.roger_volume.value()))
+                pa_volume=int(65536*volume/100)
+                self.roger_busy=True
+                proc_r=subprocess.Popen(
+                    ["paplay",f"--device={sink}",f"--volume={pa_volume}",str(path)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                self.log(f"Papagei: Rogerbeep in gleicher PTT gestartet: {self.roger_type.currentText()}")
+            except Exception as e:
+                self.roger_busy=False
+                self.log(f"Papagei: Rogerbeep fehlgeschlagen: {e}")
+                finish_cycle()
+                return
+
+            def poll_roger():
+                if proc_r.poll() is None:
+                    QTimer.singleShot(50,poll_roger)
+                    return
+                self.roger_busy=False
+                self.last_roger_time=time.monotonic()
+                self.rx_ignore_until=self.last_roger_time+(self.rx_ignore_after_roger.value()/1000.0)
+                self.log("Papagei: Rogerbeep in gleicher PTT beendet.")
+                finish_cycle()
+            QTimer.singleShot(50,poll_roger)
+
+        def start_audio():
+            if not self.parrot_enabled.isChecked():
+                self.parrot_playing=False
+                self.parrot_cycle_active=False
+                try: self.set_ptt(False)
+                except Exception: pass
+                return
+            try:
+                proc=self.play_to_virtual(self.parrot_temp_file,"parrot")
+                self.log("Papagei: Wiedergabe gestartet.")
+            except Exception as e:
+                self.parrot_playing=False
+                self.parrot_cycle_active=False
+                self.log(f"Papagei: Wiedergabe fehlgeschlagen: {e}")
+                try: self.set_ptt(False)
+                except Exception: pass
+                return
+
+            def done():
+                if proc.poll() is None:
+                    QTimer.singleShot(100,done)
+                    return
+                self.log(f"Papagei: Wiedergabe beendet (paplay Exit-Code {proc.returncode}).")
+                play_inline_roger()
+            QTimer.singleShot(100,done)
+
+        QTimer.singleShot(self.parrot_lead_ms.value(),start_audio)
+
+    def _queue_parrot_beacon(self):
+        if not self.parrot_pending_beacon:
+            self.parrot_pending_beacon=True
+            self.parrot_beacon_free_since=None
+            self.log("Papageibake fällig – wartet auf freien Funkkanal.")
+
+    def _parrot_send_beacon(self):
+        if not self.parrot_enabled.isChecked() or not self.parrot_beacon_enabled.isChecked():
+            self.parrot_pending_beacon=False
+            return
+        p=self.parrot_beacon_file.text().strip()
+        if not p:
+            self.log("Papageibake fällig, aber keine WAV-Datei gewählt.")
+            return
+        if self._parrot_channel_busy():
+            self._queue_parrot_beacon()
+            return
+
+        self.parrot_beacon_in_progress=True
+        self.parrot_pending_beacon=False
+        self.parrot_beacon_free_since=None
+        self.roger_pending_token += 1
+        self.active_tx_kind="beacon"
+        with self.parrot_capture_lock:
+            self.parrot_prebuffer.clear()
+
+        try:
+            self.set_ptt(True)
+            lead=self.parrot_beacon_lead_ms.value()
+            self.log(f"Papageibake: PTT EIN – Vorlauf {lead} ms.")
+        except Exception as e:
+            self.parrot_beacon_in_progress=False
+            self.log(f"Papageibake: PTT konnte nicht eingeschaltet werden: {e}")
+            return
+
+        def start_beacon_audio():
+            if not self.parrot_enabled.isChecked():
+                self.parrot_beacon_in_progress=False
+                try: self.set_ptt(False)
+                except Exception: pass
+                return
+            try:
+                proc=self.play_to_virtual(p,"beacon")
+                self.parrot_beacon_proc=proc
+                self.log(f"Papageibake gestartet: {Path(p).name}")
+            except Exception as e:
+                self.parrot_beacon_in_progress=False
+                self.parrot_beacon_proc=None
+                self.log(f"Papageibake fehlgeschlagen: {e}")
+                try: self.set_ptt(False)
+                except Exception: pass
+                return
+
+            def poll():
+                if proc.poll() is None:
+                    QTimer.singleShot(100,poll)
+                    return
+                self.parrot_beacon_proc=None
+                self.log("Papageibake Audio beendet – PTT-Nachlauf läuft.")
+
+                def finish():
+                    try:
+                        if self.tx:
+                            self.set_ptt(False)
+                    except Exception as e:
+                        self.log(f"Papageibake: PTT AUS fehlgeschlagen: {e}")
+                    self.parrot_beacon_in_progress=False
+                    self.parrot_last_beacon=time.monotonic()
+                    self.log(f"Papageibake beendet – Intervall neu gestartet: {self.parrot_beacon_interval.value()} Minuten.")
+                tail=max(0,self.parrot_beacon_tail_ms.value())
+                self.log(f"Papageibake: Audio vollständig beendet – PTT-Nachlauf {tail} ms.")
+                QTimer.singleShot(tail,finish)
+
+            QTimer.singleShot(100,poll)
+
+        QTimer.singleShot(self.parrot_beacon_lead_ms.value(),start_beacon_audio)
+
+    def _parrot_tick(self,now):
+        if not hasattr(self,"parrot_enabled") or not self.parrot_enabled.isChecked():
+            return
+
+        # Capture-Wächter: Stirbt parec während einer laufenden Aufnahme,
+        # wird der Durchgang verworfen statt als scheinbar vollständige WAV
+        # zurückgesendet. Neustart erfolgt erst im freien Zustand.
+        capture_dead = bool(
+            self.parrot_capture_proc is not None
+            and self.parrot_capture_proc.poll() is not None
+        )
+        if capture_dead:
+            rc=self.parrot_capture_proc.returncode
+            self.parrot_capture_proc=None
+            if self.parrot_recording or self.parrot_guard_buffering:
+                was_guard_candidate=self.parrot_guard_buffering and not self.parrot_recording
+                self.parrot_recording=False
+                self.parrot_guard_buffering=False
+                self.parrot_cycle_active=False
+                self.parrot_rx_started=None
+                self.return_guard_candidate=False
+                self.return_guard_rx_started=None
+                with self.parrot_capture_lock:
+                    try:
+                        if self.parrot_raw_handle:
+                            self.parrot_raw_handle.close()
+                    except Exception:
+                        pass
+                    self.parrot_raw_handle=None
+                try:
+                    if self.parrot_raw_file.exists():
+                        self.parrot_raw_file.unlink()
+                except Exception:
+                    pass
+                if was_guard_candidate:
+                    self.log(f"Papagei: RX-Capture während Schutzfenster-Pufferung ausgefallen (Exit-Code {rc}) – Kandidat verworfen.")
+                else:
+                    self.log(f"Papagei: RX-Capture während Aufnahme ausgefallen (Exit-Code {rc}) – Durchgang verworfen.")
+            elif not self.parrot_playing and not self.parrot_beacon_in_progress:
+                self.log(f"Papagei: RX-Vorlaufpuffer beendet (Exit-Code {rc}) – Neustart wird versucht.")
+            self.parrot_capture_fault_logged=True
+
+        if (self.parrot_capture_proc is None
+                and not self.parrot_recording
+                and not self.parrot_playing
+                and not self.parrot_beacon_in_progress):
+            if self._ensure_parrot_capture():
+                self.parrot_capture_fault_logged=False
+        if self.return_guard_candidate and self.parrot_guard_buffering and self.return_guard_rx_started is not None:
+            self._parrot_promote_guard_candidate(now)
+
+        if self.parrot_recording and self.parrot_rx_started is not None:
+            if now-self.parrot_rx_started >= self.parrot_max_seconds.value():
+                self._parrot_stop_recording("maximale Aufnahmedauer erreicht")
+        if self.parrot_beacon_enabled.isChecked() and not self.parrot_pending_beacon and not self.parrot_beacon_in_progress:
+            if now-self.parrot_last_beacon >= self.parrot_beacon_interval.value()*60:
+                self._queue_parrot_beacon()
+        if self.parrot_pending_beacon and not self.parrot_beacon_in_progress:
+            if self._parrot_channel_busy():
+                self.parrot_beacon_free_since=None
+            else:
+                if self.parrot_beacon_free_since is None:
+                    self.parrot_beacon_free_since=now
+                    self.log(f"Papageibake: Kanal frei – Freiwartezeit {self.parrot_beacon_free_wait_ms.value()} ms läuft.")
+                elif (now-self.parrot_beacon_free_since)*1000 >= self.parrot_beacon_free_wait_ms.value():
+                    self._parrot_send_beacon()
+
     def on_rx_activity(self,active):
         now=time.monotonic()
 
+        if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+            # *91# may enable Papagei while the same RF carrier is still up.
+            # IMPORTANT: this release gate must run before the pending-ACK gate.
+            # Otherwise the control carrier would remain marked active forever
+            # and "Papagei EIN" could never be transmitted.
+            if getattr(self,"dtmf_parrot_wait_rx_free",False):
+                if active:
+                    self.rx_was_active=True
+                    self.rx_active_since=now
+                    self.ts_commander_wanted=False
+                    self.rx_status.setText("● PAPAGEI WARTET AUF FUNKENDE")
+                    self._set_big_rx_status(False,blocked=True)
+                    return
+
+                self.dtmf_parrot_wait_rx_free=False
+                self.dtmf_control_rx_active=False
+                self.rx_was_active=False
+                self.rx_active_since=None
+                self.ts_commander_wanted=False
+                with self.parrot_capture_lock:
+                    self.parrot_prebuffer.clear()
+                self.rx_status.setText("● PAPAGEI WARTET AUF BESTÄTIGUNG" if getattr(self,"dtmf_mode_ack_pending",False) else "● PAPAGEI WARTET")
+                self._set_big_rx_status(False)
+                self.log("Papagei: DTMF-Steuerdurchgang beendet – Kanal für Vollzugsmeldung frei.")
+                return
+
+            # A pending mode confirmation has priority.  Do not start a new
+            # Papagei recording before "Papagei aktiv" has actually gone out.
+            if getattr(self,"dtmf_mode_ack_pending",False):
+                if active:
+                    self.rx_was_active=True
+                    self.rx_active_since=now
+                    self.ts_commander_wanted=False
+                    self.rx_status.setText("● PAPAGEI WARTET AUF BESTÄTIGUNG")
+                    self._set_big_rx_status(False,blocked=True)
+                else:
+                    self.rx_was_active=False
+                    self.rx_active_since=None
+                    self.ts_commander_wanted=False
+                    self.rx_status.setText("● PAPAGEI WARTET AUF BESTÄTIGUNG")
+                    self._set_big_rx_status(False)
+                return
+
+            # Internal acknowledgement audio must never become Papagei input.
+            if self.outgoing_audio_active:
+                return
+
+            # Eigene Papagei-/Roger-Aussendungen dürfen nach PTT AUS nicht sofort
+            # als neuer Papagei-Durchgang gelten. Anders als zuvor wird ein RX
+            # im Schutzfenster aber gepuffert, damit ein echter Funkdurchgang
+            # später vollständig übernommen werden kann.
+            if active and self.return_guard_muted and not self.return_guard_candidate:
+                if now <= self.return_guard_until:
+                    if self._parrot_begin_guard_candidate(now):
+                        return
+                    # Wenn die Pufferung ausnahmsweise nicht möglich ist,
+                    # bleibt die alte Schutzwirkung erhalten.
+                    self.return_guard_candidate=True
+                    self.return_guard_rx_started=now
+                    self.rx_was_active=True
+                    self.ts_commander_wanted=False
+                    self.log("Papagei: RX im Schutzfenster – Pufferung fehlgeschlagen, Durchgang wird nur vermessen.")
+                    return
+                self.return_guard_muted=False
+                self._refresh_rx_forward_mute()
+
+            if active and self.return_guard_candidate:
+                self.rx_was_active=True
+                self.ts_commander_wanted=False
+                # Bei einem langen Kandidaten wird normalerweise bereits der
+                # Timer hochstufen. Diese Prüfung macht das Verhalten auch bei
+                # weiteren RX-Events deterministisch.
+                self._parrot_promote_guard_candidate(now)
+                return
+
+            if (not active) and self.return_guard_candidate:
+                started=self.return_guard_rx_started or now
+                duration=(now-started)*1000
+                buffered=self.parrot_guard_buffering
+                self.return_guard_candidate=False
+                self.return_guard_rx_started=None
+                self.return_guard_muted=False                self._refresh_rx_forward_mute()
+                self.rx_was_active=False
+                self.rx_active_since=None
+                self.ts_commander_wanted=False
+                self.rx_status.setText("● PAPAGEI WARTET")
+                self._set_big_rx_status(False)
+
+                if buffered:
+                    self._parrot_discard_guard_candidate()
+
+                if duration <= self.return_max_tail_ms.value():
+                    self.log(f"Papagei: kurzer Schutzfenster-RX beendet ({duration:.0f} ms) – als Selbstrücklauf verworfen.")
+                    self._register_return_event(duration)
+                elif duration >= self.return_real_passage_ms.value():
+                    # Dieser Fall sollte nur auftreten, falls der Tick während
+                    # des Durchgangs nicht rechtzeitig zur Hochstufung kam.
+                    self.log(
+                        f"Papagei: echter Funkdurchgang im Schutzfenster endete nach {duration:.0f} ms, "
+                        f"konnte aber nicht mehr hochgestuft werden."
+                    )
+                else:
+                    self.log(f"Papagei: RX im Schutzfenster beendet ({duration:.0f} ms) – Übergangsbereich, verworfen.")
+                return
+
+            # Im Papageibetrieb übernimmt der Papagei die RX-Verarbeitung komplett.
+            # Dadurch wird der normale RX-Rogerbeep nicht zusätzlich ausgelöst.
+            if self.parrot_playing or self.parrot_beacon_in_progress:
+                return
+
+            if active:
+                self.rx_was_active=True
+                self.rx_active_since=now
+                self.rx_status.setText("● PAPAGEI NIMMT AUF")
+                self._set_big_rx_status(True)
+                self.ts_commander_wanted=False
+                if not self.parrot_recording:
+                    self._parrot_start_recording()
+                return
+
+            self.rx_was_active=False
+            self.rx_active_since=None
+            self.rx_status.setText("● PAPAGEI WARTET")
+            self._set_big_rx_status(False)
+            self.ts_commander_wanted=False
+            if self.parrot_recording:
+                self._parrot_stop_recording("Funkende")
+            return
+
+        # A DTMF control carrier is not a normal voice QSO.  When the
+        # carrier drops after *...#, release the channel explicitly and do not
+        # schedule the normal Rogerbeep.  The Vollzugsmeldung is already the
+        # acknowledgement for this control transmission.
+        if (not active) and getattr(self,"dtmf_control_rx_active",False):
+            self.dtmf_control_rx_active=False
+            self.rx_was_active=False
+            self.rx_active_since=None
+            self.ts_commander_wanted=False
+            self.roger_pending_token += 1
+            self.rx_status.setText("● FUNK RX FREI")
+            self._set_big_rx_status(False)
+            self.log("DTMF-Steuerdurchgang beendet – kein normaler Rogerbeep; Kanal für Vollzugsmeldung frei.")
+            return
+
+        # Selbstrücklauf: Nur RX, das innerhalb des Schutzfensters BEGINNT,
+        # wird blockiert. Später beginnende Funkdurchgänge bleiben unangetastet.
         if active and self.return_guard_muted and not self.return_guard_candidate:
             if now <= self.return_guard_until:
                 self.return_guard_candidate=True
@@ -2801,6 +5075,7 @@ done"""
                 self._refresh_rx_forward_mute()
 
         if active and self.return_guard_candidate:
+            # Folgemeldungen während desselben blockierten RX-Durchgangs.
             self.rx_was_active=True
             self.ts_commander_wanted=False
             return
@@ -2868,6 +5143,10 @@ done"""
         QTimer.singleShot(delay, lambda t=token:self._roger_after_delay(t))
 
     def _roger_after_delay(self,token):
+        if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+            if self.diagnostic_mode.isChecked():
+                self.log("Rogerbeep verworfen: Papageibetrieb aktiv.")
+            return
         if token != self.roger_pending_token or self.rx_was_active:
             if self.diagnostic_mode.isChecked(): self.log("Rogerbeep verworfen: neues RX-Signal erkannt.")
             return
@@ -2986,17 +5265,23 @@ done"""
                 self.rx_detector.signals.level.connect(self.rx_meter.setValue)
                 self.rx_detector.signals.db_level.connect(self.on_rx_db_level)
                 self.rx_detector.signals.activity.connect(self.on_rx_activity)
+                self.rx_detector.signals.dtmf.connect(self._on_dtmf_digit)
                 self.rx_detector.signals.error.connect(lambda e:self.log(f"RX-Erkennungsfehler: {e}"))
+                self._apply_dtmf_detector_settings()
                 self.rx_detector.start()
                 self._refresh_rx_forward_mute()
                 self.log(f"Funk-RX aktiv: {rx_source} -> FunkGateway_RX_Input, RX-Gain: {self.rx_gain.value()} dB")
+                if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+                    self._ensure_parrot_capture()
             self.save_cfg()
             if hasattr(self,"auto_route") and self.auto_route.isChecked():
                 self.auto_route_known_apps()
+            self._set_tx_forward_muted(False)
             self.log(f"Gateway gestartet. Audio-Automatik und Routing-Wächter aktiv. TX-Gain: {self.tx_gain.value()} dB")
         except Exception as e: self.show_copyable_error("Start fehlgeschlagen",str(e))
 
     def stop_gateway(self):
+        self._stop_parrot_capture()
         self.ts_commander_wanted=False
         self._set_big_rx_status(False)
         if self.rx_detector: self.rx_detector.stop(); self.rx_detector=None
@@ -3006,6 +5291,11 @@ done"""
             except Exception: pass
             self.roger_proc=None
         self.roger_busy=False; self.outgoing_audio_active=False
+        self.dtmf_session_active=False; self.dtmf_session_muted=False; self.dtmf_buffer=""
+        self.dtmf_control_rx_active=False
+        self.dtmf_ack_waiting_labels.clear()
+        self.dtmf_mode_ack_generation += 1
+        self.dtmf_mode_ack_pending=False
         if self.ptt: self.set_ptt(False)
         self.log("Gateway gestoppt.")
 
@@ -3038,11 +5328,30 @@ done"""
         if not Path(path).exists(): raise RuntimeError(f"Datei nicht gefunden: {path}")
         make_virtual_sink()
         self.tx_source_hint=kind
-        proc=subprocess.Popen(["paplay","--device=funkgateway_tx",str(path)])
+
+        isolated_parrot=bool(
+            kind in ("parrot","beacon","dtmf_ack")
+            and hasattr(self,"parrot_enabled")
+            and self.parrot_enabled.isChecked()
+            and hasattr(self,"parrot_mute_voip")
+            and self.parrot_mute_voip.isChecked()
+        )
+
+        if isolated_parrot:
+            sink=self.target_sink.currentData() if hasattr(self,"target_sink") else None
+            if not sink:
+                raise RuntimeError("Kein Funkgeräte-Ausgang für isolierte Papagei-Wiedergabe gewählt.")
+            # IMPORTANT: bypass FunkGateway_TX.monitor entirely.  That monitor
+            # contains the mixed application audio, including TeamSpeak.
+            proc=subprocess.Popen(["paplay",f"--device={sink}",str(path)])
+            self.log(f"Papagei-Isolation: interne {kind}-WAV direkt zum Funkgeräte-Ausgang gesendet.")
+        else:
+            proc=subprocess.Popen(["paplay","--device=funkgateway_tx",str(path)])
         def clear_hint():
             if proc.poll() is None:
                 QTimer.singleShot(100,clear_hint)
                 return
+            # AudioBridge/Hang darf das aktuelle TX-Ende noch mit der Quelle verknüpfen.
             QTimer.singleShot(max(300,self.hang.value()+150),lambda:self._clear_tx_source_hint(kind))
         QTimer.singleShot(100,clear_hint)
         return proc
@@ -3246,9 +5555,11 @@ done"""
             self.emergency()
             QMessageBox.warning(self,"TOT","Maximale Sendezeit erreicht. PTT wurde abgeschaltet. Details stehen im Protokoll.")
         self._return_guard_tick(now)
+        self._dtmf_tick(now)
         self._try_send_pending_id(now)
-        if self.id_auto.isChecked() and not self.pending_id and not self.id_in_progress and now-self.last_id>=self.id_interval.value()*60:
+        if (not self.parrot_enabled.isChecked()) and self.id_auto.isChecked() and not self.pending_id and not self.id_in_progress and now-self.last_id>=self.id_interval.value()*60:
             self._queue_id("Intervall erreicht")
+        self._parrot_tick(now)
 
     def save_cfg(self):
         ensure_cfg(); data={"ptt_method":self.ptt_method.currentText(),"com_port":self.selected_port(),"com_line":self.com_line.currentText(),
@@ -3257,6 +5568,7 @@ done"""
         "hang":self.hang.value(),"tx_gain_db":self.tx_gain.value(),"rx_source":self.rx_source.currentData(),"rx_threshold":self.rx_threshold.value(),"rx_hang":self.rx_hang.value(),"rx_gain_db":self.rx_gain.value(),
         "rx_hysteresis_db":self.rx_hysteresis.value(),"rx_min_signal_ms":self.rx_min_signal.value(),"rx_ignore_after_roger_ms":self.rx_ignore_after_roger.value(),
         "roger_min_free_ms":self.roger_min_free.value(),"roger_cooldown_ms":self.roger_cooldown.value(),"diagnostic_mode":self.diagnostic_mode.isChecked(),
+        "verbose_log":self.verbose_log.isChecked(),
         "roger_type":self.roger_type.currentText(),"roger_delay":self.roger_delay.value(),"roger_freq":self.roger_freq.value(),"roger_wpm":self.roger_wpm.value(),
         "roger_volume":self.roger_volume.value(),"roger_wav":self.roger_wav.text(),"id_file":self.id_file.text(),"id_interval":self.id_interval.value(),"id_record_seconds":self.id_record_seconds.value(),
         "id_auto":self.id_auto.isChecked(),"id_wait_free":self.id_wait_free.isChecked(),"id_free_wait_ms":self.id_free_wait_ms.value(),"cw_text":self.cw_text.text(),
@@ -3264,6 +5576,53 @@ done"""
         "ts_host":self.ts_host.text(),"ts_port":self.ts_port.value(),"ts_api_key":self.ts_api_key.text(),
         "mumble_enabled":self.mumble_enabled.isChecked(),"voip_hf_voice_filter":self.voip_hf_voice_filter.isChecked(),"mumble_ice_mode":self.mumble_ice_mode.currentData(),
         "mumble_ice_host":self.mumble_ice_host.text(),"mumble_ice_port":self.mumble_ice_port.value(),"mumble_ice_server_id":self.mumble_ice_server_id.value(),
+        "dtmf_enabled":self.dtmf_enabled.isChecked(),"dtmf_suppress_voip":self.dtmf_suppress_voip.isChecked(),
+        "dtmf_start_char":self.dtmf_start_char.text(),"dtmf_end_char":self.dtmf_end_char.text(),
+        "dtmf_interdigit_ms":self.dtmf_interdigit_ms.value(),"dtmf_session_max_s":self.dtmf_session_max_s.value(),
+        "dtmf_release_ms":self.dtmf_release_ms.value(),
+        "dtmf_auth_enabled":self.dtmf_auth_enabled.isChecked(),
+        "dtmf_auth_method":self.dtmf_auth_method.currentData(),
+        "dtmf_auth_prefix":self.dtmf_auth_prefix.text(),
+        "dtmf_auth_logout_code":self.dtmf_auth_logout_code.text(),
+        "dtmf_auth_valid_s":self.dtmf_auth_valid_s.value(),
+        "dtmf_auth_max_attempts":self.dtmf_auth_max_attempts.value(),
+        "dtmf_auth_lockout_s":self.dtmf_auth_lockout_s.value(),
+        "dtmf_auth_pin_salt":self.dtmf_auth_pin_salt,
+        "dtmf_auth_pin_hash":self.dtmf_auth_pin_hash,
+        "dtmf_totp_secret":self.dtmf_totp_secret,
+        "dtmf_totp_last_counter":self.dtmf_totp_last_counter,
+        "dtmf_totp_digits":self.dtmf_totp_digits.value(),
+        "dtmf_totp_period":self.dtmf_totp_period.value(),
+        "dtmf_totp_window":self.dtmf_totp_window.value(),
+        "dtmf_totp_label":self.dtmf_totp_label.text(),
+        "dtmf_totp_account":self.dtmf_totp_account.text(),
+        "dtmf_auth_success_wav":self.dtmf_auth_success_wav.text(),
+        "dtmf_auth_required_wav":self.dtmf_auth_required_wav.text(),
+        "dtmf_auth_failed_wav":self.dtmf_auth_failed_wav.text(),
+        "dtmf_auth_req_parrot":self.dtmf_auth_req_parrot.isChecked(),
+        "dtmf_auth_req_voip":self.dtmf_auth_req_voip.isChecked(),
+        "dtmf_auth_req_ts_mute":self.dtmf_auth_req_ts_mute.isChecked(),
+        "dtmf_auth_req_ts_unmute":self.dtmf_auth_req_ts_unmute.isChecked(),
+        "dtmf_auth_req_ts_deaf":self.dtmf_auth_req_ts_deaf.isChecked(),
+        "dtmf_auth_req_ts_undeaf":self.dtmf_auth_req_ts_undeaf.isChecked(),
+        "dtmf_auth_req_mumble_mute":self.dtmf_auth_req_mumble_mute.isChecked(),
+        "dtmf_auth_req_mumble_unmute":self.dtmf_auth_req_mumble_unmute.isChecked(),
+        "dtmf_auth_req_mumble_deaf":self.dtmf_auth_req_mumble_deaf.isChecked(),
+        "dtmf_auth_req_mumble_undeaf":self.dtmf_auth_req_mumble_undeaf.isChecked(),
+        "dtmf_ts_room_auth":[cb.isChecked() for cb in self.dtmf_ts_room_auth],
+        "dtmf_mumble_room_auth":[cb.isChecked() for cb in self.dtmf_mumble_room_auth],
+        "dtmf_code_parrot_on":self.dtmf_code_parrot_on.text(),"dtmf_code_voip_on":self.dtmf_code_voip_on.text(),
+        "dtmf_code_ts_mute":self.dtmf_code_ts_mute.text(),"dtmf_code_ts_unmute":self.dtmf_code_ts_unmute.text(),
+        "dtmf_code_ts_deaf":self.dtmf_code_ts_deaf.text(),"dtmf_code_ts_undeaf":self.dtmf_code_ts_undeaf.text(),
+        "dtmf_code_mumble_mute":self.dtmf_code_mumble_mute.text(),"dtmf_code_mumble_unmute":self.dtmf_code_mumble_unmute.text(),
+        "dtmf_code_mumble_deaf":self.dtmf_code_mumble_deaf.text(),"dtmf_code_mumble_undeaf":self.dtmf_code_mumble_undeaf.text(),
+        "dtmf_ack_enabled":self.dtmf_ack_enabled.isChecked(),
+        "dtmf_ack_tail_ms":self.dtmf_ack_tail_ms.value(),
+        "dtmf_ack_parrot_wav":self.dtmf_ack_parrot_wav.text(),
+        "dtmf_ack_voip_wav":self.dtmf_ack_voip_wav.text(),
+        "dtmf_ack_default_wav":self.dtmf_ack_default_wav.text(),
+        "dtmf_ts_rooms":self._save_dtmf_room_rows(self.dtmf_ts_room_rows),
+        "dtmf_mumble_rooms":self._save_dtmf_room_rows(self.dtmf_mumble_room_rows),
         "mumble_slice":self.mumble_slice.text(),"mumble_ssh_host":self.mumble_ssh_host.text(),"mumble_ssh_port":self.mumble_ssh_port.value(),
         "mumble_ssh_user":self.mumble_ssh_user.text(),"mumble_gateway_name":self.mumble_gateway_name.text(),
         "mumble_bridge_url":self.mumble_bridge_url.text(),
@@ -3285,7 +5644,14 @@ done"""
         "return_repeat_wait_ms":self.return_repeat_wait_ms.value(),"return_window_s":self.return_window_s.value(),
         "return_count_limit":self.return_count_limit.value(),"return_escalate":self.return_escalate.isChecked(),
         "return_move_rooms":self.return_move_rooms.isChecked(),"return_lost_wav":self.return_lost_wav.text(),
-        "update_check_start":self.update_check_start.isChecked()}
+        "update_check_start":self.update_check_start.isChecked(),
+        "parrot_enabled":self.parrot_enabled.isChecked(),"parrot_max_seconds":self.parrot_max_seconds.value(),
+        "parrot_rx_prebuffer_ms":self.parrot_rx_prebuffer_ms.value(),
+        "parrot_delay_ms":self.parrot_delay_ms.value(),"parrot_lead_ms":self.parrot_lead_ms.value(),"parrot_mute_voip":self.parrot_mute_voip.isChecked(),
+        "parrot_return_guard":self.parrot_return_guard.isChecked(),"parrot_roger":self.parrot_roger.isChecked(),
+        "parrot_beacon_enabled":self.parrot_beacon_enabled.isChecked(),"parrot_beacon_file":self.parrot_beacon_file.text(),
+        "parrot_beacon_interval":self.parrot_beacon_interval.value(),"parrot_beacon_free_wait_ms":self.parrot_beacon_free_wait_ms.value(),
+        "parrot_beacon_lead_ms":self.parrot_beacon_lead_ms.value(),"parrot_beacon_tail_ms":self.parrot_beacon_tail_ms.value()}
         CFG_FILE.write_text(json.dumps(data,indent=2),encoding="utf-8")
         try: CFG_FILE.chmod(0o600)
         except Exception: pass
@@ -3310,6 +5676,7 @@ done"""
             self.roger_min_free.setValue(int(d.get("roger_min_free_ms",300) or 0))
             self.roger_cooldown.setValue(int(d.get("roger_cooldown_ms",5000) or 0))
             self.diagnostic_mode.setChecked(bool(d.get("diagnostic_mode",False)))
+            self.verbose_log.setChecked(bool(d.get("verbose_log",False)))
             i=self.roger_type.findText(d.get("roger_type","Aus"));
             if i>=0: self.roger_type.setCurrentIndex(i)
             self.roger_delay.setValue(d.get("roger_delay",250)); self.roger_freq.setValue(d.get("roger_freq",800)); self.roger_wpm.setValue(d.get("roger_wpm",20))
@@ -3321,6 +5688,72 @@ done"""
             self.ts_host.setText(d.get("ts_host","127.0.0.1"))
             self.ts_port.setValue(int(d.get("ts_port",25639) or 25639))
             self.ts_api_key.setText(d.get("ts_api_key",""))
+            self.dtmf_enabled.setChecked(bool(d.get("dtmf_enabled",False)))
+            self.dtmf_suppress_voip.setChecked(bool(d.get("dtmf_suppress_voip",True)))
+            self.dtmf_start_char.setText(str(d.get("dtmf_start_char","*") or "*")[:1])
+            self.dtmf_end_char.setText(str(d.get("dtmf_end_char","#") or "#")[:1])
+            self.dtmf_interdigit_ms.setValue(int(d.get("dtmf_interdigit_ms",2000) or 2000))
+            self.dtmf_session_max_s.setValue(int(d.get("dtmf_session_max_s",10) or 10))
+            self.dtmf_release_ms.setValue(int(d.get("dtmf_release_ms",250) or 250))
+            self.dtmf_auth_enabled.setChecked(bool(d.get("dtmf_auth_enabled",False)))
+            auth_method=str(d.get("dtmf_auth_method","pin") or "pin")
+            auth_idx=self.dtmf_auth_method.findData(auth_method)
+            if auth_idx>=0: self.dtmf_auth_method.setCurrentIndex(auth_idx)
+            self.dtmf_auth_prefix.setText(d.get("dtmf_auth_prefix","*00*"))
+            self.dtmf_auth_logout_code.setText(d.get("dtmf_auth_logout_code","*00*0#"))
+            self.dtmf_auth_valid_s.setValue(int(d.get("dtmf_auth_valid_s",180) or 180))
+            self.dtmf_auth_max_attempts.setValue(int(d.get("dtmf_auth_max_attempts",3) or 3))
+            self.dtmf_auth_lockout_s.setValue(int(d.get("dtmf_auth_lockout_s",60) or 60))
+            self.dtmf_auth_pin_salt=str(d.get("dtmf_auth_pin_salt","") or "")
+            self.dtmf_auth_pin_hash=str(d.get("dtmf_auth_pin_hash","") or "")
+            self.dtmf_totp_secret=str(d.get("dtmf_totp_secret","") or "")
+            self.dtmf_totp_last_counter=int(d.get("dtmf_totp_last_counter",-1) or -1)
+            self.dtmf_totp_digits.setValue(int(d.get("dtmf_totp_digits",6) or 6))
+            self.dtmf_totp_period.setValue(int(d.get("dtmf_totp_period",30) or 30))
+            self.dtmf_totp_window.setValue(int(d.get("dtmf_totp_window",1) or 1))
+            self.dtmf_totp_label.setText(d.get("dtmf_totp_label","FunkGateway"))
+            self.dtmf_totp_account.setText(d.get("dtmf_totp_account","DTMF"))
+            self._refresh_dtmf_totp_uri()
+            self.dtmf_auth_success_wav.setText(d.get("dtmf_auth_success_wav",""))
+            self.dtmf_auth_required_wav.setText(d.get("dtmf_auth_required_wav",""))
+            self.dtmf_auth_failed_wav.setText(d.get("dtmf_auth_failed_wav",""))
+            self.dtmf_auth_req_parrot.setChecked(bool(d.get("dtmf_auth_req_parrot",True)))
+            self.dtmf_auth_req_voip.setChecked(bool(d.get("dtmf_auth_req_voip",True)))
+            self.dtmf_auth_req_ts_mute.setChecked(bool(d.get("dtmf_auth_req_ts_mute",True)))
+            self.dtmf_auth_req_ts_unmute.setChecked(bool(d.get("dtmf_auth_req_ts_unmute",True)))
+            self.dtmf_auth_req_ts_deaf.setChecked(bool(d.get("dtmf_auth_req_ts_deaf",True)))
+            self.dtmf_auth_req_ts_undeaf.setChecked(bool(d.get("dtmf_auth_req_ts_undeaf",True)))
+            self.dtmf_auth_req_mumble_mute.setChecked(bool(d.get("dtmf_auth_req_mumble_mute",True)))
+            self.dtmf_auth_req_mumble_unmute.setChecked(bool(d.get("dtmf_auth_req_mumble_unmute",True)))
+            self.dtmf_auth_req_mumble_deaf.setChecked(bool(d.get("dtmf_auth_req_mumble_deaf",True)))
+            self.dtmf_auth_req_mumble_undeaf.setChecked(bool(d.get("dtmf_auth_req_mumble_undeaf",True)))
+            ts_auth=d.get("dtmf_ts_room_auth",[True]*5)
+            mum_auth=d.get("dtmf_mumble_room_auth",[True]*5)
+            if isinstance(ts_auth,list):
+                for cb,val in zip(self.dtmf_ts_room_auth,ts_auth): cb.setChecked(bool(val))
+            if isinstance(mum_auth,list):
+                for cb,val in zip(self.dtmf_mumble_room_auth,mum_auth): cb.setChecked(bool(val))
+            if (self.dtmf_auth_method.currentData() or "pin")=="totp":
+                self.dtmf_auth_status.setText("AUTH: TOTP eingerichtet; nicht angemeldet" if self.dtmf_totp_secret else "AUTH: kein TOTP-Geheimnis")
+            else:
+                self.dtmf_auth_status.setText("AUTH: PIN gesetzt; nicht angemeldet" if self.dtmf_auth_pin_hash else "AUTH: kein PIN gesetzt")
+            self.dtmf_code_parrot_on.setText(d.get("dtmf_code_parrot_on","*91#"))
+            self.dtmf_code_voip_on.setText(d.get("dtmf_code_voip_on","*90#"))
+            self.dtmf_code_ts_mute.setText(d.get("dtmf_code_ts_mute","*51#"))
+            self.dtmf_code_ts_unmute.setText(d.get("dtmf_code_ts_unmute","*52#"))
+            self.dtmf_code_ts_deaf.setText(d.get("dtmf_code_ts_deaf","*53#"))
+            self.dtmf_code_ts_undeaf.setText(d.get("dtmf_code_ts_undeaf","*54#"))
+            self.dtmf_code_mumble_mute.setText(d.get("dtmf_code_mumble_mute","*61#"))
+            self.dtmf_code_mumble_unmute.setText(d.get("dtmf_code_mumble_unmute","*62#"))
+            self.dtmf_code_mumble_deaf.setText(d.get("dtmf_code_mumble_deaf","*63#"))
+            self.dtmf_code_mumble_undeaf.setText(d.get("dtmf_code_mumble_undeaf","*64#"))
+            self.dtmf_ack_enabled.setChecked(bool(d.get("dtmf_ack_enabled",True)))
+            self.dtmf_ack_tail_ms.setValue(int(d.get("dtmf_ack_tail_ms",2500) or 2500))
+            self.dtmf_ack_parrot_wav.setText(d.get("dtmf_ack_parrot_wav",""))
+            self.dtmf_ack_voip_wav.setText(d.get("dtmf_ack_voip_wav",""))
+            self.dtmf_ack_default_wav.setText(d.get("dtmf_ack_default_wav",""))
+            self._load_dtmf_room_rows(d.get("dtmf_ts_rooms",[]),self.dtmf_ts_room_rows,"TeamSpeak")
+            self._load_dtmf_room_rows(d.get("dtmf_mumble_rooms",[]),self.dtmf_mumble_room_rows,"Mumble")
             self.mumble_enabled.setChecked(bool(d.get("mumble_enabled",False)))
             self.voip_hf_voice_filter.setChecked(bool(d.get("voip_hf_voice_filter",True)))
             i=self.mumble_ice_mode.findData(d.get("mumble_ice_mode","off"));
@@ -3361,6 +5794,20 @@ done"""
             self.return_move_rooms.setChecked(bool(d.get("return_move_rooms",True)))
             self.return_lost_wav.setText(d.get("return_lost_wav",""))
             self.update_check_start.setChecked(bool(d.get("update_check_start",False)))
+            self.parrot_enabled.setChecked(bool(d.get("parrot_enabled",False)))
+            self.parrot_max_seconds.setValue(int(d.get("parrot_max_seconds",30) or 30))
+            self.parrot_rx_prebuffer_ms.setValue(int(d.get("parrot_rx_prebuffer_ms",1500) or 1500))
+            self.parrot_delay_ms.setValue(int(d.get("parrot_delay_ms",1000) or 1000))
+            self.parrot_lead_ms.setValue(int(d.get("parrot_lead_ms",1200) or 1200))
+            self.parrot_mute_voip.setChecked(bool(d.get("parrot_mute_voip",True)))
+            self.parrot_return_guard.setChecked(bool(d.get("parrot_return_guard",True)))
+            self.parrot_roger.setChecked(bool(d.get("parrot_roger",False)))
+            self.parrot_beacon_enabled.setChecked(bool(d.get("parrot_beacon_enabled",True)))
+            self.parrot_beacon_file.setText(d.get("parrot_beacon_file",""))
+            self.parrot_beacon_interval.setValue(int(d.get("parrot_beacon_interval",10) or 10))
+            self.parrot_beacon_free_wait_ms.setValue(int(d.get("parrot_beacon_free_wait_ms",1500) or 1500))
+            self.parrot_beacon_lead_ms.setValue(int(d.get("parrot_beacon_lead_ms",1200) or 1200))
+            self.parrot_beacon_tail_ms.setValue(int(d.get("parrot_beacon_tail_ms",800) or 800))
             rooms=d.get("protection_ts_rooms",{})
             self.protection_ts_rooms=rooms if isinstance(rooms,dict) else {}
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")

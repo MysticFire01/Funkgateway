@@ -1,14 +1,15 @@
-# FunkGateway UI 0.5.7.0 – Generic Linux
+# FunkGateway UI 0.5.9.19 – Generic Linux
 
-Installation:
+Dieses Paket enthält FunkGateway UI 0.5.9.19 für **Generic Linux**.
+
+## Installation
 
 ```bash
+chmod +x install-linux.sh
 ./install-linux.sh
 ./start.sh
 ```
 
-Der Installer erkennt nach Möglichkeit apt-get, dnf, pacman oder zypper.
-Außerhalb Debian/Ubuntu können die Paketnamen für ZeroC Ice distributionsabhängig sein.
+Optional: `./install-desktop.sh`
 
-Enthalten sind TeamSpeak/Mumble, Störungsräume, Schutzansagen, Mumble-Ice/Bridge,
-Python-Ice-Reparatur und der VoIP-HF-Sprachfilter gegen lokale Client-/Systemtöne.
+Siehe `CHANGELOG-RELEASE-0.5.9.19.md` für die Neuerungen.

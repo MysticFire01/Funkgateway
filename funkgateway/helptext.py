@@ -96,35 +96,27 @@ HELP_HTML = r"""
 
 <h3>10. Tooltips</h3>
 <p>Bei vielen neuen Schaltern und Buttons erscheint eine kurze Erklärung, wenn der Mauszeiger darüber bleibt.</p>
-
-<h3>Neu in 0.5.7.0</h3>
-<p><b>Selbstrücklauf-Schutz:</b> Unter <b>Schutz → Selbstrücklauf</b> kann eingestellt werden, nach welchen eigenen HF-Aussendungen der Rücklaufschutz startet. Die Zeiten und Ereignisgrenzen sind frei einstellbar; die Oberfläche zeigt die empfohlenen Standardwerte an.</p>
-<p>Beginnt Funk-RX innerhalb des Schutzfensters, wird dieser Durchgang bis zum Ende vermessen und zunächst nicht zu TeamSpeak/Mumble weitergegeben. Kurze Rückläufe können gezählt werden. Ein langer echter Funkdurchgang kann als verlorener Durchgang erkannt werden; optional kann danach eine WAV den Funker um Wiederholung bitten.</p>
-<p><b>Rufzeichenbake:</b> Eine fällige Bake wartet auf freien Funk- und VoIP-Betrieb. Es wird nur eine Bake vorgemerkt. Der Intervalltimer beginnt erst nach dem tatsächlichen Ende der gesendeten Bake neu.</p>
-<p><b>Scrollbare Seiten:</b> Umfangreiche Einstellungsseiten sind vertikal scrollbar, damit alle Bedienelemente auch bei kleineren Fenstern erreichbar bleiben.</p>
-<p><b>Updates:</b> Der neue Reiter <b>Updates</b> kann nach einem veröffentlichten GitHub-Release suchen, ein passendes Linux-Paket auswählen und dessen SHA256-Prüfsumme kontrollieren. Ein Update wird in einem neuen Versionsordner vorbereitet und überschreibt die laufende Installation nicht.</p>
-
 """
 
-# 0.5.6.20 note:
+# 0.5.9.19 note:
 # Mumble Ice/SSH can be stopped from the Integration/Mumble page.  The stop
 # action only terminates tunnels started by FunkGateway itself.
 
-# 0.5.6.20:
+# 0.5.9.19:
 # Mumble-Störungsraum wird bei Dauer-RX sofort betreten, auch bei offener Rauschsperre.
 # Normaler VoIP->RF-Audiopfad wird während Schutz hart stummgeschaltet.
 # Schutzansagen werden seriell abgespielt; Mumble-Systemtöne können nicht in RF leaken.
 # Ice-Port kann lokal/per SSH automatisch aus Murmur-Konfiguration erkannt werden.
 # Venv kann automatisch mit --system-site-packages repariert werden.
 
-# 0.5.6.20 UI-Struktur:
+# 0.5.9.19 UI-Struktur:
 # Schutz -> Allgemein: gemeinsame Dauer-RX-/Wiederanlauf-Logik.
 # Schutz -> Ansagen: integrationsneutrale WAVs und Wiederholungsintervall.
 # Integrationen -> TeamSpeak: TeamSpeak-Störungsraum und automatischer Raumwechsel.
 # Integrationen -> Mumble: Mumble-Störungsraum und automatischer Raumwechsel.
 # Damit liegen Integrationsdetails nicht mehr gemischt im allgemeinen Schutzbereich.
 
-# 0.5.6.20:
+# 0.5.9.19:
 # - Mumble-Raumwechsel-Schutz: der lokale Mumble-Wiedergabestream wird für 8 s
 #   gezielt stummgeschaltet, damit Channel-/Systemtöne oder eine kurze Audio-
 #   Rückkopplung nicht die Funk-PTT auslösen. Danach wird nur Mumble wieder
@@ -136,7 +128,7 @@ HELP_HTML = r"""
 # - Venv-Reparatur läuft im Hintergrund; Qt bleibt reaktionsfähig und Linux sollte
 #   deshalb kein "Warten oder Beenden" mehr anzeigen.
 
-# 0.5.6.20:
+# 0.5.9.19:
 # - Neuer integrationsneutraler "VoIP-HF-Sprachfilter" (Standard: EIN).
 # - Wenn am FunkGateway_TX ausschließlich TeamSpeak/Mumble hängen, wird PTT
 #   nur freigegeben, wenn der jeweilige Client live einen echten Sprecher meldet.
@@ -146,8 +138,7 @@ HELP_HTML = r"""
 # - Sind andere/nicht-VoIP Programme an FunkGateway_TX angeschlossen, bleibt
 #   das generische FunkGateway-Verhalten erhalten.
 
-
-# 0.5.7.0:
+# 0.5.9.19:
 # - Alle Einstellungsseiten sind vertikal scrollfähig.
 # - Neuer Selbstrücklauf-Schutz mit frei einstellbaren Standardwerten und
 #   getrennten Triggern für VoIP, Bake, Rogerbeep, Schutzansagen und manuelle TX.
@@ -156,3 +147,129 @@ HELP_HTML = r"""
 # - Rufzeichenbaken warten auf wirklich freien Funk-/VoIP-Weg. Es gibt nur eine
 #   fällige Bake; der Intervalltimer startet erst nach tatsächlichem Bake-Ende.
 # - Neue GitHub-Update-Seite mit Releaseprüfung, Paketwahl und SHA256-Prüfung.
+
+# 0.5.9.19:
+# - Neuer Papagei-/Echotest-Modus.
+# - Funkdurchgang wird aufgenommen und nach Funkende zeitversetzt über HF zurückgesendet.
+# - Maximale Aufnahmedauer und Wiedergabeverzögerung sind frei einstellbar.
+# - VoIP kann während Papageibetrieb stummgeschaltet werden.
+# - Eigene Papageibake ersetzt im Papageibetrieb die normale Rufzeichenbake.
+# - Papageibake wartet auf freien Kanal und startet ihren Intervalltimer erst nach tatsächlichem Ende neu.
+
+# 0.5.9.19:
+# - Papagei schaltet PTT jetzt vor der WAV-Wiedergabe ein.
+# - Eigene PTT-Vorlaufzeit für Papagei frei einstellbar (Standard: 1200 ms).
+# - Damit wird der Anfang der Echo-Wiedergabe nicht mehr verschluckt.
+
+# 0.5.9.19:
+# - Neuer RX-Vorlaufpuffer für den Papagei (Standard 1500 ms, 0–5000 ms).
+# - Der Puffer merkt sich RX-Audio bereits vor der eigentlichen Funkerkennung.
+# - So wird der Anfang kurzer Wörter oder Zahlen beim Echo nicht abgeschnitten.
+# - RX-Vorlaufpuffer und PTT-Vorlauf sind getrennte Einstellungen.
+
+# 0.5.9.19:
+# - Papagei arbeitet während eines Durchgangs exklusiv; VoIP und normale Rogerbeeps funken nicht dazwischen.
+# - Optionaler Papagei-Rogerbeep bleibt in derselben PTT-Aussendung.
+# - Papageibake schaltet PTT jetzt vor ihrer WAV ein; eigener Vorlauf einstellbar.
+# - Selbstrücklauf-Schutz gilt auch vor einer neuen Papagei-Aufnahme.
+# - Capture-Wächter verwirft unvollständige Aufnahmen bei einem parec-Ausfall.
+
+# 0.5.9.19:
+# - Papagei puffert RX, der noch innerhalb des Selbstrücklauf-Schutzfensters beginnt.
+# - Kurze Signale bleiben Rücklauf; lange Signale werden ab der Schwelle "echter Durchgang" zur Papagei-Aufnahme hochgestuft.
+# - Der Anfang bleibt durch Vorlauf- und Kandidatenpuffer vollständig erhalten.
+
+# 0.5.9.19:
+# - Eigener PTT-Nachlauf für die Papageibake (Standard 800 ms, 0–5000 ms).
+# - Bake-Ablauf: PTT EIN -> Vorlauf -> WAV -> Nachlauf -> PTT AUS.
+# - Verhindert abgeschnittene Enden der Papageibaken-WAV.
+
+# 0.5.9.19:
+# - Neue DTMF-Fernsteuerung aus echtem Funk-RX.
+# - * startet standardmäßig die DTMF-Steuersitzung, # beendet sie.
+# - DTMF-Töne werden intern erkannt und standardmäßig nicht nach VoIP übertragen.
+# - Frei definierbare Codes für Papagei/VoIP, TS/Mumble Mute/Deaf und Raumwechsel.
+# - Raumlisten kommen aus TeamSpeak ClientQuery bzw. Mumble Ice/SSH.
+
+# 0.5.9.19:
+# - DTMF-Erkennung robuster, insbesondere für die Ziffer 4.
+# - Exakte Goertzel-Frequenzen statt gerundeter 20-Hz-Bins.
+# - Größere Toleranz für unterschiedliche DTMF-Tonpegel über Funk.
+
+# 0.5.9.19:
+# - Neuer PDF-Export im DTMF-Reiter.
+# - Druckfertige A4-Liste mit allen aktuellen DTMF-Codes und Raumzielen.
+
+# 0.5.9.19:
+# - DTMF-Vollzugsmeldungen über Funk.
+# - Separate WAVs für „Papagei aktiv“ und „Gateway/VoIP aktiv“.
+# - Optionale Standard-WAV für sonstige DTMF-Befehle.
+
+# 0.5.9.19:
+# - Hotfix für die WAV-Auswahl der DTMF-Vollzugsmeldungen.
+# - Die drei Dateiauswahl-Buttons verwenden jetzt den vorhandenen WAV-Dateidialog.
+
+# 0.5.9.19:
+# - Hotfix für feste DTMF-Codes nach Einführung der Funk-Vollzugsmeldungen.
+# - DTMF-Sitzungen werden bei Fehlern jetzt immer sauber beendet.
+
+# 0.5.9.19:
+# - Hotfix: DTMF-Vollzugsmeldung wartete wegen falscher PTT-Zustandsprüfung endlos.
+# - Sendestatus wird jetzt korrekt über self.tx ausgewertet.
+
+# 0.5.9.19:
+# - Optionale DTMF-PIN-AUTH mit zeitlich begrenzter Freigabe.
+# - PIN gehasht gespeichert, in Logs maskiert, Fehlversuchs-Sperre.
+# - AUTH-Pflicht pro Funktion und pro Raumwechsel einstellbar.
+
+# 0.5.9.19:
+# - TOTP als zweites DTMF-AUTH-Verfahren.
+# - Authenticator-kompatible otpauth-URI.
+# - Replay-Schutz, 6–8 Stellen, Zeitraum/Toleranz einstellbar.
+
+# 0.5.9.19:
+# - Sicherheitsabfrage vor dem Überschreiben eines vorhandenen TOTP-Geheimnisses.
+# - Standardantwort Nein; bei Abbruch bleibt die bestehende Authenticator-Einrichtung gültig.
+
+# 0.5.9.19: TOTP-QR-Code lokal mit qrencode anzeigen.
+
+# 0.5.9.19:
+# - *91# wird beim Einschalten des Papageis nicht mehr mit aufgenommen.
+# - „Papagei aktiv“ wartet auf echtes Funkende.
+# - Interne DTMF-Vollzugsmeldungen gelangen nicht in den Papagei-Vorlaufpuffer.
+
+# 0.5.9.19:
+# - DTMF-Steuerdurchgänge lösen keinen normalen Rogerbeep mehr aus.
+# - Vollzugsmeldungen warten auf echte RX/TX-Aktivität, nicht auf rx_was_active.
+# - Wartelog entprellt; neuester Betriebsartbefehl verwirft ältere wartende Mode-ACKs.
+
+# 0.5.9.19:
+# - Betriebsart-Vollzugsmeldungen haben Vorrang vor neuen Papagei-Aufnahmen.
+# - Papagei startet erst nach „Papagei aktiv“ wieder eine Aufnahme.
+
+# 0.5.9.19:
+# - Reihenfolge im *91#-Übergang korrigiert.
+# - Funkende des DTMF-Steuerdurchgangs wird vor der Pending-ACK-Sperre verarbeitet.
+# - „Papagei aktiv“ kann dadurch direkt nach Funkende senden.
+
+# 0.5.9.19:
+# - DTMF-Vollzugsmeldungen halten PTT bis zum tatsächlichen Ende von paplay.
+# - 500-ms-Tail startet erst nach Ende der WAV; längere „Papagei aktiv“-WAVs werden nicht mehr abgeschnitten.
+
+# 0.5.9.19:
+# - Einstellbarer PTT-Nachlauf für DTMF-Vollzugsmeldungen.
+# - Standard 2500 ms, um gepuffertes Audio im virtuellen Audio-Pfad nicht abzuschneiden.
+
+# 0.5.9.19:
+# - VoIP-Wiedergabestreams werden im Papageibetrieb tatsächlich auf FunkGateway_TX stummgeschaltet.
+# - Verhindert TeamSpeak/Mumble-Audio, das sich während Papagei/Bake/ACK in eine HF-Aussendung mischt.
+
+# 0.5.9.19:
+# - Harte Papagei-Audio-Isolation: kompletter FunkGateway_TX-Monitor zum Funkgerät stumm.
+# - Papagei/Bake/DTMF-ACK laufen im Papageibetrieb direkt zum Funkgeräte-Ausgang.
+# - Verhindert Mischbetrieb mit laufendem TeamSpeak/Mumble auf HF.
+
+# 0.5.9.19:
+# - Protokollansicht standardmäßig kompakt.
+# - Checkbox „Ausführliches Log“ blendet technische Detailmeldungen ein.
+# - Die Logdatei auf der Festplatte bleibt immer vollständig.

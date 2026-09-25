@@ -138,6 +138,7 @@ def download_and_prepare(release, asset, install_parent: Path):
         top_names = [n.split("/", 1)[0] for n in z.namelist() if n and not n.startswith("/")]
         top = top_names[0] if top_names and all(x == top_names[0] for x in top_names) else None
 
+        # Path-traversal guard.
         for member in z.infolist():
             rp = Path(member.filename)
             if rp.is_absolute() or ".." in rp.parts:

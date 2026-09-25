@@ -464,6 +464,22 @@ class TeamSpeakClientQuery:
             raise RuntimeError(err_msg or f"clientmove Fehler {err_id}")
         return True
 
+    def set_input_muted(self, enabled: bool):
+        """Mute/unmute the local TeamSpeak gateway client's microphone."""
+        value="1" if enabled else "0"
+        lines,err_id,err_msg=self.command(f"clientupdate client_input_muted={value}")
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"TeamSpeak Mikrofon-Mute Fehler {err_id}")
+        return True
+
+    def set_output_muted(self, enabled: bool):
+        """Deafen/undeafen the local TeamSpeak gateway client's playback."""
+        value="1" if enabled else "0"
+        lines,err_id,err_msg=self.command(f"clientupdate client_output_muted={value}")
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"TeamSpeak Ausgabe-Mute Fehler {err_id}")
+        return True
+
     def set_channel_commander(self, enabled: bool):
         value = "1" if enabled else "0"
         # ClientQuery / server versions have historically exposed both spellings.
