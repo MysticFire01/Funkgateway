@@ -1,8 +1,8 @@
-# FunkGateway UI 0.5.9.21
+# FunkGateway UI 0.5.9.22
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.21**
+**Aktueller stabiler Feldtest-Stand: 0.5.9.22**
 
 ## Highlights
 
@@ -26,7 +26,7 @@
 
 ## Mitgelieferte Standard-WAVs
 
-Ab **0.5.9.21** enthalten die Release-Pakete im Ordner `default_wavs/` generische deutsche Ansagen für alle 13 WAV-Slots.
+Ab **0.5.9.22** enthalten die Release-Pakete im Ordner `default_wavs/` generische deutsche Ansagen für alle 13 WAV-Slots.
 
 Beim Programmstart werden diese Standarddateien **nur in leere WAV-Felder** eingetragen. Bereits konfigurierte eigene Ansagen bleiben unverändert und werden nicht überschrieben. Jede Standardansage kann jederzeit über **„WAV auswählen“** durch eine eigene Datei ersetzt werden.
 
@@ -110,11 +110,19 @@ chmod +x install-ubuntu-24.04.sh
 ./start.sh
 ```
 
+## Schnellstarter
+
+`install-desktop.sh` erzeugt den stabilen Menüeintrag `~/.local/share/applications/funkgateway-ui.desktop`.
+
+Ab **0.5.9.22** werden dabei alte lokale FunkGateway-Starter automatisch entfernt. Bereits angeheftete alte GNOME-FunkGateway-Favoriten werden auf die stabile Desktop-ID umgestellt und entdoppelt. Anschließend wird nach Möglichkeit `update-desktop-database` ausgeführt.
+
+Damit zeigt der Drawer/Dash nach einem Update auf den aktuellen Installationsordner. Andere Desktop-Dateien werden nicht verändert.
+
 ## Update-Funktion
 
 FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht und vor der Installation geprüft.
 
-Ab **0.5.9.21** kann der Updater nach dem Download außerdem:
+Ab **0.5.9.22** kann der Updater nach dem Download außerdem:
 
 - verlorene ZIP-Ausführungsrechte der Shell-Skripte automatisch wiederherstellen,
 - den passenden Distributions-Installer in einem sichtbaren Terminal starten,
