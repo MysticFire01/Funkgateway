@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP_VERSION="0.5.6.20"
+APP_VERSION="0.5.7.0"
 echo "============================================================"
 echo " FunkGateway UI ${APP_VERSION} - Generic Linux Installer"
 echo "============================================================"
