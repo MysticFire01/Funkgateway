@@ -1008,9 +1008,13 @@ class MainWindow(QMainWindow):
             self.gateway_state_big.setText("GATEWAY AKTIV")
             self.gateway_state_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 2px solid #555; border-radius: 8px;")
 
-    def _set_rx_forward_muted(self, muted):
+    def _refresh_rx_forward_mute(self):
+        muted=bool(self.protection_muted or self.return_guard_muted)
         if self.rx_detector and hasattr(self.rx_detector,"set_output_muted"):
-            self.rx_detector.set_output_muted(bool(muted))
+            self.rx_detector.set_output_muted(muted)
+
+    def _set_rx_forward_muted(self, muted):
+        self._refresh_rx_forward_mute()
 
     def _set_tx_forward_muted(self, muted):
         if self.bridge and hasattr(self.bridge,"set_output_muted"):
@@ -1032,6 +1036,7 @@ class MainWindow(QMainWindow):
         try:
             if not self.ptt: self.create_ptt()
             self.protection_announcement_busy=True
+            self.active_tx_kind="protection"
             self.set_ptt(True)
             proc=subprocess.Popen(
                 ["paplay",f"--device={sink}",str(p)],
@@ -1064,7 +1069,7 @@ class MainWindow(QMainWindow):
             return
         self.protection_muted=True; self.protection_reason=reason; self.protection_rx_free_since=None
         self.ts_commander_wanted=False
-        self._set_rx_forward_muted(True)
+        self._refresh_rx_forward_mute()
         self._set_tx_forward_muted(True)
         if self.ptt and not self.protection_announcement_busy:
             self.set_ptt(False)
@@ -1079,7 +1084,7 @@ class MainWindow(QMainWindow):
             return
         old=self.protection_reason
         self.protection_muted=False; self.protection_reason=""; self.protection_unmute_due=None; self.protection_waiting_for_rx_free=False; self.protection_rx_free_since=None
-        self._set_rx_forward_muted(False)
+        self._refresh_rx_forward_mute()
         self._set_tx_forward_muted(False)
         self.ts_commander_wanted=bool(self.rx_was_active)
         self._set_gateway_protection_display()
@@ -1175,7 +1180,7 @@ class MainWindow(QMainWindow):
         # In safe mode RX must stay continuously free for the configured time
         # and the measured level must remain below the dedicated protection
         # free threshold. Any new RX activity or excessive level resets the timer.
-        if self.protection_muted and self.protection_reason == "Dauer-RX" and self.protection_unmute_due and now >= self.protection_unmute_due:
+        if self.protection_muted and self.protection_reason in ("Dauer-RX","Selbstrücklauf") and self.protection_unmute_due and now >= self.protection_unmute_due:
             if not self.protection_waiting_for_rx_free:
                 self.unmute_gateway("Dauer-RX-Automatik")
             else:
@@ -1195,7 +1200,7 @@ class MainWindow(QMainWindow):
                     self.protection_rx_free_since=None
                     self._set_big_rx_status(bool(self.rx_was_active))
         # Repeat room announcement for automatically entered TeamSpeak/Mumble rooms.
-        if (self.protection_muted and self.protection_reason == "Dauer-RX"
+        if (self.protection_muted and self.protection_reason in ("Dauer-RX","Selbstrücklauf")
                 and (self.protection_auto_move_active or self.protection_mumble_auto_move_active)
                 and self.protect_room_repeat.isChecked()
                 and self.protection_last_room_announcement
@@ -2469,6 +2474,34 @@ done"""
         elif method=="CM108/CM119 GPIO": self.ptt=CM108PTT(self.cm_dev.text().strip(),3,self.invert.isChecked())
         else: self.ptt=GPIOPTT(self.gpio_chip.text().strip(),self.gpio_line.value(),self.invert.isChecked())
 
+    def _return_guard_kind_enabled(self,kind):
+        if not self.return_guard_enabled.isChecked():
+            return False
+        mapping={
+            "voip":self.return_after_voip,
+            "beacon":self.return_after_beacon,
+            "roger":self.return_after_roger,
+            "protection":self.return_after_protection,
+            "manual":self.return_after_manual,
+        }
+        box=mapping.get(kind)
+        return bool(box and box.isChecked())
+
+    def _start_return_guard(self,kind):
+        if not kind or not self._return_guard_kind_enabled(kind):
+            return
+        ms=self.return_guard_ms.value()
+        if ms <= 0:
+            return
+        now=time.monotonic()
+        self.return_guard_tx_ended=now
+        self.return_guard_until=now+(ms/1000.0)
+        self.return_guard_candidate=False
+        self.return_guard_rx_started=None
+        self.return_guard_muted=True
+        self._refresh_rx_forward_mute()
+        self.log(f"Selbstrücklauf-Schutz gestartet nach {kind}: RX→VoIP für neue RX-Starts {ms} ms geschützt (Standard: 3500 ms).")
+
     def set_ptt(self,on):
         if self.tx==on: return
         try:
@@ -2476,8 +2509,12 @@ done"""
                 self.ptt.key(True); self.tx=True; self.tx_since=time.monotonic(); self.tx_lbl.setText("● PTT EIN / TX"); self.log("PTT EIN")
                 time.sleep(self.lead.value()/1000)
             else:
+                ending_kind=self.active_tx_kind if not on else None
                 self.ptt.key(on); self.tx=on; self.tx_since=time.monotonic() if on else None
                 self.tx_lbl.setText("● PTT EIN / TX" if on else "● PTT AUS"); self.log("PTT EIN" if on else "PTT AUS")
+                if not on:
+                    self._start_return_guard(ending_kind)
+                    self.active_tx_kind=None
         except Exception as e: self.log(f"PTT-Fehler: {e}"); self.show_copyable_error("PTT-Fehler",str(e))
 
     def _tx_sink_index(self):
@@ -2637,6 +2674,7 @@ done"""
                     self.voip_hf_last_decision=detail
                 return
             self.voip_hf_last_decision=""
+            self.active_tx_kind=self.tx_source_hint or "voip"
         self.set_ptt(active)
 
     def on_tx_clipping(self,percent):
@@ -2657,7 +2695,7 @@ done"""
         # This avoids the misleading situation where the start page says
         # "FUNK KANAL FREI" although the gateway is intentionally still muted.
         if self.protection_muted:
-            if self.protection_reason == "Dauer-RX":
+            if self.protection_reason in ("Dauer-RX","Selbstrücklauf"):
                 if active:
                     text="STÖRUNG WEITERHIN VORHANDEN"
                     border="#9b1c1c"
@@ -2695,13 +2733,99 @@ done"""
         # A level above the protection-free threshold invalidates an in-progress
         # safe-unmute free period even if RX briefly reported "frei".
         if (self.protection_waiting_for_rx_free and self.protection_muted and
-                self.protection_reason == "Dauer-RX" and
+                self.protection_reason in ("Dauer-RX","Selbstrücklauf") and
                 self.rx_last_db > self.protect_free_threshold.value()):
             self.protection_rx_free_since=None
             self._set_big_rx_status(bool(self.rx_was_active))
 
+    def _return_guard_tick(self,now):
+        if not self.return_guard_muted:
+            return
+        if self.return_guard_candidate:
+            return
+        if now >= self.return_guard_until:
+            self.return_guard_muted=False
+            self._refresh_rx_forward_mute()
+            if self.diagnostic_mode.isChecked():
+                self.log("Selbstrücklauf-Schutz beendet: kein RX innerhalb des Schutzfensters.")
+
+    def _register_return_event(self,duration_ms):
+        now=time.monotonic()
+        window=self.return_window_s.value()
+        self.return_events=[t for t in self.return_events if now-t <= window]
+        self.return_events.append(now)
+        count=len(self.return_events)
+        self.log(f"Selbstrücklauf erkannt: RX-Dauer {duration_ms:.0f} ms – Ereignis {count}/{self.return_count_limit.value()} innerhalb {window} s.")
+        if self.return_escalate.isChecked() and count >= self.return_count_limit.value() and not self.protection_muted:
+            self.return_events.clear()
+            self.mute_gateway("Selbstrücklauf",self.protect_mute_wav.text())
+            if self.return_move_rooms.isChecked():
+                ts_moved=self._auto_move_to_disturbance_room()
+                mumble_moved=self._auto_move_to_mumble_disturbance_room()
+                if ts_moved or mumble_moved:
+                    self.protection_last_room_announcement=now
+                    if self.protect_room_wav.text().strip():
+                        self.play_protection_announcement(self.protect_room_wav.text(),"Gateway im Störungsraum")
+            if self.protect_auto_unmute.isChecked():
+                self.protection_unmute_due=now+self.protect_unmute_seconds.value()
+                self.protection_waiting_for_rx_free=self.protect_require_rx_free.isChecked()
+
+    def _announce_lost_passage(self):
+        p=self.return_lost_wav.text().strip()
+        if not p:
+            self.log("Verlorener Durchgang: keine Hinweis-WAV gewählt; keine HF-Ansage gesendet.")
+            return
+        if self.rx_was_active or self.tx or self.outgoing_audio_active:
+            QTimer.singleShot(500,self._announce_lost_passage)
+            return
+        self.log("Verlorener Durchgang: Wiederholungsansage wird über HF gesendet.")
+        self.play_protection_announcement(p,"Durchgang nicht übertragen – bitte wiederholen")
+
     def on_rx_activity(self,active):
         now=time.monotonic()
+
+        if active and self.return_guard_muted and not self.return_guard_candidate:
+            if now <= self.return_guard_until:
+                self.return_guard_candidate=True
+                self.return_guard_rx_started=now
+                self._refresh_rx_forward_mute()
+                self.rx_was_active=True
+                self.rx_status.setText("● FUNK RX / RÜCKLAUFSCHUTZ")
+                self._set_big_rx_status(False,blocked=True)
+                self.ts_commander_wanted=False
+                delta=(now-(self.return_guard_tx_ended or now))*1000
+                self.log(f"RX innerhalb Selbstrücklauf-Schutz begonnen (+{delta:.0f} ms) – kompletter Durchgang wird vermessen.")
+                return
+            else:
+                self.return_guard_muted=False
+                self._refresh_rx_forward_mute()
+
+        if active and self.return_guard_candidate:
+            self.rx_was_active=True
+            self.ts_commander_wanted=False
+            return
+
+        if (not active) and self.return_guard_candidate:
+            started=self.return_guard_rx_started or now
+            duration=(now-started)*1000
+            self.return_guard_candidate=False
+            self.return_guard_rx_started=None
+            self.return_guard_muted=False
+            self._refresh_rx_forward_mute()
+            self.rx_was_active=False
+            self.rx_active_since=None
+            self.ts_commander_wanted=False
+            self.rx_status.setText("● FUNK RX FREI")
+            self._set_big_rx_status(False)
+            if duration <= self.return_max_tail_ms.value():
+                self._register_return_event(duration)
+            elif duration >= self.return_real_passage_ms.value():
+                self.log(f"Echter Funkdurchgang während Selbstrücklauf-Schutz erkannt: {duration:.0f} ms – nicht zu VoIP übertragen.")
+                QTimer.singleShot(self.return_repeat_wait_ms.value(),self._announce_lost_passage)
+            else:
+                self.log(f"RX während Selbstrücklauf-Schutz beendet: {duration:.0f} ms – Übergangsbereich, nicht als Rücklauf gezählt.")
+            return
+
         if self.roger_busy or now < self.rx_ignore_until:
             if hasattr(self,"diagnostic_mode") and self.diagnostic_mode.isChecked():
                 self.log("RX-Ereignis während Rogerbeep/Sperrzeit ignoriert.")
@@ -2727,7 +2851,7 @@ done"""
         self.rx_active_since=None
         # In Dauer-RX safe mode a single "frei" event no longer unlocks the
         # protection. _protection_tick() requires a continuous stable free time.
-        if self.protection_waiting_for_rx_free and self.protection_muted and self.protection_reason == "Dauer-RX":
+        if self.protection_waiting_for_rx_free and self.protection_muted and self.protection_reason in ("Dauer-RX","Selbstrücklauf"):
             self.protection_rx_free_since=now
         self._set_big_rx_status(False)
         if not self.rx_was_active:
@@ -2786,6 +2910,7 @@ done"""
             path=self._prepare_roger_file()
             self.roger_busy=True
             self.rx_was_active=False
+            self.active_tx_kind="roger"
             self.set_ptt(True)
             volume=max(1,min(100,self.roger_volume.value()))
             pa_volume=int(65536*volume/100)
@@ -2863,7 +2988,7 @@ done"""
                 self.rx_detector.signals.activity.connect(self.on_rx_activity)
                 self.rx_detector.signals.error.connect(lambda e:self.log(f"RX-Erkennungsfehler: {e}"))
                 self.rx_detector.start()
-                self._set_rx_forward_muted(self.protection_muted)
+                self._refresh_rx_forward_mute()
                 self.log(f"Funk-RX aktiv: {rx_source} -> FunkGateway_RX_Input, RX-Gain: {self.rx_gain.value()} dB")
             self.save_cfg()
             if hasattr(self,"auto_route") and self.auto_route.isChecked():
@@ -2909,9 +3034,22 @@ done"""
     def choose_id(self):
         p,_=QFileDialog.getOpenFileName(self,"Rufzeichen-WAV wählen","","WAV (*.wav)")
         if p: self.id_file.setText(p); self.save_cfg()
-    def play_to_virtual(self,path):
+    def play_to_virtual(self,path,kind="manual"):
         if not Path(path).exists(): raise RuntimeError(f"Datei nicht gefunden: {path}")
-        make_virtual_sink(); subprocess.Popen(["paplay","--device=funkgateway_tx",str(path)])
+        make_virtual_sink()
+        self.tx_source_hint=kind
+        proc=subprocess.Popen(["paplay","--device=funkgateway_tx",str(path)])
+        def clear_hint():
+            if proc.poll() is None:
+                QTimer.singleShot(100,clear_hint)
+                return
+            QTimer.singleShot(max(300,self.hang.value()+150),lambda:self._clear_tx_source_hint(kind))
+        QTimer.singleShot(100,clear_hint)
+        return proc
+
+    def _clear_tx_source_hint(self,kind):
+        if self.tx_source_hint == kind:
+            self.tx_source_hint=None
 
     def record_id(self):
         """Record the callsign announcement from the selected Pulse source."""
@@ -3022,18 +3160,68 @@ done"""
         if not p or not Path(p).exists(): QMessageBox.warning(self,"Rufzeichen","Bitte zuerst eine gültige Rufzeichendatei auswählen oder aufnehmen."); return
         subprocess.Popen(["paplay",p])
 
+    def _id_channel_busy(self):
+        return bool(
+            self.tx or self.outgoing_audio_active or self.rx_was_active
+            or self.roger_busy or self.protection_announcement_busy
+            or self.protection_muted or self.return_guard_muted or self.cos_manual.isChecked()
+        )
+
+    def _queue_id(self,reason="Intervall"):
+        if not self.pending_id:
+            self.pending_id=True
+            self.id_channel_free_since=None
+            self.log(f"Rufzeichenbake fällig ({reason}) – wartet auf freien Funk-/VoIP-Weg.")
+
     def send_id(self):
         p=self.id_file.text().strip()
-        if not p: QMessageBox.warning(self,"Rufzeichen","Bitte zuerst eine WAV-Datei auswählen."); return
-        if self.id_wait_free.isChecked() and self.cos_manual.isChecked(): self.pending_id=True; self.log("Rufzeichenausgabe wartet auf freien Kanal."); return
-        try: self.play_to_virtual(p); self.last_id=time.monotonic(); self.pending_id=False; self.log(f"Rufzeichenausgabe gestartet: {Path(p).name}")
-        except Exception as e: self.show_copyable_error("Rufzeichen",str(e))
+        if not p:
+            QMessageBox.warning(self,"Rufzeichen","Bitte zuerst eine WAV-Datei auswählen.")
+            return
+        if self.id_in_progress:
+            return
+        if self.id_wait_free.isChecked() and self._id_channel_busy():
+            self._queue_id("manuell")
+            return
+        try:
+            self.id_in_progress=True
+            self.pending_id=False
+            self.id_channel_free_since=None
+            proc=self.play_to_virtual(p,"beacon")
+            self.id_proc=proc
+            self.log(f"Rufzeichenbake gestartet: {Path(p).name}")
+            def poll_id():
+                if proc.poll() is None:
+                    QTimer.singleShot(100,poll_id)
+                    return
+                self.id_in_progress=False
+                self.id_proc=None
+                self.last_id=time.monotonic()
+                self.log(f"Rufzeichenbake beendet – Intervall neu gestartet: {self.id_interval.value()} Minuten.")
+            QTimer.singleShot(100,poll_id)
+        except Exception as e:
+            self.id_in_progress=False
+            self.id_proc=None
+            self.show_copyable_error("Rufzeichen",str(e))
+
+    def _try_send_pending_id(self,now):
+        if not self.pending_id or self.id_in_progress:
+            return
+        if self._id_channel_busy():
+            self.id_channel_free_since=None
+            return
+        if self.id_channel_free_since is None:
+            self.id_channel_free_since=now
+            self.log(f"Rufzeichenbake: Kanal frei – Freiwartezeit {self.id_free_wait_ms.value()} ms läuft.")
+            return
+        if (now-self.id_channel_free_since)*1000 >= self.id_free_wait_ms.value():
+            self.send_id()
 
     def send_cw(self):
-        try: make_cw(self.cw_text.text(),CW_FILE,self.cw_wpm.value(),self.cw_freq.value()); self.play_to_virtual(CW_FILE); self.log(f"CW gesendet: {self.cw_text.text()}")
+        try: make_cw(self.cw_text.text(),CW_FILE,self.cw_wpm.value(),self.cw_freq.value()); self.play_to_virtual(CW_FILE,"manual"); self.log(f"CW gesendet: {self.cw_text.text()}")
         except Exception as e: self.show_copyable_error("CW",str(e))
     def send_dtmf(self):
-        try: make_dtmf(self.dtmf_text.text(),DTMF_FILE); self.play_to_virtual(DTMF_FILE); self.log(f"DTMF gesendet: {self.dtmf_text.text()}")
+        try: make_dtmf(self.dtmf_text.text(),DTMF_FILE); self.play_to_virtual(DTMF_FILE,"manual"); self.log(f"DTMF gesendet: {self.dtmf_text.text()}")
         except Exception as e: self.show_copyable_error("DTMF",str(e))
 
     def tick(self):
@@ -3057,10 +3245,10 @@ done"""
             self.log(f"TOT: maximale Sendezeit überschritten nach {tx_duration:.1f} s. Aktiv auf FunkGateway_TX: {detail}")
             self.emergency()
             QMessageBox.warning(self,"TOT","Maximale Sendezeit erreicht. PTT wurde abgeschaltet. Details stehen im Protokoll.")
-        if self.pending_id and not self.cos_manual.isChecked(): self.send_id()
-        if self.id_auto.isChecked() and time.monotonic()-self.last_id>=self.id_interval.value()*60:
-            if self.id_wait_free.isChecked() and self.cos_manual.isChecked(): self.pending_id=True
-            else: self.send_id()
+        self._return_guard_tick(now)
+        self._try_send_pending_id(now)
+        if self.id_auto.isChecked() and not self.pending_id and not self.id_in_progress and now-self.last_id>=self.id_interval.value()*60:
+            self._queue_id("Intervall erreicht")
 
     def save_cfg(self):
         ensure_cfg(); data={"ptt_method":self.ptt_method.currentText(),"com_port":self.selected_port(),"com_line":self.com_line.currentText(),
