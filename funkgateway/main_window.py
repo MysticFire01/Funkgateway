@@ -38,7 +38,7 @@ from .tones import make_cw, make_dtmf, make_roger_tone
 from .helptext import HELP_HTML
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
-from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare
+from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 
 
 class MainWindow(QMainWindow):
@@ -1291,9 +1291,25 @@ class MainWindow(QMainWindow):
         self.update_check_start=QCheckBox("Beim Programmstart nach Updates suchen")
         self.update_check_start.setChecked(False)
 
+        self.update_auto_install=QCheckBox("Nach Download automatisch installieren")
+        self.update_auto_install.setChecked(True)
+        self.update_auto_install.setToolTip(
+            "Nach erfolgreicher SHA256-Prüfung wird der passende Installer in einem Terminal "
+            "gestartet. Falls sudo benötigt wird, kann dort das Passwort eingegeben werden."
+        )
+
+        self.update_desktop_shortcut=QCheckBox("Schnellstarter auf neue Version aktualisieren")
+        self.update_desktop_shortcut.setChecked(True)
+        self.update_desktop_shortcut.setToolTip(
+            "Nach erfolgreicher Installation wird install-desktop.sh ausgeführt und der "
+            "Menü-/Schnellstarter auf den neuen Versionsordner gesetzt."
+        )
+        self.update_desktop_shortcut.setEnabled(True)
+        self.update_auto_install.toggled.connect(self.update_desktop_shortcut.setEnabled)
+
         check=QPushButton("Nach Updates suchen")
         check.clicked.connect(self.check_for_updates)
-        prepare=QPushButton("Update herunterladen und vorbereiten")
+        prepare=QPushButton("Update herunterladen / installieren")
         prepare.clicked.connect(self.prepare_update)
         self.update_prepare_btn=prepare
         self.update_prepare_btn.setEnabled(False)
@@ -1302,9 +1318,13 @@ class MainWindow(QMainWindow):
         release.clicked.connect(lambda:webbrowser.open("https://github.com/MysticFire01/Funkgateway/releases"))
 
         note=QLabel(
-            "Sicherheit: Ein Update wird nur vorbereitet, wenn Gateway/PTT nicht aktiv sind. "
-            "Das ZIP wird per SHA256 geprüft und in einen neuen Versionsordner entpackt; die "
-            "laufende Installation wird nicht überschrieben. ~/.config/funkgateway-ui bleibt erhalten."
+            "Sicherheit: Ein Update startet nur, wenn Gateway/PTT nicht aktiv sind. "
+            "Das ZIP wird per SHA256 geprüft und in einen neuen Versionsordner entpackt. "
+            "Ausführbare .sh-Dateien erhalten automatisch ihre Ausführungsrechte. Bei aktivierter "
+            "Auto-Installation wird danach der passende Distributions-Installer in einem Terminal "
+            "gestartet; sudo kann dort nach dem Passwort fragen. Optional wird install-desktop.sh "
+            "ausgeführt und der Schnellstarter auf die neue Version gesetzt. Die bisherige Version "
+            "wird nicht überschrieben und ~/.config/funkgateway-ui bleibt erhalten."
         ); note.setWordWrap(True)
 
         f.addRow("",self.update_current)
@@ -1312,6 +1332,8 @@ class MainWindow(QMainWindow):
         f.addRow("",self.update_asset)
         f.addRow("",self.update_status)
         f.addRow("",self.update_check_start)
+        f.addRow("",self.update_auto_install)
+        f.addRow("",self.update_desktop_shortcut)
         f.addRow(check)
         f.addRow(prepare)
         f.addRow(release)
@@ -1362,20 +1384,84 @@ class MainWindow(QMainWindow):
             self.check_for_updates()
             if not self.latest_release or not self.latest_release_asset:
                 return
+        auto_install=bool(self.update_auto_install.isChecked())
+        desktop_shortcut=bool(
+            auto_install and self.update_desktop_shortcut.isChecked()
+        )
+
+        if auto_install:
+            answer=QMessageBox.question(
+                self,
+                "Update installieren",
+                "Das Update wird heruntergeladen, per SHA256 geprüft und in einen neuen "
+                "Versionsordner entpackt. Anschließend wird der passende Installer in "
+                "einem Terminal gestartet.\n\n"
+                "Falls sudo benötigt wird, kann dort das Passwort abgefragt werden.\n"
+                + (
+                    "Danach wird der Schnellstarter auf die neue Version aktualisiert.\n\n"
+                    if desktop_shortcut else
+                    "Der Schnellstarter wird nicht verändert.\n\n"
+                )
+                + "Fortfahren?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
         try:
             install_root=Path(__file__).resolve().parents[1]
-            result=download_and_prepare(self.latest_release,self.latest_release_asset,install_root.parent)
-            self.update_status.setText(
-                "Update geprüft und vorbereitet. Neue Version liegt in:\n" + result["target"]
+            result=download_and_prepare(
+                self.latest_release,
+                self.latest_release_asset,
+                install_root.parent
             )
-            self.log(f"Update vorbereitet: {result['asset']} -> {result['target']} (SHA256 {result['sha256']})")
-            QMessageBox.information(
-                self,"Update vorbereitet",
-                "Das Update wurde heruntergeladen, per SHA256 geprüft und in einen neuen "
-                "Versionsordner entpackt.\n\n"
-                f"Neue Installation:\n{result['target']}\n\n"
-                "Die aktuelle Installation wurde nicht überschrieben."
+            rights=len(result.get("executable_files") or [])
+            self.log(
+                f"Update vorbereitet: {result['asset']} -> {result['target']} "
+                f"(SHA256 {result['sha256']}, Ausführungsrechte gesetzt: {rights})"
             )
+
+            if auto_install:
+                launched=launch_update_installer(
+                    Path(result["target"]),
+                    install_desktop=desktop_shortcut
+                )
+                self.update_status.setText(
+                    "Update geprüft und entpackt. Installer wurde im Terminal gestartet:\n"
+                    + result["target"]
+                )
+                self.log(
+                    "Update-Installer gestartet: "
+                    f"{launched['installer']} über {launched['terminal_command']}; "
+                    f"Schnellstarter={'JA' if launched['desktop'] else 'NEIN'}"
+                )
+                QMessageBox.information(
+                    self,
+                    "Update-Installation gestartet",
+                    "Das Update wurde erfolgreich heruntergeladen, per SHA256 geprüft und "
+                    "entpackt. Die Skriptrechte wurden gesetzt.\n\n"
+                    "Der Installer läuft jetzt in einem Terminal. Bitte dort eine mögliche "
+                    "sudo-Passwortabfrage bestätigen.\n\n"
+                    + (
+                        "Nach erfolgreicher Installation wird der Schnellstarter automatisch "
+                        "auf die neue Version gesetzt."
+                        if desktop_shortcut else
+                        "Der Schnellstarter bleibt unverändert."
+                    )
+                )
+            else:
+                self.update_status.setText(
+                    "Update geprüft und vorbereitet. Neue Version liegt in:\n" + result["target"]
+                )
+                QMessageBox.information(
+                    self,
+                    "Update vorbereitet",
+                    "Das Update wurde heruntergeladen, per SHA256 geprüft und in einen neuen "
+                    "Versionsordner entpackt. Die Ausführungsrechte der Skripte wurden gesetzt.\n\n"
+                    f"Neue Installation:\n{result['target']}\n\n"
+                    "Die aktuelle Installation wurde nicht überschrieben."
+                )
         except Exception as e:
             self.show_copyable_error("Update vorbereiten",str(e))
 
@@ -5650,6 +5736,8 @@ done"""
         "return_count_limit":self.return_count_limit.value(),"return_escalate":self.return_escalate.isChecked(),
         "return_move_rooms":self.return_move_rooms.isChecked(),"return_lost_wav":self.return_lost_wav.text(),
         "update_check_start":self.update_check_start.isChecked(),
+        "update_auto_install":self.update_auto_install.isChecked(),
+        "update_desktop_shortcut":self.update_desktop_shortcut.isChecked(),
         "parrot_enabled":self.parrot_enabled.isChecked(),"parrot_max_seconds":self.parrot_max_seconds.value(),
         "parrot_rx_prebuffer_ms":self.parrot_rx_prebuffer_ms.value(),
         "parrot_delay_ms":self.parrot_delay_ms.value(),"parrot_lead_ms":self.parrot_lead_ms.value(),"parrot_mute_voip":self.parrot_mute_voip.isChecked(),
@@ -5799,6 +5887,9 @@ done"""
             self.return_move_rooms.setChecked(bool(d.get("return_move_rooms",True)))
             self.return_lost_wav.setText(d.get("return_lost_wav",""))
             self.update_check_start.setChecked(bool(d.get("update_check_start",False)))
+            self.update_auto_install.setChecked(bool(d.get("update_auto_install",True)))
+            self.update_desktop_shortcut.setChecked(bool(d.get("update_desktop_shortcut",True)))
+            self.update_desktop_shortcut.setEnabled(self.update_auto_install.isChecked())
             self.parrot_enabled.setChecked(bool(d.get("parrot_enabled",False)))
             self.parrot_max_seconds.setValue(int(d.get("parrot_max_seconds",30) or 30))
             self.parrot_rx_prebuffer_ms.setValue(int(d.get("parrot_rx_prebuffer_ms",1500) or 1500))
