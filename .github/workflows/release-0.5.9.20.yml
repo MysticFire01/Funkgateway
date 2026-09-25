@@ -1,0 +1,214 @@
+name: Release FunkGateway UI 0.5.9.20
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release-0.5.9.20.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: |
+          python3 -m compileall -q funkgateway main.py
+
+      - name: Build distribution ZIPs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, zipfile, hashlib, os
+
+          version="0.5.9.20"
+          root=Path.cwd()
+          work=root/"_release_build"
+          dist=root/"dist"
+          shutil.rmtree(work,ignore_errors=True)
+          shutil.rmtree(dist,ignore_errors=True)
+          work.mkdir()
+          dist.mkdir()
+
+          targets=[
+              ("Generic-Linux",None,None,"Generic Linux"),
+              ("Ubuntu22.04-LTS","ubuntu","22.04","Ubuntu 22.04 LTS"),
+              ("Ubuntu24.04-LTS","ubuntu","24.04","Ubuntu 24.04 LTS"),
+              ("Ubuntu26.04-LTS","ubuntu","26.04","Ubuntu 26.04 LTS"),
+              ("Debian12","debian","12","Debian 12"),
+              ("Debian13","debian","13","Debian 13"),
+          ]
+
+          def copy_source(dst):
+              for item in root.iterdir():
+                  if item.name in {".git",".github","_release_build","dist"}:
+                      continue
+                  target=dst/item.name
+                  if item.is_dir():
+                      shutil.copytree(item,target)
+                  else:
+                      shutil.copy2(item,target)
+
+          def distro_installer(target_id,target_version,label,alias):
+              return f"""#!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          APP_VERSION="{version}"
+          TARGET_ID="{target_id}"
+          TARGET_VERSION="{target_version}"
+          TARGET_LABEL="{label}"
+
+          echo "FunkGateway UI $APP_VERSION - $TARGET_LABEL"
+          if [[ -r /etc/os-release ]]; then
+            . /etc/os-release
+            if [[ "$ID" != "$TARGET_ID" || "$VERSION_ID" != "$TARGET_VERSION" ]]; then
+              echo "HINWEIS: Paket fuer $TARGET_LABEL; erkannt: $PRETTY_NAME"
+            fi
+          fi
+
+          command -v apt-get >/dev/null 2>&1 || {{ echo "FEHLER: apt-get fehlt."; exit 1; }}
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-venv python3-pip python3-serial \
+            pulseaudio-utils libportaudio2 libsndfile1 libgl1 libegl1 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 qrencode
+          sudo apt-get install -y python3-zeroc-ice zeroc-ice-slice openssh-client || true
+          sudo apt-get install -y gpiod python3-libgpiod || true
+
+          if [[ ! -d .venv ]]; then
+            python3 -m venv --system-site-packages .venv
+          elif /usr/bin/python3 -c 'import Ice' >/dev/null 2>&1 && ! .venv/bin/python -c 'import Ice' >/dev/null 2>&1; then
+            ./repair-venv.sh
+          fi
+
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel
+          .venv/bin/python -m pip install "PySide6>=6.5,<6.9" "sounddevice>=0.4,<0.6" "soundfile>=0.12,<0.14" "pyserial>=3.5,<4"
+
+          for cmd in pactl parec pacat paplay; do
+            command -v "$cmd" >/dev/null 2>&1 || {{ echo "FEHLER: $cmd fehlt."; exit 1; }}
+          done
+
+          chmod +x start.sh install.sh "{alias}" install-desktop.sh repair-venv.sh
+          mkdir -p "$HOME/.config/funkgateway-ui"
+          echo "Installation abgeschlossen. Start: ./start.sh"
+          """
+
+          generic=(root/"install-linux.sh").read_text(encoding="utf-8")
+
+          all_sha=[]
+          for name,target_id,target_ver,label in targets:
+              dirname=f"FunkGateway-UI-{version}-{name}"
+              pkg=work/dirname
+              pkg.mkdir()
+              copy_source(pkg)
+
+              for p in list(pkg.glob("install-ubuntu-*.sh"))+list(pkg.glob("install-debian-*.sh")):
+                  p.unlink()
+              for p in list(pkg.glob("README-UBUNTU*.md"))+list(pkg.glob("README-DEBIAN*.md")):
+                  p.unlink()
+
+              if name=="Generic-Linux":
+                  (pkg/"install-linux.sh").write_text(generic,encoding="utf-8")
+                  (pkg/"install.sh").write_text(generic,encoding="utf-8")
+                  readme_name="README-GENERIC-LINUX.md"
+                  installer_name="install-linux.sh"
+              else:
+                  if target_id=="ubuntu":
+                      installer_name=f"install-ubuntu-{target_ver}.sh"
+                      readme_name=f"README-UBUNTU{target_ver}-LTS.md"
+                  else:
+                      installer_name=f"install-debian-{target_ver}.sh"
+                      readme_name=f"README-DEBIAN{target_ver}.md"
+                  script=distro_installer(target_id,target_ver,label,installer_name)
+                  (pkg/installer_name).write_text(script,encoding="utf-8")
+                  (pkg/"install.sh").write_text(script,encoding="utf-8")
+
+              (pkg/readme_name).write_text(
+                  f"# FunkGateway UI {version} – {label}\n\n"
+                  f"Installation: `./{installer_name}`\n\n"
+                  "Danach: `./start.sh`\n",
+                  encoding="utf-8"
+              )
+
+              for sh in pkg.glob("*.sh"):
+                  sh.chmod(0o755)
+
+              zp=dist/f"{dirname}.zip"
+              with zipfile.ZipFile(zp,"w",zipfile.ZIP_DEFLATED) as z:
+                  for p in pkg.rglob("*"):
+                      if p.is_file() and "__pycache__" not in p.parts:
+                          arc=Path(dirname)/p.relative_to(pkg)
+                          info=zipfile.ZipInfo.from_file(p,arcname=str(arc))
+                          info.compress_type=zipfile.ZIP_DEFLATED
+                          with p.open("rb") as f:
+                              z.writestr(info,f.read())
+
+              with zipfile.ZipFile(zp) as z:
+                  bad=z.testzip()
+                  if bad:
+                      raise RuntimeError(f"ZIP integrity error: {bad}")
+
+              sha=hashlib.sha256(zp.read_bytes()).hexdigest()
+              (dist/f"{zp.name}.sha256").write_text(f"{sha}  {zp.name}\n",encoding="utf-8")
+              all_sha.append(f"{sha}  {zp.name}")
+
+          (dist/f"FunkGateway-UI-{version}-ALL-SHA256.txt").write_text("\n".join(all_sha)+"\n",encoding="utf-8")
+          shutil.copy2(root/"CHANGELOG.md",dist/f"CHANGELOG-FunkGateway-{version}.md")
+          print("\n".join(all_sha))
+          PY
+
+      - name: Prepare release notes
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          # FunkGateway UI 0.5.9.20
+
+          Funktions- und Stabilitätsrelease des 0.5.9.x-Zweigs mit automatisierter Update-Installation.
+
+          ## Highlights
+          - DTMF-Fernsteuerung mit Papagei/VoIP-Umschaltung und frei belegbaren TeamSpeak-/Mumble-Befehlen
+          - optionale PIN- oder TOTP-Authentifizierung
+          - lokaler TOTP-QR-Code und Replay-Schutz
+          - DTMF-Vollzugsmeldungen mit vollständiger WAV-Wiedergabe und einstellbarem PTT-Nachlauf
+          - stabilisierte Papagei-Übergänge und DTMF-Steuerdurchgänge
+          - harte Audio-Isolation zwischen laufendem VoIP und Papagei-HF-Audio
+          - kompakte Protokollansicht plus optionales ausführliches Diagnose-Log
+          - automatische Update-Installation im Terminal mit gesetzten Skriptrechten
+          - optionales automatisches Aktualisieren des Schnellstarters
+          - SHA256-Prüfsummen für alle Update-Pakete
+
+          ## Pakete
+          - Generic Linux
+          - Ubuntu 22.04 LTS
+          - Ubuntu 24.04 LTS
+          - Ubuntu 26.04 LTS
+          - Debian 12
+          - Debian 13
+
+          Vollständige Details stehen im CHANGELOG.
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v0.5.9.20" >/dev/null 2>&1; then
+            echo "Release v0.5.9.20 existiert bereits."
+            exit 0
+          fi
+          gh release create "v0.5.9.20"             dist/*             --repo "${{ github.repository }}"             --target "${{ github.sha }}"             --title "FunkGateway UI 0.5.9.20"             --notes-file RELEASE_NOTES.md
+
+# Trigger release workflow after registration.
+
+# Workflow fix: avoid nested shell parameter expansion inside Python f-string.
+
+# Fix shell variables inside Python f-string.
