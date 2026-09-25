@@ -6,7 +6,9 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 import zipfile
@@ -111,6 +113,155 @@ def _expected_sha256(release, asset):
     return None
 
 
+def _make_update_scripts_executable(target: Path):
+    """Restore executable bits that can be lost by ZIP extraction."""
+    target = Path(target)
+    changed = []
+    candidates = []
+    candidates.extend(target.rglob("*.sh"))
+    for name in ("start.sh", "install.sh", "install-desktop.sh", "repair-venv.sh"):
+        p = target / name
+        if p.exists():
+            candidates.append(p)
+
+    seen = set()
+    for p in candidates:
+        try:
+            p = p.resolve()
+        except Exception:
+            continue
+        if p in seen or not p.is_file():
+            continue
+        seen.add(p)
+        mode = p.stat().st_mode
+        new_mode = mode | 0o111
+        if new_mode != mode:
+            p.chmod(new_mode)
+            changed.append(str(p))
+    return changed
+
+
+def find_preferred_installer(target: Path):
+    """Return the distro-specific installer in an extracted release."""
+    target = Path(target)
+    osr = _os_release()
+    os_id = osr.get("ID", "").lower()
+    ver = osr.get("VERSION_ID", "")
+
+    names = []
+    if os_id == "ubuntu" and ver:
+        names.append(f"install-ubuntu-{ver}.sh")
+    if os_id == "debian" and ver:
+        names.append(f"install-debian-{ver}.sh")
+    names.extend(("install-linux.sh", "install.sh"))
+
+    for name in names:
+        p = target / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _terminal_command(script_path: Path):
+    """Build a command for a commonly available graphical terminal."""
+    script = str(Path(script_path))
+    terminals = (
+        ("gnome-terminal", ["gnome-terminal", "--", "bash", script]),
+        ("kgx", ["kgx", "--", "bash", script]),
+        ("konsole", ["konsole", "-e", "bash", script]),
+        ("xfce4-terminal", ["xfce4-terminal", "--command", f"bash {shlex.quote(script)}"]),
+        ("mate-terminal", ["mate-terminal", "--", "bash", script]),
+        ("x-terminal-emulator", ["x-terminal-emulator", "-e", "bash", script]),
+        ("xterm", ["xterm", "-e", "bash", script]),
+    )
+    for binary, cmd in terminals:
+        if shutil.which(binary):
+            return cmd
+    return None
+
+
+def create_update_install_launcher(target: Path, install_desktop=True):
+    """Create a launcher that runs installer + optional desktop shortcut."""
+    target = Path(target)
+    installer = find_preferred_installer(target)
+    if not installer:
+        raise RuntimeError(
+            "Im neuen Versionsordner wurde kein passendes Installationsskript gefunden."
+        )
+
+    launcher = target / ".funkgateway-update-install.sh"
+    desktop_cmd = "./install-desktop.sh" if install_desktop else ":"
+
+    content = f"""#!/usr/bin/env bash
+set -u
+cd {shlex.quote(str(target))}
+
+echo "============================================================"
+echo " FunkGateway UI – Update-Installation"
+echo "============================================================"
+echo
+echo "Neue Version:"
+echo "  {str(target)}"
+echo
+echo "Installer:"
+echo "  ./{installer.name}"
+echo
+echo "Falls erforderlich, fragt sudo jetzt nach dem Passwort."
+echo
+
+if ./{shlex.quote(installer.name)}; then
+    echo
+    echo "FunkGateway-Installation erfolgreich."
+else
+    rc=$?
+    echo
+    echo "FEHLER: Installationsskript wurde mit Exit-Code $rc beendet."
+    echo
+    read -r -p "Enter zum Schliessen ..." _
+    exit "$rc"
+fi
+
+if {desktop_cmd}; then
+    {"echo 'Schnellstarter wurde auf die neue Version aktualisiert.'" if install_desktop else "echo 'Schnellstarter wurde nicht geändert.'"}
+else
+    rc=$?
+    echo
+    echo "WARNUNG: Schnellstarter konnte nicht aktualisiert werden (Exit-Code $rc)."
+fi
+
+echo
+echo "Update-Installation abgeschlossen."
+echo "Die bisherige Version wurde nicht gelöscht."
+echo
+read -r -p "Enter zum Schliessen ..." _
+"""
+    launcher.write_text(content, encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher, installer
+
+
+def launch_update_installer(target: Path, install_desktop=True):
+    """Open the prepared installer in a terminal so sudo can prompt normally."""
+    target = Path(target)
+    _make_update_scripts_executable(target)
+    launcher, installer = create_update_install_launcher(
+        target, install_desktop=install_desktop
+    )
+    cmd = _terminal_command(launcher)
+    if not cmd:
+        raise RuntimeError(
+            "Kein unterstütztes grafisches Terminal gefunden. "
+            f"Bitte manuell ausführen: cd {target} && ./{installer.name}"
+        )
+    subprocess.Popen(cmd, start_new_session=True)
+    return {
+        "launcher": str(launcher),
+        "installer": str(installer),
+        "terminal_command": cmd[0],
+        "desktop": bool(install_desktop),
+    }
+
+
 def download_and_prepare(release, asset, install_parent: Path):
     cache = Path.home() / ".cache" / "funkgateway-ui" / "updates"
     cache.mkdir(parents=True, exist_ok=True)
@@ -177,9 +328,12 @@ def download_and_prepare(release, asset, install_parent: Path):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    executable_files = _make_update_scripts_executable(target)
+
     return {
         "zip_path": str(zip_path),
         "target": str(target),
         "sha256": actual,
         "asset": asset["name"],
+        "executable_files": executable_files,
     }
