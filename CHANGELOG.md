@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.9.22 – Schnellstarter-Bereinigung
+- `install-desktop.sh` bereinigt vor dem Anlegen des aktuellen Starters alte lokale FunkGateway-Desktopdateien unter `~/.local/share/applications/`.
+- Entfernt werden nur eindeutig als FunkGateway erkannte Starter.
+- Der stabile Desktop-Dateiname bleibt `funkgateway-ui.desktop`.
+- Bereits angeheftete alte GNOME-FunkGateway-Favoriten werden auf `funkgateway-ui.desktop` umgebogen und entdoppelt.
+- `update-desktop-database` wird nach Möglichkeit automatisch ausgeführt.
+- Der aktuelle Starter zeigt immer auf den Installationsordner der gerade installierten Version.
+- Andere Desktop-Dateien werden nicht verändert.
+- Falls GNOME ein altes Symbol noch im Cache hält, weist das Skript auf einmaliges Ab- und Anmelden hin.
+
 ## 0.5.9.21 – Mitgelieferte Standard-WAVs
 - Release-Pakete enthalten jetzt 13 generische deutsche WAV-Ansagen im Ordner `default_wavs/`.
 - Leere WAV-Slots werden beim Programmstart automatisch mit den passenden Standarddateien vorbelegt.
