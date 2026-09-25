@@ -1,8 +1,8 @@
-# FunkGateway UI 0.5.9.19
+# FunkGateway UI 0.5.9.20
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.19**
+**Aktueller stabiler Feldtest-Stand: 0.5.9.20**
 
 ## Highlights
 
@@ -105,7 +105,16 @@ chmod +x install-ubuntu-24.04.sh
 
 ## Update-Funktion
 
-FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht, damit Downloads vor der Installation geprüft werden können.
+FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht und vor der Installation geprüft.
+
+Ab **0.5.9.20** kann der Updater nach dem Download außerdem:
+
+- verlorene ZIP-Ausführungsrechte der Shell-Skripte automatisch wiederherstellen,
+- den passenden Distributions-Installer in einem sichtbaren Terminal starten,
+- eine notwendige `sudo`-Passwortabfrage normal im Terminal zulassen,
+- anschließend optional `install-desktop.sh` ausführen und den Schnellstarter auf den neuen Versionsordner setzen.
+
+Die bisherige Installation bleibt als Rückfallmöglichkeit erhalten und `~/.config/funkgateway-ui` wird weiterverwendet.
 
 ## Sicherheit
 
