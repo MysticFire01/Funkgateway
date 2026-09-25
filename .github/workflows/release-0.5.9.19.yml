@@ -206,3 +206,5 @@ jobs:
           gh release create "v0.5.9.19"             dist/*             --repo "${{ github.repository }}"             --target "${{ github.sha }}"             --title "FunkGateway UI 0.5.9.19"             --notes-file RELEASE_NOTES.md
 
 # Trigger release workflow after registration.
+
+# Workflow fix: avoid nested shell parameter expansion inside Python f-string.
