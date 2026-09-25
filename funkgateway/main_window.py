@@ -998,6 +998,7 @@ class MainWindow(QMainWindow):
         self.dtmf_code_voip_on=QLineEdit("*90#")
         f.addRow("Papagei EIN:",self.dtmf_code_parrot_on)
         f.addRow("Normaler VoIP-Betrieb:",self.dtmf_code_voip_on)
+
         f.addRow(QLabel("<b>TeamSpeak – lokaler Gateway-Client</b>"))
         self.dtmf_code_ts_mute=QLineEdit("*51#")
         self.dtmf_code_ts_unmute=QLineEdit("*52#")
@@ -1996,6 +1997,7 @@ class MainWindow(QMainWindow):
             self.dtmf_mode_ack_pending=True
             if kind=="parrot":
                 self._abort_parrot_recording_for_dtmf_ack()
+
         delay=max(300,self.dtmf_release_ms.value()+100)
         self.log(f"DTMF-Vollzugsmeldung vorgemerkt: {label} in {delay} ms.")
         QTimer.singleShot(
@@ -2995,7 +2997,8 @@ class MainWindow(QMainWindow):
                 target=f"{user}@{host}" if user else host
                 remote_cmd="""for f in \
 \"$HOME/MumbleFunk/murmur.ini\" \
-\"$HOME/murmur.ini\" \\"/etc/mumble-server.ini\" \
+\"$HOME/murmur.ini\" \
+\"/etc/mumble-server.ini\" \
 \"/etc/mumble-server/mumble-server.ini\" \
 \"/etc/murmur.ini\"; do
   if [ -r \"$f\" ]; then
@@ -3995,6 +3998,7 @@ done"""
         self.return_guard_muted=True
         self._refresh_rx_forward_mute()
         self.log(f"Selbstrücklauf-Schutz gestartet nach {kind}: RX→VoIP für neue RX-Starts {ms} ms geschützt (Standard: 3500 ms).")
+
     def set_ptt(self,on):
         if self.tx==on: return
         try:
@@ -4993,7 +4997,8 @@ done"""
                 buffered=self.parrot_guard_buffering
                 self.return_guard_candidate=False
                 self.return_guard_rx_started=None
-                self.return_guard_muted=False                self._refresh_rx_forward_mute()
+                self.return_guard_muted=False
+                self._refresh_rx_forward_mute()
                 self.rx_was_active=False
                 self.rx_active_since=None
                 self.ts_commander_wanted=False
