@@ -3259,7 +3259,7 @@ done"""
         "roger_min_free_ms":self.roger_min_free.value(),"roger_cooldown_ms":self.roger_cooldown.value(),"diagnostic_mode":self.diagnostic_mode.isChecked(),
         "roger_type":self.roger_type.currentText(),"roger_delay":self.roger_delay.value(),"roger_freq":self.roger_freq.value(),"roger_wpm":self.roger_wpm.value(),
         "roger_volume":self.roger_volume.value(),"roger_wav":self.roger_wav.text(),"id_file":self.id_file.text(),"id_interval":self.id_interval.value(),"id_record_seconds":self.id_record_seconds.value(),
-        "id_auto":self.id_auto.isChecked(),"id_wait_free":self.id_wait_free.isChecked(),"cw_text":self.cw_text.text(),
+        "id_auto":self.id_auto.isChecked(),"id_wait_free":self.id_wait_free.isChecked(),"id_free_wait_ms":self.id_free_wait_ms.value(),"cw_text":self.cw_text.text(),
         "ts_enabled":self.ts_enabled.isChecked(),"ts_commander_enabled":self.ts_commander_enabled.isChecked(),
         "ts_host":self.ts_host.text(),"ts_port":self.ts_port.value(),"ts_api_key":self.ts_api_key.text(),
         "mumble_enabled":self.mumble_enabled.isChecked(),"voip_hf_voice_filter":self.voip_hf_voice_filter.isChecked(),"mumble_ice_mode":self.mumble_ice_mode.currentData(),
@@ -3276,7 +3276,16 @@ done"""
         "protect_return_mumble_channel":self.protect_return_mumble_channel.isChecked(),"protect_room_enabled":self.protect_room_enabled.isChecked(),
         "protect_room_repeat":self.protect_room_repeat.isChecked(),"protect_room_repeat_min":self.protect_room_repeat_min.value(),
         "protect_mute_wav":self.protect_mute_wav.text(),"protect_room_wav":self.protect_room_wav.text(),
-        "protect_restore_wav":self.protect_restore_wav.text(),"protection_ts_rooms":self.protection_ts_rooms}
+        "protect_restore_wav":self.protect_restore_wav.text(),"protection_ts_rooms":self.protection_ts_rooms,
+        "return_guard_enabled":self.return_guard_enabled.isChecked(),
+        "return_after_voip":self.return_after_voip.isChecked(),"return_after_beacon":self.return_after_beacon.isChecked(),
+        "return_after_roger":self.return_after_roger.isChecked(),"return_after_protection":self.return_after_protection.isChecked(),
+        "return_after_manual":self.return_after_manual.isChecked(),"return_guard_ms":self.return_guard_ms.value(),
+        "return_max_tail_ms":self.return_max_tail_ms.value(),"return_real_passage_ms":self.return_real_passage_ms.value(),
+        "return_repeat_wait_ms":self.return_repeat_wait_ms.value(),"return_window_s":self.return_window_s.value(),
+        "return_count_limit":self.return_count_limit.value(),"return_escalate":self.return_escalate.isChecked(),
+        "return_move_rooms":self.return_move_rooms.isChecked(),"return_lost_wav":self.return_lost_wav.text(),
+        "update_check_start":self.update_check_start.isChecked()}
         CFG_FILE.write_text(json.dumps(data,indent=2),encoding="utf-8")
         try: CFG_FILE.chmod(0o600)
         except Exception: pass
@@ -3306,7 +3315,7 @@ done"""
             self.roger_delay.setValue(d.get("roger_delay",250)); self.roger_freq.setValue(d.get("roger_freq",800)); self.roger_wpm.setValue(d.get("roger_wpm",20))
             self.roger_volume.setValue(d.get("roger_volume",70)); self.roger_wav.setText(d.get("roger_wav",""))
             self.id_file.setText(d.get("id_file","")); self.id_interval.setValue(d.get("id_interval",10))
-            self.id_record_seconds.setValue(d.get("id_record_seconds",8)); self.id_auto.setChecked(d.get("id_auto",True)); self.id_wait_free.setChecked(d.get("id_wait_free",True)); self.cw_text.setText(d.get("cw_text","")); self._wanted_sink=d.get("target_sink")
+            self.id_record_seconds.setValue(d.get("id_record_seconds",8)); self.id_auto.setChecked(d.get("id_auto",True)); self.id_wait_free.setChecked(d.get("id_wait_free",True)); self.id_free_wait_ms.setValue(int(d.get("id_free_wait_ms",1500) or 1500)); self.cw_text.setText(d.get("cw_text","")); self._wanted_sink=d.get("target_sink")
             self.ts_enabled.setChecked(bool(d.get("ts_enabled",False)))
             self.ts_commander_enabled.setChecked(bool(d.get("ts_commander_enabled",True)))
             self.ts_host.setText(d.get("ts_host","127.0.0.1"))
@@ -3336,6 +3345,22 @@ done"""
             self.protect_room_repeat.setChecked(bool(d.get("protect_room_repeat",True)))
             self.protect_room_repeat_min.setValue(int(d.get("protect_room_repeat_min",10) or 10))
             self.protect_mute_wav.setText(d.get("protect_mute_wav","")); self.protect_room_wav.setText(d.get("protect_room_wav","")); self.protect_restore_wav.setText(d.get("protect_restore_wav",""))
+            self.return_guard_enabled.setChecked(bool(d.get("return_guard_enabled",True)))
+            self.return_after_voip.setChecked(bool(d.get("return_after_voip",True)))
+            self.return_after_beacon.setChecked(bool(d.get("return_after_beacon",True)))
+            self.return_after_roger.setChecked(bool(d.get("return_after_roger",True)))
+            self.return_after_protection.setChecked(bool(d.get("return_after_protection",True)))
+            self.return_after_manual.setChecked(bool(d.get("return_after_manual",False)))
+            self.return_guard_ms.setValue(int(d.get("return_guard_ms",3500) or 3500))
+            self.return_max_tail_ms.setValue(int(d.get("return_max_tail_ms",2500) or 2500))
+            self.return_real_passage_ms.setValue(int(d.get("return_real_passage_ms",5000) or 5000))
+            self.return_repeat_wait_ms.setValue(int(d.get("return_repeat_wait_ms",3000) or 3000))
+            self.return_window_s.setValue(int(d.get("return_window_s",30) or 30))
+            self.return_count_limit.setValue(int(d.get("return_count_limit",3) or 3))
+            self.return_escalate.setChecked(bool(d.get("return_escalate",True)))
+            self.return_move_rooms.setChecked(bool(d.get("return_move_rooms",True)))
+            self.return_lost_wav.setText(d.get("return_lost_wav",""))
+            self.update_check_start.setChecked(bool(d.get("update_check_start",False)))
             rooms=d.get("protection_ts_rooms",{})
             self.protection_ts_rooms=rooms if isinstance(rooms,dict) else {}
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")
