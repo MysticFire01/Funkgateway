@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.9.20 – Update-Installer und Schnellstarter-Automatik
+- Der interne GitHub-Updater kann ein geprüftes Release nach dem Download jetzt automatisch installieren.
+- Nach dem Entpacken werden verlorene ZIP-Ausführungsrechte automatisch wiederhergestellt (`+x` für Shell-Skripte).
+- Neue Option **„Nach Download automatisch installieren“**.
+- Neue Option **„Schnellstarter auf neue Version aktualisieren“**.
+- Nach erfolgreicher SHA256-Prüfung startet FunkGateway den passenden Distributions-Installer in einem grafischen Terminal.
+- Eine erforderliche `sudo`-Passwortabfrage findet sichtbar im Terminal statt; FunkGateway speichert oder verarbeitet kein sudo-Passwort.
+- Nach erfolgreicher Installation kann `install-desktop.sh` automatisch ausgeführt werden.
+- Der Desktop-/Menüeintrag zeigt dadurch direkt auf den neuen Versionsordner.
+- Die bisherige Version bleibt als Rückfallmöglichkeit erhalten.
+- `~/.config/funkgateway-ui` bleibt unverändert und wird von der neuen Version weiterverwendet.
+- Wenn kein unterstütztes Terminal gefunden wird, erhält der Benutzer einen klaren manuellen Installationshinweis.
+
 ## 0.5.9.19 – Kompaktes und ausführliches Protokoll
 - Neue Checkbox **„Ausführliches Log“** im Reiter **Protokoll**.
 - Standard ist aus: Die Anzeige konzentriert sich auf wichtige Grundfunktionen.
