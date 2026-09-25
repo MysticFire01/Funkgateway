@@ -69,8 +69,8 @@ jobs:
           echo "FunkGateway UI $APP_VERSION - $TARGET_LABEL"
           if [[ -r /etc/os-release ]]; then
             . /etc/os-release
-            if [[ "${ID:-}" != "$TARGET_ID" || "${VERSION_ID:-}" != "$TARGET_VERSION" ]]; then
-              echo "HINWEIS: Paket fuer $TARGET_LABEL; erkannt: ${PRETTY_NAME:-unbekannt}"
+            if [[ "$ID" != "$TARGET_ID" || "$VERSION_ID" != "$TARGET_VERSION" ]]; then
+              echo "HINWEIS: Paket fuer $TARGET_LABEL; erkannt: $PRETTY_NAME"
             fi
           fi
 
@@ -135,8 +135,8 @@ jobs:
 
               (pkg/readme_name).write_text(
                   f"# FunkGateway UI {version} – {label}\n\n"
-                  f"Installation: \`./{installer_name}\`\n\n"
-                  "Danach: \`./start.sh\`\n",
+                  f"Installation: `./{installer_name}`\n\n"
+                  "Danach: `./start.sh`\n",
                   encoding="utf-8"
               )
 
@@ -208,3 +208,5 @@ jobs:
 # Trigger release workflow after registration.
 
 # Workflow fix: avoid nested shell parameter expansion inside Python f-string.
+
+# Fix shell variables inside Python f-string.
