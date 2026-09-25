@@ -137,3 +137,14 @@ HELP_HTML = r"""
 #   keine HF-Aussendung aus.
 # - Sind andere/nicht-VoIP Programme an FunkGateway_TX angeschlossen, bleibt
 #   das generische FunkGateway-Verhalten erhalten.
+
+
+# 0.5.7.0:
+# - Alle Einstellungsseiten sind vertikal scrollfähig.
+# - Neuer Selbstrücklauf-Schutz mit frei einstellbaren Standardwerten und
+#   getrennten Triggern für VoIP, Bake, Rogerbeep, Schutzansagen und manuelle TX.
+# - Lange innerhalb der Rücklaufschutzzeit beginnende Funkdurchgänge werden
+#   als verlorener Durchgang erkannt und können eine Wiederholungs-WAV auslösen.
+# - Rufzeichenbaken warten auf wirklich freien Funk-/VoIP-Weg. Es gibt nur eine
+#   fällige Bake; der Intervalltimer startet erst nach tatsächlichem Bake-Ende.
+# - Neue GitHub-Update-Seite mit Releaseprüfung, Paketwahl und SHA256-Prüfung.
