@@ -10,7 +10,7 @@ The UI deliberately uses plain language.  Most radio operators should be able
 to configure the gateway without knowing how PipeWire, serial devices or GPIO
 work internally.
 """
-import json, subprocess, time, shutil
+import json, subprocess, time, shutil, webbrowser
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication,QCheckBox,QComboBox,QFileDialog,
@@ -33,6 +33,7 @@ from .tones import make_cw, make_dtmf, make_roger_tone
 from .helptext import HELP_HTML
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
+from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare
 
 
 class MainWindow(QMainWindow):
@@ -97,6 +98,26 @@ class MainWindow(QMainWindow):
         self.voip_hf_last_block_log=0.0
         self.voip_hf_last_decision=""
 
+        # Selbstrücklauf-Schutz.
+        self.tx_source_hint=None
+        self.active_tx_kind=None
+        self.return_guard_until=0.0
+        self.return_guard_candidate=False
+        self.return_guard_rx_started=None
+        self.return_guard_tx_ended=None
+        self.return_events=[]
+        self.return_guard_muted=False
+        self.lost_passage_pending=False
+
+        # Rufzeichenbake: Es kann immer nur genau eine fällige Bake geben.
+        self.id_in_progress=False
+        self.id_proc=None
+        self.id_channel_free_since=None
+
+        # Updatezustand.
+        self.latest_release=None
+        self.latest_release_asset=None
+
         # Hauptsteuerung bleibt unabhängig vom gewählten Reiter immer sichtbar.
         # Dadurch sind Start/Stop/NOT-AUS/Rufzeichen auch bei kleinen Fenstern
         # oder sehr langen Einstellungsseiten sofort erreichbar.
@@ -135,7 +156,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.build_start(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
-        self.build_ids(); self.build_tools(); self.build_integrations(); self.build_protection(); self.build_log(); self.build_help()
+        self.build_ids(); self.build_tools(); self.build_integrations(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
+        self._make_all_tab_pages_scrollable()
 
         self.load_cfg()
         if hasattr(self,"ts_api_key") and not self.ts_api_key.text().strip():
@@ -157,9 +179,35 @@ class MainWindow(QMainWindow):
         self.tick_timer.start(250)
         self.integration_timer=QTimer(self); self.integration_timer.timeout.connect(self.poll_integrations)
         self.integration_timer.start(750)
+        if hasattr(self,"update_check_start") and self.update_check_start.isChecked():
+            QTimer.singleShot(2500,lambda:self.check_for_updates(quiet=True))
 
     def big(self,text):
         b=QPushButton(text); b.setMinimumHeight(56); return b
+
+    def _make_all_tab_pages_scrollable(self):
+        """Make every settings tab vertically scrollable without hiding main controls."""
+        tabs=[self.tabs] + [t for t in self.findChildren(QTabWidget) if t is not self.tabs]
+        for tab in reversed(tabs):
+            current=tab.currentIndex()
+            for i in range(tab.count()):
+                page=tab.widget(i)
+                if isinstance(page,QScrollArea):
+                    continue
+                title=tab.tabText(i)
+                icon=tab.tabIcon(i)
+                tip=tab.tabToolTip(i)
+                enabled=tab.isTabEnabled(i)
+                tab.removeTab(i)
+                scroll=QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                scroll.setWidget(page)
+                tab.insertTab(i,scroll,icon,title)
+                tab.setTabEnabled(i,enabled)
+                tab.setTabToolTip(i,tip)
+            if current >= 0 and current < tab.count():
+                tab.setCurrentIndex(current)
 
     def build_start(self):
         w=QWidget(); v=QVBoxLayout(w)
@@ -366,8 +414,17 @@ class MainWindow(QMainWindow):
         prev=QPushButton("Rufzeichenansage anhören"); prev.clicked.connect(self.preview_id)
         self.id_auto=QCheckBox("Automatische Rufzeichenausgabe aktiv"); self.id_auto.setChecked(True)
         self.id_wait_free=QCheckBox("Bei belegtem Kanal warten"); self.id_wait_free.setChecked(True)
+        self.id_free_wait_ms=QSpinBox(); self.id_free_wait_ms.setRange(0,30000); self.id_free_wait_ms.setValue(1500); self.id_free_wait_ms.setSuffix(" ms")
+        self.id_free_wait_ms.setToolTip("So lange muss der Funk-/VoIP-Weg frei bleiben, bevor eine fällige Bake startet. Standard: 1500 ms.")
+        safe_note=QLabel(
+            "Eine fällige Bake wird nur einmal vorgemerkt. Sie wartet auf freien Funk-RX, "
+            "freien VoIP/TX-Weg und das Ende interner Aussendungen. Erst nach dem tatsächlichen "
+            "Ende der Bake beginnt das eingestellte Intervall erneut."
+        ); safe_note.setWordWrap(True)
         f.addRow("Ansage:",row); f.addRow("Intervall:",self.id_interval); f.addRow("Aufnahmedauer:",self.id_record_seconds)
         f.addRow(rec); f.addRow(prev); f.addRow(self.id_auto); f.addRow(self.id_wait_free)
+        f.addRow("Freiwartezeit vor Bake:",self.id_free_wait_ms)
+        f.addRow("",safe_note)
         self.tabs.addTab(w,"Rufzeichen")
 
     def build_tools(self):
@@ -747,6 +804,85 @@ class MainWindow(QMainWindow):
         af.addRow("Ansage bei Wiederaktivierung:",r3)
         protection_tabs.addTab(announcements,"Ansagen")
 
+        # --- Selbstrücklauf ------------------------------------------------
+        return_page=QWidget(); rf=QFormLayout(return_page)
+        self.return_guard_enabled=QCheckBox("Selbstrücklauf-Schutz aktiv")
+        self.return_guard_enabled.setChecked(True)
+
+        self.return_after_voip=QCheckBox("Nach VoIP-Durchgang (TeamSpeak / Mumble / andere Internetquellen)")
+        self.return_after_voip.setChecked(True)
+        self.return_after_beacon=QCheckBox("Nach Rufzeichenbake")
+        self.return_after_beacon.setChecked(True)
+        self.return_after_roger=QCheckBox("Nach Rogerbeep / CW-K")
+        self.return_after_roger.setChecked(True)
+        self.return_after_protection=QCheckBox("Nach Schutzansagen / WAV-Ausgaben")
+        self.return_after_protection.setChecked(True)
+        self.return_after_manual=QCheckBox("Nach manuellen lokalen Aussendungen")
+        self.return_after_manual.setChecked(False)
+
+        self.return_guard_ms=QSpinBox(); self.return_guard_ms.setRange(0,15000); self.return_guard_ms.setValue(3500); self.return_guard_ms.setSuffix(" ms")
+        self.return_max_tail_ms=QSpinBox(); self.return_max_tail_ms.setRange(100,15000); self.return_max_tail_ms.setValue(2500); self.return_max_tail_ms.setSuffix(" ms")
+        self.return_real_passage_ms=QSpinBox(); self.return_real_passage_ms.setRange(500,60000); self.return_real_passage_ms.setValue(5000); self.return_real_passage_ms.setSuffix(" ms")
+        self.return_repeat_wait_ms=QSpinBox(); self.return_repeat_wait_ms.setRange(0,30000); self.return_repeat_wait_ms.setValue(3000); self.return_repeat_wait_ms.setSuffix(" ms")
+        self.return_window_s=QSpinBox(); self.return_window_s.setRange(5,300); self.return_window_s.setValue(30); self.return_window_s.setSuffix(" s")
+        self.return_count_limit=QSpinBox(); self.return_count_limit.setRange(1,20); self.return_count_limit.setValue(3)
+
+        self.return_escalate=QCheckBox("Bei wiederholtem Selbstrücklauf Gateway-Schutz aktivieren")
+        self.return_escalate.setChecked(True)
+        self.return_move_rooms=QCheckBox("Bei Schutzaktivierung konfigurierte TeamSpeak-/Mumble-Störungsräume verwenden")
+        self.return_move_rooms.setChecked(True)
+
+        self.return_lost_wav=QLineEdit()
+        rb=QPushButton("WAV auswählen")
+        rb.clicked.connect(lambda:self.choose_protection_wav(self.return_lost_wav))
+        rr=QHBoxLayout(); rr.addWidget(self.return_lost_wav); rr.addWidget(rb)
+
+        defaults = {
+            self.return_guard_ms:"Schutzfenster nach Sendeende. RX, das in diesem Fenster beginnt, wird zunächst nicht zu VoIP übertragen. Standard: 3500 ms.",
+            self.return_max_tail_ms:"Bis zu dieser RX-Dauer wird ein blockierter Impuls als kurzer Rücklauf gezählt. Standard: 2500 ms.",
+            self.return_real_passage_ms:"Ab dieser Dauer gilt ein blockierter RX als wahrscheinlich echter Funkdurchgang. Danach kann eine Wiederholungsansage gesendet werden. Standard: 5000 ms.",
+            self.return_repeat_wait_ms:"Wartezeit nach Ende des verlorenen Durchgangs bis zur Hinweisansage. Standard: 3000 ms.",
+            self.return_window_s:"Zeitraum, in dem Rücklaufereignisse für die Eskalation gezählt werden. Standard: 30 Sekunden.",
+            self.return_count_limit:"Anzahl kurzer Rückläufe im Beobachtungszeitraum bis zur Schutzaktivierung. Standard: 3 Ereignisse.",
+        }
+        for widget,tip in defaults.items():
+            widget.setToolTip(tip)
+
+        intro=QLabel(
+            "Der Selbstrücklauf-Schutz startet nach den unten ausgewählten eigenen HF-Aussendungen. "
+            "Beginnt RX innerhalb des Schutzfensters, wird der komplette RX-Durchgang vermessen und "
+            "bis zu seinem Ende nicht an TeamSpeak/Mumble weitergegeben. Beginnt ein Funker erst nach "
+            "dem Schutzfenster, läuft sein Durchgang normal; lange normale RX-Durchgänge bleiben Aufgabe "
+            "des bestehenden Dauer-RX-Schutzes."
+        ); intro.setWordWrap(True)
+
+        lost_note=QLabel(
+            "Ist ein innerhalb des Schutzfensters begonnener RX länger als die Schwelle „echter Durchgang“, "
+            "wird er nicht als kurzer Rücklauf gezählt. Optional wird nach seinem Ende die gewählte WAV über HF "
+            "gesendet, damit der Funker seinen nicht übertragenen Durchgang nach der eingestellten Wartezeit wiederholen kann."
+        ); lost_note.setWordWrap(True)
+
+        rf.addRow("",intro)
+        rf.addRow("",self.return_guard_enabled)
+        rf.addRow(QLabel("<b>Schutz starten nach:</b>"))
+        rf.addRow("",self.return_after_voip)
+        rf.addRow("",self.return_after_beacon)
+        rf.addRow("",self.return_after_roger)
+        rf.addRow("",self.return_after_protection)
+        rf.addRow("",self.return_after_manual)
+        rf.addRow("Schutzzeit nach Sendeende:",self.return_guard_ms)
+        rf.addRow("Maximale Rücklauflänge:",self.return_max_tail_ms)
+        rf.addRow("Echter Durchgang ab:",self.return_real_passage_ms)
+        rf.addRow("Wartezeit vor Wiederholungsansage:",self.return_repeat_wait_ms)
+        rf.addRow("Hinweisansage verlorener Durchgang:",rr)
+        rf.addRow("",lost_note)
+        rf.addRow(QLabel("<b>Eskalation:</b>"))
+        rf.addRow("Beobachtungszeitraum:",self.return_window_s)
+        rf.addRow("Rückläufe bis Schutz:",self.return_count_limit)
+        rf.addRow("",self.return_escalate)
+        rf.addRow("",self.return_move_rooms)
+        protection_tabs.addTab(return_page,"Selbstrücklauf")
+
         note=QLabel(
             "Alle Schutzfunktionen sind optional. TeamSpeak- und Mumble-spezifische "
             "Störungsräume werden in der jeweiligen Integration eingerichtet; "
@@ -755,6 +891,108 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         outer.addWidget(note)
         self.tabs.addTab(w,"Schutz")
+
+    def build_updates(self):
+        w=QWidget(); f=QFormLayout(w)
+        self.update_current=QLabel(f"Installierte Version: {VERSION}")
+        self.update_latest=QLabel("Aktuelle GitHub-Version: noch nicht geprüft")
+        self.update_asset=QLabel("Passendes Paket: —")
+        self.update_status=QLabel(
+            "FunkGateway prüft ausschließlich veröffentlichte Releases im öffentlichen "
+            "GitHub-Repository MysticFire01/Funkgateway."
+        )
+        self.update_status.setWordWrap(True)
+
+        self.update_check_start=QCheckBox("Beim Programmstart nach Updates suchen")
+        self.update_check_start.setChecked(False)
+
+        check=QPushButton("Nach Updates suchen")
+        check.clicked.connect(self.check_for_updates)
+        prepare=QPushButton("Update herunterladen und vorbereiten")
+        prepare.clicked.connect(self.prepare_update)
+        self.update_prepare_btn=prepare
+        self.update_prepare_btn.setEnabled(False)
+
+        release=QPushButton("GitHub-Releases öffnen")
+        release.clicked.connect(lambda:webbrowser.open("https://github.com/MysticFire01/Funkgateway/releases"))
+
+        note=QLabel(
+            "Sicherheit: Ein Update wird nur vorbereitet, wenn Gateway/PTT nicht aktiv sind. "
+            "Das ZIP wird per SHA256 geprüft und in einen neuen Versionsordner entpackt; die "
+            "laufende Installation wird nicht überschrieben. ~/.config/funkgateway-ui bleibt erhalten."
+        ); note.setWordWrap(True)
+
+        f.addRow("",self.update_current)
+        f.addRow("",self.update_latest)
+        f.addRow("",self.update_asset)
+        f.addRow("",self.update_status)
+        f.addRow("",self.update_check_start)
+        f.addRow(check)
+        f.addRow(prepare)
+        f.addRow(release)
+        f.addRow("",note)
+        self.tabs.addTab(w,"Updates")
+
+    def check_for_updates(self, quiet=False):
+        try:
+            release=fetch_latest_release()
+            tag=str(release.get("tag_name") or "").lstrip("v")
+            asset=choose_asset(release)
+            self.latest_release=release
+            self.latest_release_asset=asset
+            self.update_latest.setText(f"Aktuelle GitHub-Version: {tag or 'unbekannt'}")
+            self.update_asset.setText("Passendes Paket: " + (asset.get("name","—") if asset else "nicht gefunden"))
+            if tag and is_newer(tag,VERSION):
+                self.update_status.setText(f"Update verfügbar: {VERSION} → {tag}")
+                self.update_prepare_btn.setEnabled(bool(asset))
+                if not quiet:
+                    QMessageBox.information(self,"FunkGateway Update",f"Eine neue Version ist verfügbar: {tag}")
+            else:
+                self.update_status.setText("Kein neueres veröffentlichtes Release gefunden.")
+                self.update_prepare_btn.setEnabled(False)
+                if not quiet:
+                    QMessageBox.information(self,"FunkGateway Update","Du verwendest bereits diese oder eine neuere Version.")
+        except Exception as e:
+            self.latest_release=None; self.latest_release_asset=None
+            self.update_prepare_btn.setEnabled(False)
+            self.update_status.setText(f"Updateprüfung fehlgeschlagen: {e}")
+            if not quiet:
+                self.show_copyable_error("Updateprüfung",str(e))
+
+    def prepare_update(self):
+        if self.tx or self.outgoing_audio_active or self.roger_busy or self.protection_announcement_busy:
+            QMessageBox.warning(
+                self,"Update",
+                "Update nicht möglich, solange FunkGateway sendet oder eine interne Aussendung läuft. "
+                "Bitte Gateway/Sendung zuerst beenden."
+            )
+            return
+        if self.bridge or self.rx_detector:
+            QMessageBox.warning(
+                self,"Update",
+                "Bitte zuerst „Gateway stoppen“. Ein Update wird niemals in einen laufenden Gatewaybetrieb eingespielt."
+            )
+            return
+        if not self.latest_release or not self.latest_release_asset:
+            self.check_for_updates()
+            if not self.latest_release or not self.latest_release_asset:
+                return
+        try:
+            install_root=Path(__file__).resolve().parents[1]
+            result=download_and_prepare(self.latest_release,self.latest_release_asset,install_root.parent)
+            self.update_status.setText(
+                "Update geprüft und vorbereitet. Neue Version liegt in:\n" + result["target"]
+            )
+            self.log(f"Update vorbereitet: {result['asset']} -> {result['target']} (SHA256 {result['sha256']})")
+            QMessageBox.information(
+                self,"Update vorbereitet",
+                "Das Update wurde heruntergeladen, per SHA256 geprüft und in einen neuen "
+                "Versionsordner entpackt.\n\n"
+                f"Neue Installation:\n{result['target']}\n\n"
+                "Die aktuelle Installation wurde nicht überschrieben."
+            )
+        except Exception as e:
+            self.show_copyable_error("Update vorbereiten",str(e))
 
     def choose_protection_wav(self, field):
         p,_=QFileDialog.getOpenFileName(self,"Ansage-WAV wählen","","WAV (*.wav)")
