@@ -29,7 +29,7 @@ try:
 except Exception:
     sd = sf = None
 
-from .constants import (APP_NAME,VERSION,CFG_FILE, CFG_DIR,LOG_FILE,CW_FILE,DTMF_FILE,
+from .constants import (APP_NAME,VERSION,CFG_FILE, CFG_DIR,LOG_FILE,CW_FILE,DTMF_FILE,DEFAULT_WAV_DIR,
                         ID_RECORDING_FILE,ROGER_FILE,ensure_cfg)
 from .ports import discover_serial_ports, friendly_port_name
 from .ptt import DryPTT, SerialPTT, CM108PTT, GPIOPTT
@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         self._make_all_tab_pages_scrollable()
 
         self.load_cfg()
+        self._apply_default_wavs()
         if hasattr(self,"ts_api_key") and not self.ts_api_key.text().strip():
             key=read_default_api_key()
             if key:
@@ -5907,6 +5908,60 @@ done"""
             rooms=d.get("protection_ts_rooms",{})
             self.protection_ts_rooms=rooms if isinstance(rooms,dict) else {}
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")
+
+
+    def _default_wav_path(self, filename):
+        p=DEFAULT_WAV_DIR / filename
+        return str(p) if p.is_file() else ""
+
+    def _apply_default_wavs(self):
+        """Fill only empty WAV slots from the shipped default_wavs directory.
+
+        Existing custom paths are deliberately preserved and never overwritten.
+        """
+        slots=(
+            (self.roger_wav,"01_rogerbeep.wav"),
+            (self.id_file,"02_rufzeichenbake.wav"),
+            (self.parrot_beacon_file,"03_papageibake.wav"),
+            (self.dtmf_auth_success_wav,"04_auth_erfolgreich.wav"),
+            (self.dtmf_auth_required_wav,"05_auth_erforderlich.wav"),
+            (self.dtmf_auth_failed_wav,"06_auth_fehlgeschlagen.wav"),
+            (self.dtmf_ack_parrot_wav,"07_papagei_aktiv.wav"),
+            (self.dtmf_ack_voip_wav,"08_gateway_aktiv.wav"),
+            (self.dtmf_ack_default_wav,"09_befehl_ausgefuehrt.wav"),
+            (self.protect_mute_wav,"10_gateway_stummgeschaltet.wav"),
+            (self.protect_room_wav,"11_stoerungsraum.wav"),
+            (self.protect_restore_wav,"12_gateway_wieder_aktiv.wav"),
+            (self.return_lost_wav,"13_durchgang_nicht_uebertragen.wav"),
+        )
+        applied=0
+        tooltip=(
+            "FunkGateway liefert hierfür eine generische Standardansage mit. "
+            "Du kannst diese jederzeit über „WAV auswählen“ durch eine eigene Ansage ersetzen. "
+            "Eine bereits gespeicherte eigene Ansage wird nicht überschrieben."
+        )
+        for field,filename in slots:
+            field.setToolTip(tooltip)
+            if not field.text().strip():
+                p=self._default_wav_path(filename)
+                if p:
+                    field.setText(p)
+                    applied+=1
+        if applied:
+            self.log(
+                f"Standard-WAVs: {applied} leere Ansage-Slots mit mitgelieferten "
+                "Standardansagen belegt."
+            )
+
+    def _default_wav_hint_label(self):
+        note=QLabel(
+            "Hinweis: FunkGateway liefert für diese WAV-Funktion eine generische deutsche "
+            "Standardansage im Ordner <b>default_wavs</b> mit. Sie wird nur verwendet, "
+            "wenn noch keine eigene Ansage hinterlegt ist. Über „WAV auswählen“ kann sie "
+            "jederzeit ersetzt werden."
+        )
+        note.setWordWrap(True)
+        return note
 
 
     def closeEvent(self,ev):
