@@ -1,3 +1,14 @@
+## 0.5.7.0 – Selbstrücklauf, intelligente Bake und Updates
+- Neuer Selbstrücklauf-Schutz unter Schutz → Selbstrücklauf.
+- Schutzzeiten und Rücklauf-Schwellwerte sind frei einstellbar.
+- Rücklaufschutz kann nach VoIP, Rufzeichenbake, Rogerbeep/CW-K, Schutzansagen und manuellen Aussendungen starten.
+- Kurze Rückläufe werden gezählt; wiederholte Rückläufe können den bestehenden Gateway-Schutz und konfigurierte Störungsräume verwenden.
+- Lange echte Funkdurchgänge im Schutzfenster können als verlorener Durchgang erkannt und per WAV zur Wiederholung aufgefordert werden.
+- Rufzeichenbaken warten auf freien HF-/VoIP-Weg; es wird nur eine Bake vorgemerkt.
+- Der Bake-Intervalltimer startet erst nach dem tatsächlichen Ende der Bake neu.
+- Alle umfangreichen Einstellungsseiten sind vertikal scrollbar.
+- Neue GitHub-Updatefunktion mit Paketwahl und SHA256-Prüfung.
+
 ## 0.5.6.20
 - Mumble/Ice: Python-Ice-Erkennung robuster gemacht. FunkGateway erkennt nun auch Ubuntu/Debian-Systemmodule unter `/usr/lib/python3/dist-packages`, wenn eine ältere isolierte venv verwendet wird.
 - Mumble-Komponentenprüfung unterscheidet nun zwischen „Ice fehlt“ und „Ice ist im System vorhanden, aber die laufende Python-Umgebung sieht es noch nicht“.
