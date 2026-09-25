@@ -96,6 +96,14 @@ HELP_HTML = r"""
 
 <h3>10. Tooltips</h3>
 <p>Bei vielen neuen Schaltern und Buttons erscheint eine kurze Erklärung, wenn der Mauszeiger darüber bleibt.</p>
+
+<h3>Neu in 0.5.7.0</h3>
+<p><b>Selbstrücklauf-Schutz:</b> Unter <b>Schutz → Selbstrücklauf</b> kann eingestellt werden, nach welchen eigenen HF-Aussendungen der Rücklaufschutz startet. Die Zeiten und Ereignisgrenzen sind frei einstellbar; die Oberfläche zeigt die empfohlenen Standardwerte an.</p>
+<p>Beginnt Funk-RX innerhalb des Schutzfensters, wird dieser Durchgang bis zum Ende vermessen und zunächst nicht zu TeamSpeak/Mumble weitergegeben. Kurze Rückläufe können gezählt werden. Ein langer echter Funkdurchgang kann als verlorener Durchgang erkannt werden; optional kann danach eine WAV den Funker um Wiederholung bitten.</p>
+<p><b>Rufzeichenbake:</b> Eine fällige Bake wartet auf freien Funk- und VoIP-Betrieb. Es wird nur eine Bake vorgemerkt. Der Intervalltimer beginnt erst nach dem tatsächlichen Ende der gesendeten Bake neu.</p>
+<p><b>Scrollbare Seiten:</b> Umfangreiche Einstellungsseiten sind vertikal scrollbar, damit alle Bedienelemente auch bei kleineren Fenstern erreichbar bleiben.</p>
+<p><b>Updates:</b> Der neue Reiter <b>Updates</b> kann nach einem veröffentlichten GitHub-Release suchen, ein passendes Linux-Paket auswählen und dessen SHA256-Prüfsumme kontrollieren. Ein Update wird in einem neuen Versionsordner vorbereitet und überschreibt die laufende Installation nicht.</p>
+
 """
 
 # 0.5.6.20 note:
