@@ -348,7 +348,10 @@ class TeamSpeakClientQuery:
         return f"schandlerid={self.schandlerid} clid={self.clid} cid={cid}"
 
     def speakers(self) -> list[str]:
-        """Return all currently talking voice-client nicknames visible to TS3."""
+        """Return all currently talking voice-client nicknames visible to TS3.
+
+        Also remember whether the local ClientQuery client itself is talking.
+        """
         lines, err_id, err_msg = self.command("clientlist -voice")
         if err_id != 0:
             raise RuntimeError(err_msg or f"clientlist Fehler {err_id}")
@@ -358,15 +361,27 @@ class TeamSpeakClientQuery:
         # but joining them keeps the parser resilient.
         raw = "|".join(lines)
         speakers: list[str] = []
+        self._self_talking=False
         for record in raw.split("|"):
             info = parse_record(record)
             if info.get("client_type", "0") != "0":
                 continue
-            if info.get("client_flag_talking") == "1":
+            talking=info.get("client_flag_talking") == "1"
+            try:
+                record_clid=int(info.get("clid","0") or 0)
+            except (TypeError,ValueError):
+                record_clid=0
+            if talking and self.clid and record_clid == self.clid:
+                self._self_talking=True
+            if talking:
                 nickname = info.get("client_nickname", "").strip()
                 if nickname:
                     speakers.append(nickname)
         return speakers
+
+    def self_talking(self) -> bool:
+        """Return the local TS client's talking state from the last voice list."""
+        return bool(getattr(self,"_self_talking",False))
 
 
     def whoami(self) -> dict[str, str]:
@@ -496,3 +511,76 @@ class TeamSpeakClientQuery:
                 return True
             last = RuntimeError(err_msg or f"ClientQuery Fehler {err_id}")
         raise last or RuntimeError("Channel Commander konnte nicht geändert werden")
+
+    def clients(self, current_channel_only: bool = False) -> list[dict[str, object]]:
+        """Return normal voice clients visible to the current TeamSpeak user."""
+        me=self.whoami()
+        try:
+            own_cid=int(me.get("cid","0") or 0)
+        except (TypeError,ValueError):
+            own_cid=0
+
+        lines,err_id,err_msg=self.command("clientlist -uid -voice")
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"clientlist Fehler {err_id}")
+
+        result=[]
+        for record in "|".join(lines).split("|"):
+            info=parse_record(record)
+            if info.get("client_type","0") != "0":
+                continue
+            try:
+                clid=int(info.get("clid","0") or 0)
+                cid=int(info.get("cid","0") or 0)
+            except (TypeError,ValueError):
+                continue
+            if clid <= 0:
+                continue
+            if current_channel_only and own_cid > 0 and cid != own_cid:
+                continue
+            result.append({
+                "clid":clid,
+                "cid":cid,
+                "nickname":info.get("client_nickname",f"Client {clid}").strip() or f"Client {clid}",
+                "uid":info.get("client_unique_identifier","").strip(),
+                "talking":info.get("client_flag_talking") == "1",
+                "is_self":bool(self.clid and clid == self.clid),
+            })
+        result.sort(key=lambda x: (not bool(x["is_self"]), str(x["nickname"]).lower()))
+        return result
+
+    def poke_client(self, clid: int, message: str):
+        clid=int(clid)
+        message=(message or "").strip()
+        if clid <= 0:
+            raise ValueError("Ungültige Client-ID")
+        if not message:
+            raise ValueError("Poke-Nachricht ist leer")
+        _,err_id,err_msg=self.command(f"clientpoke clid={clid} msg={ts_escape(message)}")
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"clientpoke Fehler {err_id}")
+        return True
+
+    def move_client(self, clid: int, target_cid: int):
+        clid=int(clid); target_cid=int(target_cid)
+        if clid <= 0 or target_cid <= 0:
+            raise ValueError("Ungültige Client- oder Channel-ID")
+        _,err_id,err_msg=self.command(f"clientmove clid={clid} cid={target_cid}")
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"clientmove Fehler {err_id}")
+        return True
+
+    def kick_client(self, clid: int, from_server: bool = False, reason: str = ""):
+        clid=int(clid)
+        if clid <= 0:
+            raise ValueError("Ungültige Client-ID")
+        reason_id=5 if from_server else 4
+        command=f"clientkick clid={clid} reasonid={reason_id}"
+        reason=(reason or "").strip()
+        if reason:
+            command += f" reasonmsg={ts_escape(reason)}"
+        _,err_id,err_msg=self.command(command)
+        if err_id != 0:
+            raise RuntimeError(err_msg or f"clientkick Fehler {err_id}")
+        return True
+
