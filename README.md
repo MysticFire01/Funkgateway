@@ -1,8 +1,21 @@
-# FunkGateway UI 0.5.9.22
+# FunkGateway UI 0.5.9.25
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.22**
+**Aktueller stabiler Feldtest-Stand: 0.5.9.25**
+
+## Betriebsarten
+
+Ab **0.5.9.25** kann FunkGateway zwischen zwei Oberflächen umschalten:
+
+- **Funk-Gateway** – vollständiger Betrieb mit Audio-Routing, RX, PTT, Rogerbeep, Rufzeichen, Papagei, DTMF und Schutzfunktionen.
+- **PC / TeamSpeak** – vereinfachte Oberfläche für einen normalen Linux-PC ohne Funkgerät. HF-/PTT-Funktionen werden ausgeblendet und im PC-Modus nicht initialisiert.
+
+Im PC-Modus stehen unter anderem ein **sprechabhängiger TeamSpeak Channel Commander**, ein lokaler **PC-Papagei / Mikrofontest** und ein eigener Reiter **Moderation** zur Verfügung. Der PC-Papagei verwendet PulseAudio/PipeWire und nimmt zuerst vollständig auf, bevor die Aufnahme wiedergegeben wird.
+
+## TeamSpeak-Moderation im PC-Modus
+
+Der Reiter **Moderation** bietet manuelle Funktionen für Poke, Verschieben, Channel-Kick und Server-Kick. Die Seite ist zweispaltig aufgebaut, damit auf kleineren Desktop-Auflösungen wenig gescrollt werden muss. Kritische Aktionen benötigen eine Bestätigung. FunkGateway verwendet ausschließlich die Rechte des angemeldeten TeamSpeak-Clients.
 
 ## Highlights
 
@@ -26,7 +39,7 @@
 
 ## Mitgelieferte Standard-WAVs
 
-Ab **0.5.9.22** enthalten die Release-Pakete im Ordner `default_wavs/` generische deutsche Ansagen für alle 13 WAV-Slots.
+Ab **0.5.9.25** enthalten die Release-Pakete im Ordner `default_wavs/` generische deutsche Ansagen für alle 13 WAV-Slots.
 
 Beim Programmstart werden diese Standarddateien **nur in leere WAV-Felder** eingetragen. Bereits konfigurierte eigene Ansagen bleiben unverändert und werden nicht überschrieben. Jede Standardansage kann jederzeit über **„WAV auswählen“** durch eine eigene Datei ersetzt werden.
 
@@ -89,6 +102,10 @@ Im Reiter **Protokoll** gibt es die Checkbox **„Ausführliches Log“**.
 - Mit Haken: zusätzliche technische Ablauf- und Diagnosemeldungen.
 - Die gespeicherte Logdatei bleibt unabhängig davon vollständig.
 
+### PC-Papagei und TeamSpeak-Audio
+
+Der PC-Papagei verwendet PulseAudio/PipeWire (`pactl`, `parec`, `paplay`) statt eines direkten exklusiven ALSA-Hardwarezugriffs. Dadurch kann er die normalen Desktop-Standardgeräte gemeinsam mit TeamSpeak verwenden. Aufnahme und Wiedergabe laufen zeitlich getrennt, um Rückkopplungsschleifen zu vermeiden.
+
 ## Installation
 
 Die empfohlenen Installationspakete befinden sich bei den GitHub-Releases.
@@ -114,7 +131,7 @@ chmod +x install-ubuntu-24.04.sh
 
 `install-desktop.sh` erzeugt den stabilen Menüeintrag `~/.local/share/applications/funkgateway-ui.desktop`.
 
-Ab **0.5.9.22** werden dabei alte lokale FunkGateway-Starter automatisch entfernt. Bereits angeheftete alte GNOME-FunkGateway-Favoriten werden auf die stabile Desktop-ID umgestellt und entdoppelt. Anschließend wird nach Möglichkeit `update-desktop-database` ausgeführt.
+Ab **0.5.9.25** werden dabei alte lokale FunkGateway-Starter automatisch entfernt. Bereits angeheftete alte GNOME-FunkGateway-Favoriten werden auf die stabile Desktop-ID umgestellt und entdoppelt. Anschließend wird nach Möglichkeit `update-desktop-database` ausgeführt.
 
 Damit zeigt der Drawer/Dash nach einem Update auf den aktuellen Installationsordner. Andere Desktop-Dateien werden nicht verändert.
 
@@ -122,7 +139,7 @@ Damit zeigt der Drawer/Dash nach einem Update auf den aktuellen Installationsord
 
 FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht und vor der Installation geprüft.
 
-Ab **0.5.9.22** kann der Updater nach dem Download außerdem:
+Ab **0.5.9.25** kann der Updater nach dem Download außerdem:
 
 - verlorene ZIP-Ausführungsrechte der Shell-Skripte automatisch wiederherstellen,
 - den passenden Distributions-Installer in einem sichtbaren Terminal starten,
