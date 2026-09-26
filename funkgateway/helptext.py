@@ -96,6 +96,19 @@ HELP_HTML = r"""
 
 <h3>10. Tooltips</h3>
 <p>Bei vielen neuen Schaltern und Buttons erscheint eine kurze Erklärung, wenn der Mauszeiger darüber bleibt.</p>
+
+<h3>PC / TeamSpeak</h3>
+<p>In der Betriebsart <b>PC / TeamSpeak</b> wird eine vereinfachte Oberfläche ohne PTT, COS, Funk-RX, Rufzeichenbake und HF-Audio angezeigt.</p>
+<ul>
+<li>Channel Commander kann automatisch nur während des eigenen Sprechens gesetzt werden.</li>
+<li>Der PC-Papagei verwendet PulseAudio/PipeWire und nimmt zuerst auf, bevor er wiedergibt.</li>
+<li>TeamSpeak, Moderation, Updates, Protokoll und Hilfe bleiben sichtbar.</li>
+<li>Beim Wechsel in den PC-Modus wird ein eventuell laufender Funk-Gateway-Betrieb beendet.</li>
+</ul>
+
+<h3>Moderation im PC-Modus</h3>
+<p>Die Moderation besitzt einen eigenen Reiter mit zweispaltiger Oberfläche. Sichtbare Benutzer können – abhängig von den eigenen TeamSpeak-Rechten – angestupst, verschoben, aus dem Channel oder vom Server gekickt werden.</p>
+<p>Verschieben und Kick werden nie automatisch ausgeführt. Kritische Aktionen benötigen eine Bestätigung.</p>
 """
 
 # 0.5.9.21 note:
