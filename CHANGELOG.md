@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.9.25 – Eigener Moderations-Reiter
+- Die TeamSpeak-Moderation wurde aus dem langen **PC / TeamSpeak**-Reiter herausgelöst.
+- Neuer eigener Reiter **Moderation** im PC-Modus.
+- Zweispaltige Anordnung: links Benutzer/Poke, rechts Ziel-Channel/Verschieben/Kick.
+- Dadurch entfällt weitgehend das Scrollen auf kleineren Desktop-Auflösungen.
+- Der Aufbau wurde auf Debian 12 im Feldtest bestätigt.
+
+## 0.5.9.24 – TeamSpeak-Moderation und PC-Papagei
+- Neue manuelle Moderationsfunktionen im PC-Modus: Poke, Verschieben, Channel-Kick und Server-Kick.
+- Verschieben und Kick benötigen Bestätigung; der eigene Client wird nicht versehentlich gekickt.
+- Moderationsaktionen nutzen ausschließlich die vorhandenen Rechte des angemeldeten TeamSpeak-Clients.
+- PC-Papagei auf PulseAudio/PipeWire (`pactl` / `parec` / `paplay`) umgestellt, damit Desktop-Standardgeräte mit TeamSpeak geteilt werden können.
+- Aufnahme und Wiedergabe bleiben getrennt, um interne Rückkopplungsschleifen zu vermeiden.
+
+## 0.5.9.23 – PC / TeamSpeak Betriebsart
+- Neue Betriebsart **PC / TeamSpeak** zusätzlich zum vollständigen Funk-Gateway.
+- Im PC-Modus werden PTT, COS, Funk-RX, Rufzeichenbake und HF-Audio ausgeblendet bzw. nicht initialisiert.
+- TeamSpeak Channel Commander kann automatisch **nur während des eigenen Sprechens** gesetzt werden und wird danach wieder entfernt.
+- Neuer lokaler PC-Papagei / Mikrofontest.
+- Beim Wechsel vom laufenden Funk-Gateway in den PC-Modus wird der Funk-Gateway-Betrieb automatisch gestoppt.
+- Betriebsart und PC-Einstellungen werden in der normalen Konfiguration gespeichert.
+
 ## 0.5.9.22 – Schnellstarter-Bereinigung
 - `install-desktop.sh` bereinigt vor dem Anlegen des aktuellen Starters alte lokale FunkGateway-Desktopdateien unter `~/.local/share/applications/`.
 - Entfernt werden nur eindeutig als FunkGateway erkannte Starter.
