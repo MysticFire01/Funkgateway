@@ -1,3 +1,12 @@
+## 0.5.9.45
+
+- Kritischer Modus-Fix: Funk-Papagei und Papageibake laufen ausschließlich in der Betriebsart Funk-Papagei.
+- PC-User, Funk-Gateway und VoIP-Papagei starten keinen Funk-Papagei-RX-Capture mehr aufgrund alter gespeicherter Flags.
+- Beim Verlassen des Funk-Papagei-Modus werden wartende/laufende Papageibaken und der RX-Capture beendet.
+- Alte absolute Pfade auf mitgelieferte `default_wavs` aus früheren Versionsordnern werden automatisch auf den aktuellen Programmordner migriert.
+- Fehlende Papageibaken-WAVs verursachen keinen Sekunden-Logspam mehr; neuer Versuch frühestens nach 60 Sekunden.
+- DTMF `Papagei EIN` wechselt explizit in die Betriebsart Funk-Papagei, damit die harte Modustrennung die Fernsteuerung nicht bricht.
+
 ## 0.5.9.44
 
 - PC-User: eigene Hardware-Port-Auswahl für Aufnahmequellen (z. B. Front-Mic, Rear-Mic, Line-In).

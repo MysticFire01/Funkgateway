@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FunkGateway 0.5.9.28 program entry point."""
+"""FunkGateway 0.5.9.45 program entry point."""
 import sys
 from pathlib import Path
 from PySide6.QtGui import QIcon

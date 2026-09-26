@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP_VERSION="0.5.9.44"
+APP_VERSION="0.5.9.45"
 
 PM=""
 if command -v apt-get >/dev/null 2>&1; then PM="apt"

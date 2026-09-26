@@ -167,6 +167,7 @@ class MainWindow(QMainWindow):
         self.parrot_beacon_proc=None
         self.parrot_beacon_free_since=None
         self.parrot_last_beacon=time.monotonic()
+        self.parrot_beacon_retry_after=0.0
         self.parrot_temp_file=CFG_DIR / "papagei-temp.wav"
         self.parrot_raw_file=CFG_DIR / "papagei-temp.raw"
         self.parrot_raw_handle=None
@@ -2340,6 +2341,16 @@ class MainWindow(QMainWindow):
 
     def _operating_mode_changed(self, *_args):
         mode=self._mode()
+        if mode!="radio_parrot":
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            self._stop_parrot_capture()
+            proc=getattr(self,"parrot_beacon_proc",None)
+            if proc is not None and proc.poll() is None:
+                try: proc.terminate()
+                except Exception: pass
+            self.parrot_beacon_proc=None
+            self.parrot_beacon_in_progress=False
         if mode!="voip_parrot" and getattr(self,"voip_parrot_running",False):
             self.stop_voip_parrot()
         if mode in ("pc","voip_parrot"):
@@ -3958,6 +3969,13 @@ class MainWindow(QMainWindow):
             self.protection_announcement_proc=None
             self.log(f"Schutzansage fehlgeschlagen ({label}): {e}")
 
+    def _activate_radio_parrot_from_dtmf(self):
+        """DTMF Papagei EIN wechselt in die Betriebsart Funk-Papagei."""
+        idx=self.operating_mode.findData("radio_parrot")
+        if idx>=0 and self.operating_mode.currentIndex()!=idx:
+            self.operating_mode.setCurrentIndex(idx)
+        self.parrot_enabled.setChecked(True)
+
     @staticmethod
     def _clean_dtmf_code(value):
         allowed=set("0123456789*#ABCD")
@@ -4387,7 +4405,7 @@ class MainWindow(QMainWindow):
 
     def _dtmf_fixed_actions(self):
         return [
-            (self._clean_dtmf_code(self.dtmf_code_parrot_on.text()),"Papagei EIN",lambda:self.parrot_enabled.setChecked(True),"parrot"),
+            (self._clean_dtmf_code(self.dtmf_code_parrot_on.text()),"Papagei EIN",self._activate_radio_parrot_from_dtmf,"parrot"),
             (self._clean_dtmf_code(self.dtmf_code_voip_on.text()),"VoIP-Betrieb",lambda:self.parrot_enabled.setChecked(False),"voip"),
             (self._clean_dtmf_code(self.dtmf_code_ts_mute.text()),"TeamSpeak MUTE",lambda:self._dtmf_ts_mute(True),"default"),
             (self._clean_dtmf_code(self.dtmf_code_ts_unmute.text()),"TeamSpeak UNMUTE",lambda:self._dtmf_ts_mute(False),"default"),
@@ -7159,6 +7177,14 @@ done"""
         return bool(self.rx_was_active or self._parrot_busy() or self.protection_muted or self.protection_announcement_busy or self.roger_busy or self.return_guard_muted)
 
     def _parrot_mode_toggled(self,enabled):
+        # Harte Modustrennung: alte Konfigurationen dürfen außerhalb der
+        # Betriebsart Funk-Papagei keinen RX-Capture oder Bake-Timer starten.
+        if not self._is_radio_parrot_mode():
+            self._stop_parrot_capture()
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            return
+
         # Recalculate the whole FunkGateway_TX.monitor -> radio bridge first.
         # Papagei isolation must be active before any acknowledgement/replay.
         self._set_tx_forward_muted(False)
@@ -7185,6 +7211,8 @@ done"""
 
     def _ensure_parrot_capture(self):
         """Start one continuous raw RX capture used as the Papagei prebuffer."""
+        if not self._is_radio_parrot_mode():
+            return False
         if not hasattr(self,"parrot_enabled") or not self.parrot_enabled.isChecked():
             return False
 
@@ -7635,18 +7663,35 @@ done"""
         QTimer.singleShot(self.parrot_lead_ms.value(),start_audio)
 
     def _queue_parrot_beacon(self):
+        if not self._is_radio_parrot_mode():
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            return
         if not self.parrot_pending_beacon:
             self.parrot_pending_beacon=True
             self.parrot_beacon_free_since=None
             self.log("Papageibake fällig – wartet auf freien Funkkanal.")
 
     def _parrot_send_beacon(self):
+        if not self._is_radio_parrot_mode():
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            return
         if not self.parrot_enabled.isChecked() or not self.parrot_beacon_enabled.isChecked():
             self.parrot_pending_beacon=False
             return
         p=self.parrot_beacon_file.text().strip()
         if not p:
-            self.log("Papageibake fällig, aber keine WAV-Datei gewählt.")
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            self.parrot_beacon_retry_after=time.monotonic()+60.0
+            self.log("Papageibake fällig, aber keine WAV-Datei gewählt – neuer Versuch frühestens in 60 s.")
+            return
+        if not Path(p).is_file():
+            self.parrot_pending_beacon=False
+            self.parrot_beacon_free_since=None
+            self.parrot_beacon_retry_after=time.monotonic()+60.0
+            self.log(f"Papageibake fehlt: {p} – neuer Versuch frühestens in 60 s.")
             return
         if self._parrot_channel_busy():
             self._queue_parrot_beacon()
@@ -7682,7 +7727,8 @@ done"""
             except Exception as e:
                 self.parrot_beacon_in_progress=False
                 self.parrot_beacon_proc=None
-                self.log(f"Papageibake fehlgeschlagen: {e}")
+                self.parrot_beacon_retry_after=time.monotonic()+60.0
+                self.log(f"Papageibake fehlgeschlagen: {e} – neuer Versuch frühestens in 60 s.")
                 try: self.set_ptt(False)
                 except Exception: pass
                 return
@@ -7712,6 +7758,10 @@ done"""
         QTimer.singleShot(self.parrot_beacon_lead_ms.value(),start_beacon_audio)
 
     def _parrot_tick(self,now):
+        # Funk-Papagei und Papageibake dürfen ausschließlich in der eigenen
+        # Betriebsart laufen. Gespeicherte Altwerte sind damit wirkungslos.
+        if not self._is_radio_parrot_mode():
+            return
         if not hasattr(self,"parrot_enabled") or not self.parrot_enabled.isChecked():
             return
 
@@ -7765,7 +7815,10 @@ done"""
         if self.parrot_recording and self.parrot_rx_started is not None:
             if now-self.parrot_rx_started >= self.parrot_max_seconds.value():
                 self._parrot_stop_recording("maximale Aufnahmedauer erreicht")
-        if self.parrot_beacon_enabled.isChecked() and not self.parrot_pending_beacon and not self.parrot_beacon_in_progress:
+        if (self.parrot_beacon_enabled.isChecked()
+                and not self.parrot_pending_beacon
+                and not self.parrot_beacon_in_progress
+                and now >= getattr(self,"parrot_beacon_retry_after",0.0)):
             if now-self.parrot_last_beacon >= self.parrot_beacon_interval.value()*60:
                 self._queue_parrot_beacon()
         if self.parrot_pending_beacon and not self.parrot_beacon_in_progress:
@@ -8782,15 +8835,31 @@ done"""
             "FunkGateway liefert hierfür eine generische Standardansage mit. "
             "Du kannst diese jederzeit über „WAV auswählen“ durch eine eigene Ansage ersetzen."
         )
+        migrated=0
         for field,filename in slots:
             field.setToolTip(tooltip)
-            if not field.text().strip():
-                p=self._default_wav_path(filename)
-                if p:
-                    field.setText(p)
+            current=field.text().strip()
+            default_path=self._default_wav_path(filename)
+            if not current:
+                if default_path:
+                    field.setText(default_path)
                     applied+=1
+                continue
+
+            # Mitgelieferte Standard-WAVs wurden früher als absoluter Pfad in
+            # den jeweiligen Versionsordner gespeichert. Nur eindeutig erkannte
+            # default_wavs werden migriert; eigene Aufnahmen bleiben erhalten.
+            old_path=Path(current).expanduser()
+            if (not old_path.is_file()
+                    and old_path.name==filename
+                    and old_path.parent.name=="default_wavs"
+                    and default_path):
+                field.setText(default_path)
+                migrated+=1
         if applied:
             self.log(f"Standard-WAVs: {applied} leere Ansage-Slots mit mitgelieferten Standardansagen belegt.")
+        if migrated:
+            self.log(f"Standard-WAVs: {migrated} veraltete Versionspfade auf den aktuellen Programmordner migriert.")
 
     def _default_wav_hint_label(self):
         note=QLabel(
