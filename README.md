@@ -1,21 +1,48 @@
-# FunkGateway UI 0.5.9.25
+# FunkGateway UI 0.5.9.44
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.25**
+**Aktueller stabiler Feldtest-Stand: 0.5.9.44**
 
 ## Betriebsarten
 
-Ab **0.5.9.25** kann FunkGateway zwischen zwei Oberflächen umschalten:
+FunkGateway bietet vier dauerhaft auswählbare Betriebsarten:
 
-- **Funk-Gateway** – vollständiger Betrieb mit Audio-Routing, RX, PTT, Rogerbeep, Rufzeichen, Papagei, DTMF und Schutzfunktionen.
-- **PC / TeamSpeak** – vereinfachte Oberfläche für einen normalen Linux-PC ohne Funkgerät. HF-/PTT-Funktionen werden ausgeblendet und im PC-Modus nicht initialisiert.
+- **PC-User** – Betrieb auf einem normalen Linux-PC ohne Funk-PTT; mit TeamSpeak/PC-Funktionen, PC-Papagei und eigener Hardware-Port-Wahl für Mikrofon/Line-In.
+- **Funk-Gateway** – vollständiger Funk↔VoIP-Betrieb mit RX, PTT, Rogerbeep, Rufzeichen, DTMF und Schutzfunktionen.
+- **Funk-Papagei** – Funk-RX wird aufgenommen und anschließend wieder über Funk ausgesendet.
+- **VoIP-Papagei** – eingehendes VoIP-Audio wird aufgenommen und über eine getrennte virtuelle VoIP-Audiokette zurückgespielt.
 
-Im PC-Modus stehen unter anderem ein **sprechabhängiger TeamSpeak Channel Commander**, ein lokaler **PC-Papagei / Mikrofontest** und ein eigener Reiter **Moderation** zur Verfügung. Der PC-Papagei verwendet PulseAudio/PipeWire und nimmt zuerst vollständig auf, bevor die Aufnahme wiedergegeben wird.
+Hardware-Port-Wächter können bei Shared-Mic/Line-In-Soundkarten den gewünschten Port automatisch wiederherstellen. PC-User und Funk-RX besitzen getrennte Portkonfigurationen.
 
-## TeamSpeak-Moderation im PC-Modus
+Die Startseite passt ihre Anzeigen an die gewählte Betriebsart an. Nicht relevante Funk-PTT-Anzeigen werden in PC-User und VoIP-Papagei ausgeblendet.
 
-Der Reiter **Moderation** bietet manuelle Funktionen für Poke, Verschieben, Channel-Kick und Server-Kick. Die Seite ist zweispaltig aufgebaut, damit auf kleineren Desktop-Auflösungen wenig gescrollt werden muss. Kritische Aktionen benötigen eine Bestätigung. FunkGateway verwendet ausschließlich die Rechte des angemeldeten TeamSpeak-Clients.
+## Einfache und erweiterte Gateway-Ansicht
+
+Ab **0.5.9.28** startet der Funk-Gateway-Modus mit einer vereinfachten Oberfläche. Auf der Startseite kann mit **„Erweiterte Einstellungen anzeigen“** jederzeit auf die vollständige Gateway-Oberfläche umgeschaltet werden.
+
+In der einfachen Ansicht bleiben die für den normalen Betrieb wichtigsten Bereiche sichtbar: Start, Audio, PTT, RX/Rogerbeep, Rufzeichen, Papagei, DTMF, Integrationen, Updates, Protokoll und Hilfe. Zusätzliche Feinabstimmungs- und Expertenseiten werden erst in der erweiterten Ansicht eingeblendet.
+
+Der Reiter **Moderation** gehört ausschließlich zum Modus **PC / TeamSpeak** und wird im Funk-Gateway-Modus grundsätzlich nicht angezeigt.
+
+### Vereinfachung innerhalb der Reiter
+
+Die einfache Ansicht blendet nicht nur ganze Expertenreiter aus. Auch auf den weiterhin sichtbaren Seiten werden technische Feinwerte verborgen, wenn für den normalen Betrieb ein bewährter Standard ausreicht. Dazu gehören beispielsweise PTT-/Rogerbeep-Timings, Papagei-Vorlauf/Nachlauf und DTMF-Protokollzeiten.
+
+Die Werte bleiben intern aktiv. Auf neuen Installationen gelten die voreingestellten Standardwerte. Bereits vorhandene benutzerdefinierte Einstellungen werden durch das Umschalten zwischen einfacher und erweiterter Ansicht nicht verändert.
+
+## Einrichtung, Diagnose und Profile
+
+Ab **0.5.9.28** bündelt die Startseite die letzten Funktionsbausteine vor dem Design-Fokus:
+
+- Eigener Reiter **Einrichtung** mit Schritt-für-Schritt-Assistent (Zurück/Weiter) ohne automatisches Senden
+- Selbsttest für Audio, PTT, Konfiguration und aktivierte VoIP-Integrationen
+- Konfigurations-Backup und Wiederherstellung
+- lokale benannte Profile
+- kompakte Systemstatusübersicht
+- redigiertes Diagnosepaket für Support und Fehlersuche
+
+Diagnosepakete entfernen bekannte Zugangsdaten und Authentifizierungsgeheimnisse. Normale Konfigurationssicherungen und lokale Profile können dagegen sensible Daten enthalten und sollten wie Passwörter behandelt werden.
 
 ## Highlights
 
@@ -39,9 +66,9 @@ Der Reiter **Moderation** bietet manuelle Funktionen für Poke, Verschieben, Cha
 
 ## Mitgelieferte Standard-WAVs
 
-Ab **0.5.9.25** enthalten die Release-Pakete im Ordner `default_wavs/` generische deutsche Ansagen für alle 13 WAV-Slots.
+Ab **0.5.9.28** enthält FunkGateway im Ordner `default_wavs/` generische deutsche Ansagen für alle vorhandenen WAV-Slots. Leere Felder werden automatisch mit diesen Dateien vorbelegt.
 
-Beim Programmstart werden diese Standarddateien **nur in leere WAV-Felder** eingetragen. Bereits konfigurierte eigene Ansagen bleiben unverändert und werden nicht überschrieben. Jede Standardansage kann jederzeit über **„WAV auswählen“** durch eine eigene Datei ersetzt werden.
+Eigene Ansagen können jederzeit über **„WAV auswählen“** eingesetzt werden. Bereits konfigurierte eigene WAV-Pfade werden beim Start nicht überschrieben.
 
 ## DTMF-Steuerung
 
@@ -102,10 +129,6 @@ Im Reiter **Protokoll** gibt es die Checkbox **„Ausführliches Log“**.
 - Mit Haken: zusätzliche technische Ablauf- und Diagnosemeldungen.
 - Die gespeicherte Logdatei bleibt unabhängig davon vollständig.
 
-### PC-Papagei und TeamSpeak-Audio
-
-Der PC-Papagei verwendet PulseAudio/PipeWire (`pactl`, `parec`, `paplay`) statt eines direkten exklusiven ALSA-Hardwarezugriffs. Dadurch kann er die normalen Desktop-Standardgeräte gemeinsam mit TeamSpeak verwenden. Aufnahme und Wiedergabe laufen zeitlich getrennt, um Rückkopplungsschleifen zu vermeiden.
-
 ## Installation
 
 Die empfohlenen Installationspakete befinden sich bei den GitHub-Releases.
@@ -130,23 +153,11 @@ chmod +x install-ubuntu-24.04.sh
 ## Schnellstarter
 
 `install-desktop.sh` erzeugt den stabilen Menüeintrag `~/.local/share/applications/funkgateway-ui.desktop`.
-
-Ab **0.5.9.25** werden dabei alte lokale FunkGateway-Starter automatisch entfernt. Bereits angeheftete alte GNOME-FunkGateway-Favoriten werden auf die stabile Desktop-ID umgestellt und entdoppelt. Anschließend wird nach Möglichkeit `update-desktop-database` ausgeführt.
-
-Damit zeigt der Drawer/Dash nach einem Update auf den aktuellen Installationsordner. Andere Desktop-Dateien werden nicht verändert.
+Ab **0.5.9.28** werden dabei alte lokale FunkGateway-Starter automatisch entfernt. Ein bereits angehefteter alter GNOME-Favorit wird auf die stabile Desktop-ID umgestellt, sodass der Drawer/Dash nicht mehr auf einen alten Versionsordner zeigt.
 
 ## Update-Funktion
 
-FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht und vor der Installation geprüft.
-
-Ab **0.5.9.25** kann der Updater nach dem Download außerdem:
-
-- verlorene ZIP-Ausführungsrechte der Shell-Skripte automatisch wiederherstellen,
-- den passenden Distributions-Installer in einem sichtbaren Terminal starten,
-- eine notwendige `sudo`-Passwortabfrage normal im Terminal zulassen,
-- anschließend optional `install-desktop.sh` ausführen und den Schnellstarter auf den neuen Versionsordner setzen.
-
-Die bisherige Installation bleibt als Rückfallmöglichkeit erhalten und `~/.config/funkgateway-ui` wird weiterverwendet.
+FunkGateway kann GitHub auf eine neuere Version prüfen. Release-Pakete werden mit SHA256-Prüfsummen veröffentlicht, damit Downloads vor der Installation geprüft werden können.
 
 ## Sicherheit
 
@@ -164,3 +175,11 @@ Der vollständige Versionsverlauf steht in `CHANGELOG.md`.
 ## Lizenz
 
 GNU General Public License v3.0
+
+### PC-Papagei und TeamSpeak-Audio
+
+Der PC-Papagei verwendet PulseAudio/PipeWire statt eines direkten ALSA-Hardwarezugriffs. Dadurch kann er die normalen Desktop-Standardgeräte parallel zu TeamSpeak benutzen. Aufnahme und Wiedergabe bleiben zeitlich getrennt, um Rückkopplungsschleifen zu vermeiden.
+
+### Eigener Moderations-Reiter
+
+Ab **0.5.9.28** liegt die TeamSpeak-Moderation in einem eigenen Reiter. Die Seite nutzt eine zweispaltige Anordnung, damit Benutzerwahl, Poke, Verschieben und Kick ohne langes Scrollen erreichbar sind.

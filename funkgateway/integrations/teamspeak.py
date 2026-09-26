@@ -351,6 +351,7 @@ class TeamSpeakClientQuery:
         """Return all currently talking voice-client nicknames visible to TS3.
 
         Also remember whether the local ClientQuery client itself is talking.
+        ``whoami()`` should have been called beforehand so ``self.clid`` is known.
         """
         lines, err_id, err_msg = self.command("clientlist -voice")
         if err_id != 0:

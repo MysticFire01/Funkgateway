@@ -1,10 +1,11 @@
-FunkGateway UI 0.5.7.0 – Generic Linux
+FunkGateway UI 0.5.9.44 – Debian 12
 
 Installation:
-  ./install-linux.sh
+  chmod +x install-debian-12.sh
+  ./install-debian-12.sh
 
 Start:
   ./start.sh
 
-Mumble/Python-Ice:
-  Integrationen -> Mumble -> Mumble-Komponenten installieren / reparieren
+Optionaler Desktop-/Menüeintrag:
+  ./install-desktop.sh

@@ -1,3 +1,4 @@
+import os
 import math
 import array
 import wave
@@ -11,15 +12,15 @@ The UI deliberately uses plain language.  Most radio operators should be able
 to configure the gateway without knowing how PipeWire, serial devices or GPIO
 work internally.
 """
-import json, subprocess, time, shutil, webbrowser, html, hashlib, hmac, secrets, base64, struct
+import json, subprocess, time, shutil, webbrowser, html, hashlib, hmac, secrets, base64, struct, zipfile, platform
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtWidgets import (
     QGroupBox,QApplication,QCheckBox,QComboBox,QFileDialog,
     QFormLayout,QHBoxLayout,QLabel,QLineEdit,QMainWindow,QMessageBox,QPushButton,
     QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,
-    QDialog,QDialogButtonBox)
-from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF
+    QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage)
+from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal
 from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap
 from PySide6.QtPrintSupport import QPrinter
 
@@ -42,10 +43,13 @@ from .updates import fetch_latest_release, choose_asset, is_newer, download_and_
 
 
 class MainWindow(QMainWindow):
+    parrotCommanderRequested = Signal(bool, str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {VERSION}")
-        self.resize(900, 680)
+        self.resize(980, 720)
+        self.setMinimumSize(720, 520)
         self.ptt=None; self.bridge=None; self.rx_detector=None; self.tx=False; self.tx_since=None
         self.pending_id=False; self.last_id=time.monotonic(); self.last_route_check=0.0
         self.rx_was_active=False; self.rx_ignore_until=0.0
@@ -86,9 +90,12 @@ class MainWindow(QMainWindow):
         self.ts_commander_wanted=False
         self.ts_commander_state=False
         self.ts_commander_needs_sync=True
+        self.parrot_commander_hold=False
+        self.parrot_commander_hold_source=""
         self.ts_last_status=None
         self.ts_last_speakers=None
         self.ts_last_channel=None
+        self.parrotCommanderRequested.connect(self._apply_parrot_channel_commander)
 
         # Mumble uses the local client API for everyday status/speakers. Ice is
         # optional and only used for administrator-controlled server functions.
@@ -182,6 +189,19 @@ class MainWindow(QMainWindow):
         self.parrot_guard_buffering=False
         self.parrot_guard_prebuffer_bytes=0
 
+        # Plattformunabhängiger VoIP-Papagei für den PC-/VoIP-Modus.
+        # Er besitzt einen eigenen virtuellen Mikrofoneingang und ist bewusst
+        # vollständig vom lokalen PC-Mikrofontest und vom Funk-Papagei getrennt.
+        self.voip_parrot_thread=None
+        self.voip_parrot_stop=threading.Event()
+        self.voip_parrot_proc=None
+        self.voip_parrot_play_proc=None
+        self.voip_parrot_running=False
+        self.voip_parrot_phase="idle"
+        self.voip_parrot_status_text="Bereit"
+        self.voip_parrot_last_seconds=0.0
+        self.voip_parrot_temp_file=CFG_DIR / "voip-papagei-temp.wav"
+
         # Hauptsteuerung bleibt unabhängig vom gewählten Reiter immer sichtbar.
         # Dadurch sind Start/Stop/NOT-AUS/Rufzeichen auch bei kleinen Fenstern
         # oder sehr langen Einstellungsseiten sofort erreichbar.
@@ -196,11 +216,14 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(6)
 
         self.operating_mode=QComboBox()
+        self.operating_mode.addItem("PC-User","pc")
         self.operating_mode.addItem("Funk-Gateway","gateway")
-        self.operating_mode.addItem("PC / TeamSpeak","pc")
+        self.operating_mode.addItem("Funk-Papagei","radio_parrot")
+        self.operating_mode.addItem("VoIP-Papagei","voip_parrot")
         self.operating_mode.setToolTip(
-            "Funk-Gateway zeigt alle Funk-, PTT- und Audiofunktionen. "
-            "PC / TeamSpeak baut eine vereinfachte Oberfläche ohne HF-/PTT-Funktionen auf."
+            "PC-User: normaler PC-/TeamSpeak-Betrieb. Funk-Gateway: vollständiges Gateway. "
+            "Funk-Papagei: Funk-RX aufnehmen und über Funk zurückgeben. "
+            "VoIP-Papagei: VoIP-Audio aufnehmen und in den VoIP-Client zurückgeben."
         )
         controls_layout.addWidget(QLabel("Betriebsart:"))
         controls_layout.addWidget(self.operating_mode)
@@ -230,14 +253,18 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.tabs,1)
         self.setCentralWidget(central)
 
-        self.build_start(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
-        self.build_ids(); self.build_tools(); self.build_pc_mode(); self.build_pc_moderation(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
+        self.build_start(); self.build_setup(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
+        self.build_ids(); self.build_tools(); self.build_pc_mode(); self.build_voip_parrot(); self.build_pc_moderation(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
         self._make_all_tab_pages_scrollable()
 
+        self._first_start = not CFG_FILE.exists()
         self.load_cfg()
         self._apply_default_wavs()
         self.operating_mode.currentIndexChanged.connect(self._operating_mode_changed)
         self._apply_operating_mode_ui()
+        self._apply_simple_widget_visibility()
+        self.refresh_profiles()
+        self.update_start_status()
         if hasattr(self,"ts_api_key") and not self.ts_api_key.text().strip():
             key=read_default_api_key()
             if key:
@@ -247,14 +274,21 @@ class MainWindow(QMainWindow):
         self.refresh_pc_audio_devices()
         for combo,wanted in (
             (self.pc_parrot_input,getattr(self,"_wanted_pc_parrot_input",None)),
-            (self.pc_parrot_output,getattr(self,"_wanted_pc_parrot_output",None))
+            (self.pc_parrot_output,getattr(self,"_wanted_pc_parrot_output",None)),
+            (self.voip_parrot_input,getattr(self,"_wanted_voip_parrot_input",None))
         ):
             if wanted is not None:
                 pos=combo.findData(wanted)
                 if pos>=0:
                     combo.setCurrentIndex(pos)
-        if not self._is_pc_mode():
+        if hasattr(self,"pc_hw_port"):
+            self._refresh_pc_hardware_ports()
+            if self._is_pc_mode() and self.pc_hw_port_enable.isChecked() and self.pc_hw_port_restore.isChecked():
+                self._apply_pc_hardware_port(log_result=False)
+        if self._needs_radio_stack():
             self.ensure_gateway_sink()
+        if getattr(self,"_first_start",False):
+            QTimer.singleShot(0,self._run_first_start_wizard)
             try:
                 make_rx_source()
                 self.log("FunkGateway_RX_Input ist als virtuelle Aufnahmequelle bereit.")
@@ -269,6 +303,14 @@ class MainWindow(QMainWindow):
         self.tick_timer.start(250)
         self.integration_timer=QTimer(self); self.integration_timer.timeout.connect(self.poll_integrations)
         self.integration_timer.start(750)
+        self.start_status_timer=QTimer(self); self.start_status_timer.timeout.connect(self.update_start_status)
+        self.start_status_timer.start(2500)
+        self.rx_hw_port_watchdog_timer=QTimer(self)
+        self.rx_hw_port_watchdog_timer.timeout.connect(self._watch_rx_hardware_port)
+        self.rx_hw_port_watchdog_timer.start(1000)
+        self.pc_hw_port_watchdog_timer=QTimer(self)
+        self.pc_hw_port_watchdog_timer.timeout.connect(self._watch_pc_hardware_port)
+        self.pc_hw_port_watchdog_timer.start(1000)
         if hasattr(self,"update_check_start") and self.update_check_start.isChecked():
             QTimer.singleShot(2500,lambda:self.check_for_updates(quiet=True))
 
@@ -276,7 +318,14 @@ class MainWindow(QMainWindow):
         b=QPushButton(text); b.setMinimumHeight(56); return b
 
     def _make_all_tab_pages_scrollable(self):
-        """Make every settings tab vertically scrollable without hiding main controls."""
+        """Make settings pages safely scrollable on small windows / larger fonts.
+
+        Do not force the page into a viewport that is narrower than its natural
+        contents.  That used to clip the first/last characters of form labels on
+        some Qt themes and DPI settings.  Horizontal scrolling is therefore
+        available *only when needed*; normal-sized windows still behave exactly
+        like before.
+        """
         tabs=[self.tabs] + [t for t in self.findChildren(QTabWidget) if t is not self.tabs]
         # Deep/nested tabs first, then the main tab widget.
         for tab in reversed(tabs):
@@ -285,6 +334,28 @@ class MainWindow(QMainWindow):
                 page=tab.widget(i)
                 if isinstance(page,QScrollArea):
                     continue
+
+                # Give every page a little breathing room and let long form rows
+                # wrap instead of painting underneath the viewport edge.
+                widgets=[page] + page.findChildren(QWidget)
+                for widget in widgets:
+                    layout=widget.layout()
+                    if layout is None:
+                        continue
+                    try:
+                        margins=layout.contentsMargins()
+                        layout.setContentsMargins(
+                            max(10,margins.left()), max(8,margins.top()),
+                            max(10,margins.right()), max(8,margins.bottom())
+                        )
+                    except Exception:
+                        pass
+                    if isinstance(layout,QFormLayout):
+                        layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
+                        layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+                        layout.setHorizontalSpacing(max(10,layout.horizontalSpacing()))
+                        layout.setVerticalSpacing(max(6,layout.verticalSpacing()))
+
                 title=tab.tabText(i)
                 icon=tab.tabIcon(i)
                 tip=tab.tabToolTip(i)
@@ -292,7 +363,9 @@ class MainWindow(QMainWindow):
                 tab.removeTab(i)
                 scroll=QScrollArea()
                 scroll.setWidgetResizable(True)
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                scroll.setContentsMargins(2,2,2,2)
                 scroll.setWidget(page)
                 tab.insertTab(i,scroll,icon,title)
                 tab.setTabEnabled(i,enabled)
@@ -302,8 +375,13 @@ class MainWindow(QMainWindow):
 
     def build_start(self):
         w=QWidget(); v=QVBoxLayout(w)
-        title=QLabel(f"<h1>FunkGateway {VERSION}</h1><p>Linux Radio Gateway – Open Source</p>")
-        v.addWidget(title)
+        self.start_title=QLabel(f"<h1>FunkGateway {VERSION}</h1><p>Linux Radio Gateway – Open Source</p>")
+        self.start_title.setWordWrap(True)
+        v.addWidget(self.start_title)
+        self.start_mode_note=QLabel()
+        self.start_mode_note.setWordWrap(True)
+        self.start_mode_note.setStyleSheet("font-weight: bold; padding: 4px;")
+        v.addWidget(self.start_mode_note)
         self.funk_rx_big=QLabel("FUNK KANAL FREI")
         self.funk_rx_big.setAlignment(Qt.AlignCenter)
         self.funk_rx_big.setMinimumHeight(74)
@@ -315,12 +393,942 @@ class MainWindow(QMainWindow):
         self.tx_lbl=QLabel("● PTT AUS"); self.cos_lbl=QLabel("● KANAL FREI")
         self.meter=QProgressBar(); self.meter.setRange(0,100); self.meter.setFormat("Audio %p %")
         v.addWidget(self.funk_rx_big); v.addWidget(self.gateway_state_big); v.addWidget(self.tx_lbl); v.addWidget(self.cos_lbl); v.addWidget(self.meter)
-        controls_note=QLabel("Die Hauptsteuerung mit Start, Stop, NOT-AUS und Rufzeichen bleibt jetzt fest oben sichtbar – unabhängig vom gewählten Reiter.")
-        controls_note.setWordWrap(True)
-        controls_note.setStyleSheet("font-weight: bold; padding: 6px;")
-        v.addWidget(controls_note)
+        self.start_controls_note=QLabel("Die Hauptsteuerung wird passend zur gewählten Betriebsart angezeigt.")
+        self.start_controls_note.setWordWrap(True)
+        self.start_controls_note.setStyleSheet("font-weight: bold; padding: 6px;")
+        v.addWidget(self.start_controls_note)
+
+        status_box=QGroupBox("Systemstatus")
+        sf=QFormLayout(status_box)
+        self.status_audio=QLabel("Audio: noch nicht geprüft")
+        self.status_ptt=QLabel("PTT: noch nicht geprüft")
+        self.status_voip=QLabel("VoIP: noch nicht geprüft")
+        self.status_config=QLabel("Konfiguration: noch nicht geprüft")
+        self.status_audio_caption=QLabel("Audio:")
+        self.status_ptt_caption=QLabel("PTT:")
+        self.status_voip_caption=QLabel("VoIP:")
+        self.status_config_caption=QLabel("Konfiguration:")
+        sf.addRow(self.status_audio_caption,self.status_audio)
+        sf.addRow(self.status_ptt_caption,self.status_ptt)
+        sf.addRow(self.status_voip_caption,self.status_voip)
+        sf.addRow(self.status_config_caption,self.status_config)
+        v.addWidget(status_box)
+
         v.addStretch(1)
         self.tabs.addTab(w,"Start")
+
+    def build_setup(self):
+        """Build the dedicated first-run/setup and maintenance page."""
+        w=QWidget(); v=QVBoxLayout(w)
+
+        self.setup_title=QLabel(
+            "<h2>Einrichtung</h2>"
+            "<p>Grundkonfiguration, Einrichtungsassistent und Wartungswerkzeuge. "
+            "Der Reiter Start bleibt dadurch auf den laufenden Betrieb konzentriert.</p>"
+        )
+        self.setup_title.setWordWrap(True)
+        v.addWidget(self.setup_title)
+
+        self.setup_mode_note=QLabel()
+        self.setup_mode_note.setWordWrap(True)
+        v.addWidget(self.setup_mode_note)
+
+        view_box=QGroupBox("Ansicht")
+        vf=QVBoxLayout(view_box)
+        self.advanced_ui=QCheckBox("Erweiterte Einstellungen anzeigen")
+        self.advanced_ui.setChecked(False)
+        self.advanced_ui.setToolTip(
+            "Standardmäßig zeigt FunkGateway nur die wichtigsten Einstellungen. "
+            "Mit diesem Haken werden zusätzliche Experten- und Feinabstimmungs-Reiter eingeblendet."
+        )
+        self.advanced_ui.toggled.connect(self._advanced_ui_toggled)
+        advanced_note=QLabel(
+            "Für den normalen Gateway-Betrieb reichen die Grundeinstellungen. "
+            "Erweiterte Werte bleiben erhalten und können jederzeit wieder eingeblendet werden."
+        )
+        advanced_note.setWordWrap(True)
+        vf.addWidget(self.advanced_ui)
+        vf.addWidget(advanced_note)
+        v.addWidget(view_box)
+
+        wizard_box=QGroupBox("Ersteinrichtung")
+        wf=QVBoxLayout(wizard_box)
+        self.setup_wizard_note=QLabel(
+            "Der Assistent führt mit Zurück / Weiter Schritt für Schritt durch die zur Betriebsart passenden Einstellungen."
+        )
+        self.setup_wizard_note.setWordWrap(True)
+        wizard_btn=QPushButton("Einrichtungsassistent starten")
+        wizard_btn.setMinimumHeight(44)
+        wizard_btn.clicked.connect(self.run_setup_assistant)
+        wf.addWidget(self.setup_wizard_note)
+        wf.addWidget(wizard_btn)
+        v.addWidget(wizard_box)
+
+        self.setup_gateway_box=QGroupBox("Funk-Gateway konfigurieren")
+        ggf=QVBoxLayout(self.setup_gateway_box)
+        gateway_note=QLabel(
+            "Für den Funk-Gateway-Modus stehen Audio, PTT/Modem, RX-Erkennung, "
+            "TeamSpeak/Mumble, Rufzeichen, Papagei und DTMF in den jeweiligen Einstellungsreitern bereit."
+        )
+        gateway_note.setWordWrap(True)
+        ggf.addWidget(gateway_note)
+        gateway_buttons=QHBoxLayout()
+        for text_name, tab_name in (("Audio", "Audio-Automatik"),("PTT / Modem", "PTT / Modem"),("RX-Erkennung", "RX / Rogerbeep"),("Integrationen", "Integrationen")):
+            btn=QPushButton(text_name)
+            btn.clicked.connect(lambda _=False,t=tab_name:self._select_tab_by_title(t))
+            gateway_buttons.addWidget(btn)
+        ggf.addLayout(gateway_buttons)
+        v.addWidget(self.setup_gateway_box)
+
+        self.setup_pc_box=QGroupBox("PC / TeamSpeak konfigurieren")
+        pcf=QVBoxLayout(self.setup_pc_box)
+        pc_note=QLabel(
+            "Im PC-/TeamSpeak-Modus konzentriert sich die Einrichtung auf Desktop-Audio, "
+            "TeamSpeak/ClientQuery, Papagei-Test und Channel Commander. Funkhardware, PTT, RX und Rufzeichen entfallen."
+        )
+        pc_note.setWordWrap(True)
+        pcf.addWidget(pc_note)
+        pc_buttons=QHBoxLayout()
+        pc_audio_btn=QPushButton("Audio / Papagei")
+        pc_audio_btn.clicked.connect(lambda:self._select_tab_by_title("PC / TeamSpeak"))
+        pc_ts_btn=QPushButton("TeamSpeak / ClientQuery")
+        pc_ts_btn.clicked.connect(lambda:self._select_tab_by_title("Integrationen"))
+        pc_test_btn=QPushButton("ClientQuery testen")
+        pc_test_btn.clicked.connect(self.test_teamspeak)
+        pc_cc_btn=QPushButton("Channel Commander")
+        pc_cc_btn.clicked.connect(lambda:self._select_tab_by_title("PC / TeamSpeak"))
+        for btn in (pc_audio_btn,pc_ts_btn,pc_test_btn,pc_cc_btn):
+            pc_buttons.addWidget(btn)
+        pcf.addLayout(pc_buttons)
+        v.addWidget(self.setup_pc_box)
+
+        maintenance=QGroupBox("Wartung und Diagnose")
+        mf=QFormLayout(maintenance)
+
+        selftest_btn=QPushButton("Selbsttest / Diagnose")
+        selftest_btn.clicked.connect(lambda:self.run_self_test(show_dialog=True))
+
+        backup_btn=QPushButton("Konfiguration sichern")
+        backup_btn.clicked.connect(self.export_config_backup)
+        restore_btn=QPushButton("Konfiguration wiederherstellen")
+        restore_btn.clicked.connect(self.import_config_backup)
+        backup_row=QHBoxLayout()
+        backup_row.addWidget(backup_btn)
+        backup_row.addWidget(restore_btn)
+
+        self.profile_combo=QComboBox()
+        self.profile_combo.addItem("Keine gespeicherten Profile",None)
+        save_profile_btn=QPushButton("Profil speichern")
+        save_profile_btn.clicked.connect(self.save_profile)
+        load_profile_btn=QPushButton("Profil laden")
+        load_profile_btn.clicked.connect(self.load_profile)
+        delete_profile_btn=QPushButton("Profil löschen")
+        delete_profile_btn.clicked.connect(self.delete_profile)
+        profile_actions=QHBoxLayout()
+        profile_actions.addWidget(save_profile_btn)
+        profile_actions.addWidget(load_profile_btn)
+        profile_actions.addWidget(delete_profile_btn)
+
+        diag_btn=QPushButton("Diagnosepaket erstellen")
+        diag_btn.clicked.connect(self.create_diagnostic_bundle)
+
+        mf.addRow(selftest_btn)
+        mf.addRow("Konfiguration:",backup_row)
+        mf.addRow("Profil:",self.profile_combo)
+        mf.addRow("",profile_actions)
+        mf.addRow(diag_btn)
+
+        maintenance_note=QLabel(
+            "Profile und Sicherungen liegen lokal. Das Diagnosepaket entfernt bekannte "
+            "API-Schlüssel, PIN-/TOTP-Geheimnisse und andere sensible Werte."
+        )
+        maintenance_note.setWordWrap(True)
+        mf.addRow("",maintenance_note)
+        v.addWidget(maintenance)
+        v.addStretch(1)
+        self.tabs.addTab(w,"Einrichtung")
+
+
+    def _profile_dir(self):
+        p=CFG_DIR / "profiles"
+        p.mkdir(parents=True,exist_ok=True)
+        try:
+            p.chmod(0o700)
+        except Exception:
+            pass
+        return p
+
+    @staticmethod
+    def _safe_profile_name(name):
+        value=re.sub(r"[^A-Za-z0-9ÄÖÜäöüß._ -]+","_",str(name or "")).strip()
+        value=value.strip(". ")
+        return value[:80]
+
+    def refresh_profiles(self):
+        if not hasattr(self,"profile_combo"):
+            return
+        current=self.profile_combo.currentData()
+        self.profile_combo.clear()
+        files=sorted(self._profile_dir().glob("*.json"),key=lambda p:p.name.lower())
+        if not files:
+            self.profile_combo.addItem("Keine gespeicherten Profile",None)
+            return
+        for p in files:
+            self.profile_combo.addItem(p.stem,p)
+        if current:
+            pos=self.profile_combo.findData(current)
+            if pos>=0:
+                self.profile_combo.setCurrentIndex(pos)
+
+    def save_profile(self):
+        name,ok=QInputDialog.getText(
+            self,"Profil speichern","Name des Profils:"
+        )
+        if not ok:
+            return
+        name=self._safe_profile_name(name)
+        if not name:
+            QMessageBox.warning(self,"Profil","Bitte einen gültigen Profilnamen eingeben.")
+            return
+        self.save_cfg()
+        try:
+            data=json.loads(CFG_FILE.read_text(encoding="utf-8"))
+            target=self._profile_dir() / f"{name}.json"
+            target.write_text(
+                json.dumps(data,ensure_ascii=False,indent=2),
+                encoding="utf-8"
+            )
+            try:
+                target.chmod(0o600)
+            except Exception:
+                pass
+            self.refresh_profiles()
+            pos=self.profile_combo.findData(target)
+            if pos>=0:
+                self.profile_combo.setCurrentIndex(pos)
+            self.log(f"Profil gespeichert: {name}")
+            QMessageBox.information(
+                self,"Profil",
+                f"Profil „{name}“ wurde gespeichert.\n\n"
+                "Hinweis: Profile können Zugangsdaten enthalten und werden deshalb nur lokal gespeichert."
+            )
+        except Exception as e:
+            self.show_copyable_error("Profil speichern",str(e))
+
+    def load_profile(self):
+        path=self.profile_combo.currentData()
+        if not path:
+            QMessageBox.information(self,"Profil","Bitte zuerst ein gespeichertes Profil auswählen.")
+            return
+        path=Path(path)
+        if QMessageBox.question(
+            self,"Profil laden",
+            f"Profil „{path.stem}“ laden?\n\n"
+            "Die aktuell sichtbaren Einstellungen werden durch die Profilwerte ersetzt.",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        try:
+            data=json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data,dict):
+                raise ValueError("Profil enthält keine gültige Konfiguration.")
+            ensure_cfg()
+            CFG_FILE.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8")
+            try:
+                CFG_FILE.chmod(0o600)
+            except Exception:
+                pass
+            self.load_cfg()
+            self.refresh_ports()
+            self.refresh_audio_devices()
+            self.refresh_pc_audio_devices()
+            self._apply_operating_mode_ui()
+            self._apply_simple_widget_visibility()
+            self.update_start_status()
+            self.log(f"Profil geladen: {path.stem}")
+            QMessageBox.information(self,"Profil",f"Profil „{path.stem}“ wurde geladen.")
+        except Exception as e:
+            self.show_copyable_error("Profil laden",str(e))
+
+    def delete_profile(self):
+        path=self.profile_combo.currentData()
+        if not path:
+            return
+        path=Path(path)
+        if QMessageBox.question(
+            self,"Profil löschen",
+            f"Profil „{path.stem}“ wirklich löschen?",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        try:
+            path.unlink(missing_ok=True)
+            self.refresh_profiles()
+            self.log(f"Profil gelöscht: {path.stem}")
+        except Exception as e:
+            self.show_copyable_error("Profil löschen",str(e))
+
+    def export_config_backup(self):
+        self.save_cfg()
+        suggested=str(Path.home()/f"FunkGateway-Konfiguration-{VERSION}.json")
+        target,_=QFileDialog.getSaveFileName(
+            self,"FunkGateway-Konfiguration sichern",suggested,
+            "JSON-Datei (*.json)"
+        )
+        if not target:
+            return
+        try:
+            data=json.loads(CFG_FILE.read_text(encoding="utf-8"))
+            wrapper={
+                "funkgateway_backup_version":1,
+                "application_version":VERSION,
+                "created_at":datetime.now().isoformat(timespec="seconds"),
+                "config":data,
+            }
+            Path(target).write_text(
+                json.dumps(wrapper,ensure_ascii=False,indent=2),encoding="utf-8"
+            )
+            try:
+                Path(target).chmod(0o600)
+            except Exception:
+                pass
+            self.log(f"Konfigurationssicherung erstellt: {target}")
+            QMessageBox.information(
+                self,"Konfiguration sichern",
+                "Sicherung erstellt.\n\n"
+                "Achtung: Die Sicherung kann Zugangsdaten und Authentifizierungsdaten enthalten. "
+                "Bitte wie ein Passwort behandeln."
+            )
+        except Exception as e:
+            self.show_copyable_error("Konfiguration sichern",str(e))
+
+    def import_config_backup(self):
+        source,_=QFileDialog.getOpenFileName(
+            self,"FunkGateway-Konfiguration wiederherstellen","",
+            "JSON-Datei (*.json);;Alle Dateien (*)"
+        )
+        if not source:
+            return
+        try:
+            raw=json.loads(Path(source).read_text(encoding="utf-8"))
+            data=raw.get("config") if isinstance(raw,dict) and "config" in raw else raw
+            if not isinstance(data,dict):
+                raise ValueError("Die gewählte Datei enthält keine gültige FunkGateway-Konfiguration.")
+            if QMessageBox.question(
+                self,"Konfiguration wiederherstellen",
+                "Die aktuelle Konfiguration wird ersetzt. Vorher wird automatisch eine Sicherung "
+                "der jetzigen config.json angelegt.\n\nFortfahren?",
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+            ) != QMessageBox.Yes:
+                return
+
+            ensure_cfg()
+            if CFG_FILE.exists():
+                stamp=datetime.now().strftime("%Y%m%d-%H%M%S")
+                shutil.copy2(CFG_FILE,CFG_DIR/f"config-before-restore-{stamp}.json")
+            CFG_FILE.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8")
+            try:
+                CFG_FILE.chmod(0o600)
+            except Exception:
+                pass
+            self.load_cfg()
+            self.refresh_ports()
+            self.refresh_audio_devices()
+            self.refresh_pc_audio_devices()
+            self._apply_operating_mode_ui()
+            self._apply_simple_widget_visibility()
+            self.update_start_status()
+            self.log(f"Konfiguration wiederhergestellt aus: {source}")
+            QMessageBox.information(
+                self,"Konfiguration wiederherstellen",
+                "Konfiguration wurde geladen. Für vollständig neu initialisierte Audio-/PTT-Komponenten "
+                "ist ein Neustart von FunkGateway empfehlenswert."
+            )
+        except Exception as e:
+            self.show_copyable_error("Konfiguration wiederherstellen",str(e))
+
+    @staticmethod
+    def _redact_config_data(data):
+        secret_tokens=(
+            "secret","password","passwd","token","api_key","apikey",
+            "pin_hash","pin_salt","totp","write_secret","read_secret"
+        )
+        def walk(value,key=""):
+            if isinstance(value,dict):
+                out={}
+                for k,v in value.items():
+                    low=str(k).lower()
+                    if any(tok in low for tok in secret_tokens):
+                        out[k]="[REDACTED]" if v not in ("",None,False) else v
+                    else:
+                        out[k]=walk(v,k)
+                return out
+            if isinstance(value,list):
+                return [walk(v,key) for v in value]
+            return value
+        return walk(data)
+
+    def _redact_log_text(self,text,config):
+        result=str(text)
+        secret_tokens=(
+            "secret","password","passwd","token","api_key","apikey",
+            "pin_hash","pin_salt","totp","write_secret","read_secret"
+        )
+        values=[]
+        def collect(value,key=""):
+            if isinstance(value,dict):
+                for k,v in value.items():
+                    low=str(k).lower()
+                    if any(tok in low for tok in secret_tokens) and isinstance(v,str) and len(v)>=3:
+                        values.append(v)
+                    else:
+                        collect(v,k)
+            elif isinstance(value,list):
+                for v in value:
+                    collect(v,key)
+        collect(config)
+        for value in sorted(set(values),key=len,reverse=True):
+            result=result.replace(value,"[REDACTED]")
+        return result
+
+    def create_diagnostic_bundle(self):
+        self.save_cfg()
+        suggested=str(Path.home()/f"FunkGateway-Diagnose-{VERSION}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")
+        target,_=QFileDialog.getSaveFileName(
+            self,"Diagnosepaket erstellen",suggested,"ZIP-Datei (*.zip)"
+        )
+        if not target:
+            return
+        try:
+            config={}
+            if CFG_FILE.exists():
+                config=json.loads(CFG_FILE.read_text(encoding="utf-8"))
+            redacted=self._redact_config_data(config)
+
+            checks=self.run_self_test(show_dialog=False)
+            lines=[
+                f"FunkGateway UI {VERSION}",
+                f"Zeit: {datetime.now().isoformat(timespec='seconds')}",
+                f"System: {platform.platform()}",
+                f"Python: {platform.python_version()}",
+                "",
+                "Selbsttest:",
+            ]
+            for state,label,detail in checks:
+                lines.append(f"{state} {label}: {detail}")
+
+            commands={
+                "pactl-info.txt":["pactl","info"],
+                "audio-sources.txt":["pactl","list","short","sources"],
+                "audio-sinks.txt":["pactl","list","short","sinks"],
+                "serial-devices.txt":["bash","-lc","ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true"],
+                "usb-devices.txt":["bash","-lc","command -v lsusb >/dev/null && lsusb || true"],
+            }
+
+            with zipfile.ZipFile(target,"w",zipfile.ZIP_DEFLATED) as z:
+                z.writestr("diagnostic-summary.txt","\n".join(lines)+"\n")
+                z.writestr(
+                    "config-redacted.json",
+                    json.dumps(redacted,ensure_ascii=False,indent=2)
+                )
+                for name,cmd in commands.items():
+                    try:
+                        r=subprocess.run(cmd,capture_output=True,text=True,timeout=8,check=False)
+                        content=(r.stdout or "") + (("\nSTDERR:\n"+r.stderr) if r.stderr else "")
+                    except Exception as e:
+                        content=f"Fehler beim Abruf: {e}\n"
+                    z.writestr(name,content)
+                if LOG_FILE.exists():
+                    logtxt=LOG_FILE.read_text(encoding="utf-8",errors="replace")
+                    z.writestr("gateway-log-redacted.txt",self._redact_log_text(logtxt,config))
+
+            self.log(f"Diagnosepaket erstellt: {target}")
+            QMessageBox.information(
+                self,"Diagnosepaket",
+                "Diagnosepaket erstellt. Bekannte Zugangsdaten und Authentifizierungsgeheimnisse "
+                "wurden aus Konfiguration und Log entfernt."
+            )
+        except Exception as e:
+            self.show_copyable_error("Diagnosepaket erstellen",str(e))
+
+    def _self_test_ptt(self):
+        method=self.ptt_method.currentText().lower()
+        if "test" in method or "trocken" in method or "dry" in method:
+            return True,"Testmodus – keine Hardware erforderlich"
+        if "seri" in method or "rts" in method or "dtr" in method:
+            port=self.selected_port()
+            if port and Path(port).exists():
+                return True,f"Serielle Schnittstelle vorhanden: {port}"
+            return False,f"Serielle Schnittstelle nicht verfügbar: {port or 'nicht gewählt'}"
+        if "cm108" in method or "cm119" in method:
+            dev=self.cm_dev.text().strip()
+            return (bool(dev),f"CM108/CM119-Gerät: {dev or 'nicht gewählt'}")
+        if "gpio" in method:
+            chip=self.gpio_chip.text().strip()
+            return (bool(chip),f"GPIO: {chip or 'nicht gewählt'}, Line {self.gpio_line.value()}")
+        return True,f"PTT-Methode konfiguriert: {self.ptt_method.currentText()}"
+
+    def run_self_test(self, show_dialog=True):
+        results=[]
+
+        def add(ok,label,detail):
+            results.append(("OK" if ok else "FEHLER",label,str(detail)))
+
+        # Config/write test
+        try:
+            ensure_cfg()
+            probe=CFG_DIR/".write-test"
+            probe.write_text("ok",encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            if CFG_FILE.exists():
+                json.loads(CFG_FILE.read_text(encoding="utf-8"))
+            add(True,"Konfiguration","Verzeichnis beschreibbar, JSON lesbar")
+        except Exception as e:
+            add(False,"Konfiguration",e)
+
+        # Required desktop audio tools
+        tools=[x for x in ("pactl","parec","paplay") if shutil.which(x)]
+        add(len(tools)==3,"Audio-Werkzeuge",
+            "pactl/parec/paplay vorhanden" if len(tools)==3 else
+            "Fehlt: "+", ".join(x for x in ("pactl","parec","paplay") if not shutil.which(x)))
+
+        # Current audio devices. PC mode intentionally skips all HF/PTT checks.
+        if self._is_pc_mode():
+            try:
+                sinks=subprocess.check_output(["pactl","list","short","sinks"],text=True,stderr=subprocess.DEVNULL)
+                sink=self.pc_parrot_output.currentData()
+                add(bool(sink and str(sink) in sinks),"PC-Audio-Ausgang",sink or "kein Ausgang gewählt")
+            except Exception as e:
+                add(False,"PC-Audio-Ausgang",e)
+            try:
+                sources=subprocess.check_output(["pactl","list","short","sources"],text=True,stderr=subprocess.DEVNULL)
+                source=self.pc_parrot_input.currentData()
+                add(bool(source and str(source) in sources),"PC-Audio-Eingang",source or "kein Eingang gewählt")
+            except Exception as e:
+                add(False,"PC-Audio-Eingang",e)
+            add(True,"Funkhardware / PTT","Im PC-/TeamSpeak-Modus nicht erforderlich")
+        else:
+            try:
+                sinks=subprocess.check_output(["pactl","list","short","sinks"],text=True,stderr=subprocess.DEVNULL)
+                sink=self.target_sink.currentData()
+                add(bool(sink and str(sink) in sinks),"Funk-Ausgang",sink or "kein Ausgang gewählt")
+            except Exception as e:
+                add(False,"Funk-Ausgang",e)
+            try:
+                sources=subprocess.check_output(["pactl","list","short","sources"],text=True,stderr=subprocess.DEVNULL)
+                source=self.rx_source.currentData()
+                add(bool(source and str(source) in sources),"Funk-RX",source or "keine RX-Quelle gewählt")
+            except Exception as e:
+                add(False,"Funk-RX",e)
+            ok,detail=self._self_test_ptt()
+            add(ok,"PTT-Konfiguration",detail)
+
+        # Optional integrations.
+        if self.ts_enabled.isChecked():
+            try:
+                self._configure_teamspeak()
+                info=self.ts_client.test()
+                add(True,"TeamSpeak",info)
+            except Exception as e:
+                add(False,"TeamSpeak",e)
+        else:
+            add(True,"TeamSpeak","Modul ausgeschaltet")
+
+        if self._is_pc_mode():
+            add(True,"Mumble","Im PC-/TeamSpeak-Modus nicht erforderlich")
+        elif self.mumble_enabled.isChecked():
+            try:
+                status=self.mumble_local.status()
+                add(bool(status.get("running")),"Mumble",self._mumble_local_status_text(status))
+            except Exception as e:
+                add(False,"Mumble",e)
+        else:
+            add(True,"Mumble","Modul ausgeschaltet")
+
+        self._last_self_test=results
+        self.update_start_status(results)
+
+        if show_dialog:
+            ok_count=sum(1 for state,_,_ in results if state=="OK")
+            text="\n".join(
+                f"{'✓' if state=='OK' else '✗'} {label}: {detail}"
+                for state,label,detail in results
+            )
+            QMessageBox.information(
+                self,"FunkGateway Selbsttest",
+                f"{ok_count}/{len(results)} Prüfungen ohne Fehler.\n\n{text}"
+            )
+            self.log(f"Selbsttest abgeschlossen: {ok_count}/{len(results)} OK.")
+        return results
+
+    def update_start_status(self, results=None):
+        if not hasattr(self,"status_audio"):
+            return
+        if results is None:
+            results=getattr(self,"_last_self_test",None)
+
+        mode=self._mode()
+        if mode=="pc":
+            source=self.pc_parrot_input.currentData() if hasattr(self,"pc_parrot_input") else None
+            sink=self.pc_parrot_output.currentData() if hasattr(self,"pc_parrot_output") else None
+            active_port=self._active_source_hardware_port(source) if source else ""
+            self.status_audio.setText(
+                ("bereit" + (f" – Port {active_port}" if active_port else ""))
+                if source and sink else "PC-Ein-/Ausgabe noch nicht vollständig gewählt"
+            )
+            self.status_ptt.setText("nicht verwendet")
+        elif mode=="voip_parrot":
+            self.status_audio.setText("virtuelle VoIP-Papagei-Wege bereit")
+            self.status_ptt.setText("nicht verwendet")
+        else:
+            sink=self.target_sink.currentData() if hasattr(self,"target_sink") else None
+            source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
+            self.status_audio.setText(
+                "bereit" if sink and source else "Ausgang oder RX-Quelle noch nicht vollständig gewählt"
+            )
+            ptt=self.ptt_method.currentText() if hasattr(self,"ptt_method") else "—"
+            self.status_ptt.setText(
+                ("aktiv – " if self.tx else "bereit – ") + ptt
+            )
+
+        parts=[]
+        if hasattr(self,"ts_enabled") and self.ts_enabled.isChecked():
+            parts.append("TeamSpeak aktiv")
+        if hasattr(self,"mumble_enabled") and self.mumble_enabled.isChecked():
+            parts.append("Mumble aktiv")
+        if not parts:
+            parts.append("keine optionale Integration aktiv")
+        self.status_voip.setText(", ".join(parts))
+
+        self.status_config.setText(
+            "gespeichert" if CFG_FILE.exists() else "noch keine config.json gespeichert"
+        )
+
+        if results:
+            failures=[label for state,label,_ in results if state!="OK"]
+            if failures:
+                self.status_config.setText(
+                    "Selbsttest mit Hinweis/Fehler: " + ", ".join(failures)
+                )
+
+    @staticmethod
+    def _wizard_copy_combo(src, dst):
+        """Copy visible entries/data and selection from one combo box to another."""
+        dst.clear()
+        for i in range(src.count()):
+            dst.addItem(src.itemText(i),src.itemData(i))
+        if src.currentIndex() >= 0 and src.currentIndex() < dst.count():
+            dst.setCurrentIndex(src.currentIndex())
+
+    @staticmethod
+    def _wizard_set_combo_from(src, dst):
+        data=src.currentData()
+        idx=dst.findData(data)
+        if idx < 0:
+            idx=dst.findText(src.currentText())
+        if idx >= 0:
+            dst.setCurrentIndex(idx)
+        elif dst.isEditable() and src.currentText().strip():
+            dst.setCurrentText(src.currentText().strip())
+
+    def run_setup_assistant(self):
+        """Start the setup wizard matching the currently selected operating mode."""
+        mode=self._mode()
+        if mode=="pc":
+            return self._run_pc_setup_assistant()
+        if mode=="voip_parrot":
+            return self._run_voip_parrot_setup_assistant()
+        if mode=="radio_parrot":
+            return self._run_radio_parrot_setup_assistant()
+        return self._run_gateway_setup_assistant()
+
+    def _run_first_start_wizard(self):
+        """Ask for the primary operating role on a completely fresh installation."""
+        if CFG_FILE.exists():
+            return
+        wiz=self._new_setup_wizard("FunkGateway – Erster Start")
+        p=QWizardPage(); p.setTitle("Betriebsart auswählen")
+        p.setSubTitle("Wie soll FunkGateway auf diesem Rechner hauptsächlich verwendet werden?")
+        f=QFormLayout(p)
+        choice=QComboBox()
+        choice.addItem("PC-User – normaler PC-/TeamSpeak-Betrieb","pc")
+        choice.addItem("Funk-Gateway – Funk und VoIP verbinden","gateway")
+        choice.addItem("Funk-Papagei – Funkdurchgänge aufnehmen und zurücksenden","radio_parrot")
+        choice.addItem("VoIP-Papagei – TeamSpeak/Mumble/TeamTalk als Papagei","voip_parrot")
+        f.addRow("Betriebsart:",choice)
+        note=QLabel("Die Auswahl bleibt später oben im Hauptfenster jederzeit umschaltbar. Jede Betriebsart behält ihre eigenen Einstellungen.")
+        note.setWordWrap(True); f.addRow("",note)
+        wiz.addPage(p)
+        p2=QWizardPage(); p2.setTitle("Weiter mit der Einrichtung")
+        l=QVBoxLayout(p2); n=QLabel("Nach dem Speichern startet automatisch der passende Einrichtungsassistent für die gewählte Betriebsart.")
+        n.setWordWrap(True); l.addWidget(n); l.addStretch(1); wiz.addPage(p2)
+        if wiz.exec()!=QWizard.Accepted:
+            return
+        mode=choice.currentData() or "pc"
+        idx=self.operating_mode.findData(mode)
+        if idx>=0: self.operating_mode.setCurrentIndex(idx)
+        self.save_cfg()
+        QTimer.singleShot(0,self.run_setup_assistant)
+
+    def _run_voip_parrot_setup_assistant(self):
+        wiz=self._new_setup_wizard("FunkGateway – VoIP-Papagei-Einrichtung")
+        p=QWizardPage(); p.setTitle("Willkommen")
+        l=QVBoxLayout(p); n=QLabel("Dieser Assistent richtet FunkGateway als plattformunabhängigen VoIP-Papagei ein. Im VoIP-Client wird FunkGateway_VoIP_Parrot_RX als Wiedergabe und FunkGateway_VoIP_Parrot_Input als Mikrofon verwendet.")
+        n.setWordWrap(True); l.addWidget(n); l.addStretch(1); wiz.addPage(p)
+        p=QWizardPage(); p.setTitle("Papagei")
+        f=QFormLayout(p)
+        maxs=QSpinBox(); maxs.setRange(1,300); maxs.setValue(self.voip_parrot_max_seconds.value()); maxs.setSuffix(" s")
+        pre=QSpinBox(); pre.setRange(0,5000); pre.setValue(self.voip_parrot_prebuffer_ms.value()); pre.setSuffix(" ms")
+        cc=QCheckBox("Channel Commander während der Rückgabe setzen"); cc.setChecked(self.voip_parrot_commander.isChecked())
+        f.addRow("Maximale Sprechzeit:",maxs); f.addRow("Vorlaufpuffer:",pre); f.addRow("",cc); wiz.addPage(p)
+        p=QWizardPage(); p.setTitle("Fertig")
+        l=QVBoxLayout(p); n=QLabel("Nach Fertig kann der VoIP-Papagei im eigenen Reiter gestartet werden."); n.setWordWrap(True); l.addWidget(n); wiz.addPage(p)
+        if wiz.exec()!=QWizard.Accepted: return
+        self.voip_parrot_max_seconds.setValue(maxs.value()); self.voip_parrot_prebuffer_ms.setValue(pre.value()); self.voip_parrot_commander.setChecked(cc.isChecked())
+        self.save_cfg(); self._apply_operating_mode_ui()
+
+    def _run_radio_parrot_setup_assistant(self):
+        wiz=self._new_setup_wizard("FunkGateway – Funk-Papagei-Einrichtung")
+        p=QWizardPage(); p.setTitle("Willkommen")
+        l=QVBoxLayout(p); n=QLabel("Dieser Assistent richtet FunkGateway speziell als Funk-Papagei ein."); n.setWordWrap(True); l.addWidget(n); l.addStretch(1); wiz.addPage(p)
+        p=QWizardPage(); p.setTitle("Papagei")
+        f=QFormLayout(p)
+        maxs=QSpinBox(); maxs.setRange(1,180); maxs.setValue(self.parrot_max_seconds.value()); maxs.setSuffix(" s")
+        pre=QSpinBox(); pre.setRange(0,5000); pre.setValue(self.parrot_rx_prebuffer_ms.value()); pre.setSuffix(" ms")
+        cc=QCheckBox("Channel Commander während der Funk-Papagei-Wiedergabe setzen"); cc.setChecked(self.parrot_channel_commander.isChecked())
+        f.addRow("Maximale Sprechzeit:",maxs); f.addRow("Vorlaufpuffer:",pre); f.addRow("",cc); wiz.addPage(p)
+        p=QWizardPage(); p.setTitle("Fertig")
+        l=QVBoxLayout(p); n=QLabel("Audio/PTT/RX können anschließend bei Bedarf im Reiter Einrichtung nachkonfiguriert werden."); n.setWordWrap(True); l.addWidget(n); wiz.addPage(p)
+        if wiz.exec()!=QWizard.Accepted: return
+        self.parrot_max_seconds.setValue(maxs.value()); self.parrot_rx_prebuffer_ms.setValue(pre.value()); self.parrot_channel_commander.setChecked(cc.isChecked()); self.parrot_enabled.setChecked(True)
+        self.save_cfg(); self._apply_operating_mode_ui()
+
+    def _new_setup_wizard(self, title):
+        wiz=QWizard(self)
+        wiz.setWindowTitle(title)
+        wiz.setWizardStyle(QWizard.ModernStyle)
+        wiz.setOption(QWizard.NoBackButtonOnStartPage,True)
+        wiz.setButtonText(QWizard.BackButton,"< Zurück")
+        wiz.setButtonText(QWizard.NextButton,"Weiter >")
+        wiz.setButtonText(QWizard.FinishButton,"Speichern && Fertig")
+        wiz.setButtonText(QWizard.CancelButton,"Abbrechen")
+        return wiz
+
+    def _run_pc_setup_assistant(self):
+        """PC/TeamSpeak wizard: Welcome -> Audio -> TeamSpeak -> Parrot -> CC -> Test -> Finish."""
+        try:
+            self.refresh_pc_audio_devices()
+        except Exception as e:
+            self.log(f"PC-Einrichtungsassistent: Audiogerätesuche mit Hinweis: {e}")
+
+        wiz=self._new_setup_wizard("FunkGateway – PC-/TeamSpeak-Einrichtung")
+
+        p=QWizardPage(); p.setTitle("Willkommen")
+        l=QVBoxLayout(p)
+        intro=QLabel(
+            "Dieser Assistent richtet den PC-/TeamSpeak-Modus ein. Funkhardware, PTT, RX-Erkennung "
+            "und Rufzeichen werden bewusst nicht abgefragt. Betriebsart: PC / TeamSpeak."
+        ); intro.setWordWrap(True); l.addWidget(intro); l.addStretch(1); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Audio")
+        p.setSubTitle("Mikrofon und Wiedergabe für den PC-Papagei auswählen.")
+        f=QFormLayout(p)
+        wiz.pc_input=QComboBox(); self._wizard_copy_combo(self.pc_parrot_input,wiz.pc_input)
+        wiz.pc_output=QComboBox(); self._wizard_copy_combo(self.pc_parrot_output,wiz.pc_output)
+        f.addRow("Audio-Eingang:",wiz.pc_input); f.addRow("Audio-Ausgang:",wiz.pc_output)
+        note=QLabel("Es werden PulseAudio/PipeWire-Geräte verwendet, damit TeamSpeak und FunkGateway das Desktop-Audio gemeinsam nutzen können.")
+        note.setWordWrap(True); f.addRow("",note); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("TeamSpeak")
+        p.setSubTitle("ClientQuery-Verbindung des lokalen TeamSpeak-Clients einrichten.")
+        f=QFormLayout(p)
+        wiz.ts_enabled=QCheckBox("TeamSpeak-Modul aktiv"); wiz.ts_enabled.setChecked(True if self._is_pc_mode() else self.ts_enabled.isChecked())
+        wiz.ts_host=QLineEdit(self.ts_host.text())
+        wiz.ts_port=QSpinBox(); wiz.ts_port.setRange(1,65535); wiz.ts_port.setValue(self.ts_port.value())
+        wiz.ts_api_key=QLineEdit(self.ts_api_key.text()); wiz.ts_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        f.addRow(wiz.ts_enabled); f.addRow("ClientQuery Host:",wiz.ts_host); f.addRow("ClientQuery Port:",wiz.ts_port); f.addRow("API-Key:",wiz.ts_api_key)
+        wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Papagei")
+        p.setSubTitle("Kurze Aufnahme und anschließende Wiedergabe für den Mikrofontest festlegen.")
+        f=QFormLayout(p)
+        wiz.parrot_seconds=QSpinBox(); wiz.parrot_seconds.setRange(1,30); wiz.parrot_seconds.setSuffix(" s"); wiz.parrot_seconds.setValue(self.pc_parrot_seconds.value())
+        f.addRow("Test-Aufnahmedauer:",wiz.parrot_seconds)
+        note=QLabel("Der eigentliche Papagei-Test kann nach Abschluss im Reiter PC / TeamSpeak gestartet werden. Aufnahme und Wiedergabe laufen niemals gleichzeitig.")
+        note.setWordWrap(True); f.addRow("",note); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Channel Commander")
+        p.setSubTitle("Verhalten beim eigenen Sprechen festlegen.")
+        f=QFormLayout(p)
+        wiz.pc_commander=QCheckBox("Channel Commander beim Sprechen automatisch setzen")
+        wiz.pc_commander.setChecked(self.pc_ts_commander_manual.isChecked())
+        f.addRow(wiz.pc_commander)
+        note=QLabel("Channel Commander wird nur während des eigenen Sprechens gesetzt und danach wieder entfernt.")
+        note.setWordWrap(True); f.addRow("",note); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Test")
+        l=QVBoxLayout(p)
+        test_status=QLabel("Noch nicht getestet."); test_status.setWordWrap(True)
+        test_btn=QPushButton("ClientQuery-Verbindung jetzt testen")
+        def _test_pc_query():
+            client=TeamSpeakClientQuery()
+            try:
+                client.configure(wiz.ts_host.text().strip() or "127.0.0.1",wiz.ts_port.value(),wiz.ts_api_key.text())
+                info=client.test()
+                test_status.setText(f"OK – ClientQuery verbunden: {info}")
+            except Exception as e:
+                test_status.setText(f"Fehler – {e}")
+            finally:
+                try: client.close()
+                except Exception: pass
+        test_btn.clicked.connect(_test_pc_query)
+        l.addWidget(QLabel("Optionaler Verbindungstest mit den gerade eingegebenen Werten:")); l.addWidget(test_btn); l.addWidget(test_status); l.addStretch(1); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Fertig")
+        l=QVBoxLayout(p)
+        finish=QLabel(
+            "Mit ‘Speichern & Fertig’ werden Audio-, TeamSpeak-, Papagei- und Channel-Commander-Einstellungen übernommen. "
+            "Danach kann unter Einrichtung der Selbsttest / Diagnose ausgeführt werden."
+        ); finish.setWordWrap(True); l.addWidget(finish); l.addStretch(1); wiz.addPage(p)
+
+        wiz.resize(720,560)
+        if wiz.exec() != QDialog.Accepted:
+            self.log("PC-Einrichtungsassistent abgebrochen – keine Wizard-Werte übernommen.")
+            return
+
+        self._wizard_set_combo_from(wiz.pc_input,self.pc_parrot_input)
+        self._wizard_set_combo_from(wiz.pc_output,self.pc_parrot_output)
+        self.pc_parrot_seconds.setValue(wiz.parrot_seconds.value())
+        self.ts_enabled.setChecked(wiz.ts_enabled.isChecked())
+        self.ts_host.setText(wiz.ts_host.text().strip() or "127.0.0.1")
+        self.ts_port.setValue(wiz.ts_port.value()); self.ts_api_key.setText(wiz.ts_api_key.text())
+        self.pc_ts_commander_manual.setChecked(wiz.pc_commander.isChecked())
+        self.save_cfg(); self._apply_operating_mode_ui(); self.update_start_status()
+        self.log("PC-Einrichtungsassistent abgeschlossen und Konfiguration gespeichert.")
+        QMessageBox.information(self,"Einrichtung abgeschlossen","Die PC-/TeamSpeak-Grundeinstellungen wurden gespeichert.\n\nEmpfehlung: Jetzt unter Einrichtung den Selbsttest / Diagnose ausführen.")
+
+    def _run_gateway_setup_assistant(self):
+        """Gateway wizard. It never keys PTT automatically."""
+        try:
+            self.refresh_ports(); self.refresh_audio_devices()
+        except Exception as e:
+            self.log(f"Einrichtungsassistent: Gerätesuche mit Hinweis: {e}")
+
+        wiz=self._new_setup_wizard("FunkGateway – Funk-Gateway-Einrichtung")
+
+        p=QWizardPage(); p.setTitle("Willkommen")
+        l=QVBoxLayout(p)
+        intro=QLabel("Dieser Assistent führt durch die wichtigsten Funk-Gateway-Einstellungen. Während des Assistenten wird die PTT nicht automatisch betätigt.")
+        intro.setWordWrap(True); l.addWidget(intro); l.addStretch(1); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Audio")
+        p.setSubTitle("Funk-Ausgang und Funk-Empfangsquelle auswählen.")
+        f=QFormLayout(p)
+        wiz.target_sink=QComboBox(); self._wizard_copy_combo(self.target_sink,wiz.target_sink)
+        wiz.rx_source=QComboBox(); self._wizard_copy_combo(self.rx_source,wiz.rx_source)
+        wiz.input_device=QComboBox(); self._wizard_copy_combo(self.input_device,wiz.input_device)
+        wiz.tx_gain=QSpinBox(); wiz.tx_gain.setRange(-12,24); wiz.tx_gain.setSuffix(" dB"); wiz.tx_gain.setValue(self.tx_gain.value())
+        wiz.rx_gain=QSpinBox(); wiz.rx_gain.setRange(-24,18); wiz.rx_gain.setSuffix(" dB"); wiz.rx_gain.setValue(self.rx_gain.value())
+        f.addRow("Ausgang zum Funkgerät:",wiz.target_sink); f.addRow("Funk-Empfangsquelle:",wiz.rx_source); f.addRow("Mikrofon für Rufzeichenaufnahme:",wiz.input_device)
+        f.addRow("TX-Verstärkung:",wiz.tx_gain); f.addRow("RX-Verstärkung:",wiz.rx_gain); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("PTT / Modem")
+        p.setSubTitle("Sendeumschaltung auswählen. Der Assistent sendet nicht automatisch.")
+        f=QFormLayout(p)
+        wiz.ptt_method=QComboBox(); self._wizard_copy_combo(self.ptt_method,wiz.ptt_method)
+        wiz.com_port=QComboBox(); wiz.com_port.setEditable(True); self._wizard_copy_combo(self.com_port,wiz.com_port)
+        wiz.com_line=QComboBox(); self._wizard_copy_combo(self.com_line,wiz.com_line)
+        wiz.cm_dev=QLineEdit(self.cm_dev.text()); wiz.gpio_chip=QLineEdit(self.gpio_chip.text())
+        wiz.gpio_line=QSpinBox(); wiz.gpio_line.setRange(0,255); wiz.gpio_line.setValue(self.gpio_line.value())
+        wiz.invert=QCheckBox("PTT invertieren"); wiz.invert.setChecked(self.invert.isChecked())
+        wiz.lead=QSpinBox(); wiz.lead.setRange(0,3000); wiz.lead.setSuffix(" ms"); wiz.lead.setValue(self.lead.value())
+        f.addRow("PTT-Verfahren:",wiz.ptt_method); f.addRow("COM-/USB-Port:",wiz.com_port); f.addRow("Steuerleitung:",wiz.com_line); f.addRow("CM108 Gerät:",wiz.cm_dev)
+        f.addRow("GPIO-Chip:",wiz.gpio_chip); f.addRow("GPIO-Leitung:",wiz.gpio_line); f.addRow(wiz.invert); f.addRow("PTT-Vorlauf:",wiz.lead); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("RX-Erkennung")
+        f=QFormLayout(p)
+        wiz.rx_threshold=QSpinBox(); wiz.rx_threshold.setRange(-80,-5); wiz.rx_threshold.setSuffix(" dB"); wiz.rx_threshold.setValue(self.rx_threshold.value())
+        wiz.rx_min_signal=QSpinBox(); wiz.rx_min_signal.setRange(0,3000); wiz.rx_min_signal.setSuffix(" ms"); wiz.rx_min_signal.setValue(self.rx_min_signal.value())
+        wiz.rx_hang=QSpinBox(); wiz.rx_hang.setRange(100,5000); wiz.rx_hang.setSuffix(" ms"); wiz.rx_hang.setValue(self.rx_hang.value())
+        wiz.roger_type=QComboBox(); self._wizard_copy_combo(self.roger_type,wiz.roger_type)
+        f.addRow("RX-Erkennungsschwelle:",wiz.rx_threshold); f.addRow("Mindestdauer gültiges RX-Signal:",wiz.rx_min_signal); f.addRow("RX-Nachhaltezeit:",wiz.rx_hang); f.addRow("Rogerbeep:",wiz.roger_type); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("TeamSpeak / Mumble")
+        f=QFormLayout(p)
+        wiz.ts_enabled=QCheckBox("TeamSpeak-Modul aktiv"); wiz.ts_enabled.setChecked(self.ts_enabled.isChecked())
+        wiz.mumble_enabled=QCheckBox("Mumble-Modul aktiv"); wiz.mumble_enabled.setChecked(self.mumble_enabled.isChecked())
+        wiz.ts_host=QLineEdit(self.ts_host.text()); wiz.ts_port=QSpinBox(); wiz.ts_port.setRange(1,65535); wiz.ts_port.setValue(self.ts_port.value())
+        wiz.ts_api_key=QLineEdit(self.ts_api_key.text()); wiz.ts_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        f.addRow(wiz.ts_enabled); f.addRow(wiz.mumble_enabled); f.addRow("TeamSpeak ClientQuery Host:",wiz.ts_host); f.addRow("TeamSpeak ClientQuery Port:",wiz.ts_port); f.addRow("TeamSpeak API-Key:",wiz.ts_api_key); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Rufzeichen / Papagei / DTMF")
+        f=QFormLayout(p)
+        wiz.id_auto=QCheckBox("Automatische Rufzeichenausgabe aktiv"); wiz.id_auto.setChecked(self.id_auto.isChecked())
+        wiz.id_interval=QSpinBox(); wiz.id_interval.setRange(1,1440); wiz.id_interval.setSuffix(" min"); wiz.id_interval.setValue(self.id_interval.value())
+        wiz.parrot_enabled=QCheckBox("Papagei aktiv"); wiz.parrot_enabled.setChecked(self.parrot_enabled.isChecked())
+        wiz.dtmf_enabled=QCheckBox("DTMF-Steuerung aktiv"); wiz.dtmf_enabled.setChecked(self.dtmf_enabled.isChecked())
+        f.addRow(wiz.id_auto); f.addRow("Rufzeichen-Intervall:",wiz.id_interval); f.addRow(wiz.parrot_enabled); f.addRow(wiz.dtmf_enabled); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Gesamttest")
+        l=QVBoxLayout(p)
+        test_note=QLabel("Nach dem Speichern steht unter Einrichtung der Selbsttest / Diagnose bereit. Die PTT wird dabei nicht automatisch geschaltet.")
+        test_note.setWordWrap(True); l.addWidget(test_note); l.addStretch(1); wiz.addPage(p)
+
+        p=QWizardPage(); p.setTitle("Fertig")
+        l=QVBoxLayout(p)
+        finish=QLabel("Mit ‘Speichern & Fertig’ werden die gewählten Funk-Gateway-Werte übernommen und gespeichert.")
+        finish.setWordWrap(True); l.addWidget(finish); l.addStretch(1); wiz.addPage(p)
+
+        wiz.resize(720,560)
+        if wiz.exec() != QDialog.Accepted:
+            self.log("Einrichtungsassistent abgebrochen – keine Wizard-Werte übernommen."); return
+
+        self._wizard_set_combo_from(wiz.target_sink,self.target_sink); self._wizard_set_combo_from(wiz.rx_source,self.rx_source); self._wizard_set_combo_from(wiz.input_device,self.input_device)
+        self.tx_gain.setValue(wiz.tx_gain.value()); self.rx_gain.setValue(wiz.rx_gain.value())
+        self._wizard_set_combo_from(wiz.ptt_method,self.ptt_method); self._wizard_set_combo_from(wiz.com_port,self.com_port); self._wizard_set_combo_from(wiz.com_line,self.com_line)
+        self.cm_dev.setText(wiz.cm_dev.text().strip()); self.gpio_chip.setText(wiz.gpio_chip.text().strip()); self.gpio_line.setValue(wiz.gpio_line.value()); self.invert.setChecked(wiz.invert.isChecked()); self.lead.setValue(wiz.lead.value())
+        self.rx_threshold.setValue(wiz.rx_threshold.value()); self.rx_min_signal.setValue(wiz.rx_min_signal.value()); self.rx_hang.setValue(wiz.rx_hang.value()); self._wizard_set_combo_from(wiz.roger_type,self.roger_type)
+        self.ts_enabled.setChecked(wiz.ts_enabled.isChecked()); self.mumble_enabled.setChecked(wiz.mumble_enabled.isChecked()); self.ts_host.setText(wiz.ts_host.text().strip() or "127.0.0.1"); self.ts_port.setValue(wiz.ts_port.value()); self.ts_api_key.setText(wiz.ts_api_key.text())
+        self.id_auto.setChecked(wiz.id_auto.isChecked()); self.id_interval.setValue(wiz.id_interval.value()); self.parrot_enabled.setChecked(wiz.parrot_enabled.isChecked()); self.dtmf_enabled.setChecked(wiz.dtmf_enabled.isChecked())
+        self.save_cfg(); self._apply_operating_mode_ui(); self._apply_simple_widget_visibility(); self.update_start_status()
+        self.log("Einrichtungsassistent abgeschlossen und Konfiguration gespeichert.")
+        QMessageBox.information(self,"Einrichtung abgeschlossen","Die Funk-Gateway-Grundeinstellungen wurden gespeichert.\n\nEmpfehlung: Jetzt unter Einrichtung den Selbsttest / Diagnose ausführen.")
+
+    def _setup_detect_devices(self):
+        self.refresh_ports()
+        self.refresh_audio_devices()
+        self.refresh_pc_audio_devices()
+        sink=self.target_sink.currentData()
+        source=self.rx_source.currentData()
+        self.setup_audio_summary.setText(
+            f"Funk-Ausgang: {sink or 'nicht gewählt'}\n"
+            f"Funk-RX: {source or 'nicht gewählt'}\n"
+            f"Serielle Ports: {self.com_port.count()}"
+        )
+        self.update_start_status()
+
+    def _setup_check_ptt(self):
+        ok,detail=self._self_test_ptt()
+        self.setup_ptt_summary.setText(("✓ " if ok else "✗ ")+detail)
+
+    def _setup_check_voip(self):
+        messages=[]
+        if self.ts_enabled.isChecked():
+            try:
+                self._configure_teamspeak()
+                messages.append("✓ TeamSpeak: "+str(self.ts_client.test()))
+            except Exception as e:
+                messages.append("✗ TeamSpeak: "+str(e))
+        if self.mumble_enabled.isChecked():
+            try:
+                st=self.mumble_local.status()
+                messages.append(("✓ " if st.get("running") else "✗ ")+"Mumble: "+self._mumble_local_status_text(st))
+            except Exception as e:
+                messages.append("✗ Mumble: "+str(e))
+        if not messages:
+            messages.append("Keine optionale VoIP-Integration aktiviert.")
+        self.setup_voip_summary.setText("\n".join(messages))
+        self.update_start_status()
 
     def build_audio(self):
         """Build the audio/routing page.
@@ -430,6 +1438,30 @@ class MainWindow(QMainWindow):
     def build_roger(self):
         w=QWidget(); f=QFormLayout(w)
         self.rx_source=QComboBox()
+        self.rx_source.currentIndexChanged.connect(self._refresh_rx_hardware_ports)
+        self.rx_hw_port_enable=QCheckBox("Hardware-Port fest vorgeben (z. B. Shared Mic/Line-In)")
+        self.rx_hw_port_enable.setToolTip(
+            "Nur nötig, wenn eine Soundkarte mehrere Eingangsports für dieselbe Aufnahmequelle anbietet, "
+            "zum Beispiel einen gemeinsam genutzten Mikrofon-/Line-In-Anschluss."
+        )
+        self.rx_hw_port=QComboBox()
+        self.rx_hw_port.setEnabled(False)
+        self.rx_hw_port_enable.toggled.connect(self._rx_hw_port_enabled_changed)
+        self.rx_hw_port_restore=QCheckBox("Gewählten Hardware-Port beim Start und nach Audio-Neusuche wiederherstellen")
+        self.rx_hw_port_restore.setChecked(True)
+        self.rx_hw_port_restore.setEnabled(False)
+        self.rx_hw_port_watchdog=QCheckBox("Hardware-Port im Betrieb überwachen und automatisch zurückstellen")
+        self.rx_hw_port_watchdog.setChecked(True)
+        self.rx_hw_port_watchdog.setToolTip(
+            "Für Shared Mic/Line-In-Anschlüsse: prüft während Funk-Gateway/Funk-Papagei regelmäßig den aktiven Port "
+            "und stellt bei einem unerwünschten Wechsel automatisch den gewählten Port wieder her."
+        )
+        self.rx_hw_port_watchdog.setEnabled(False)
+        self.rx_hw_port_apply=QPushButton("Hardware-Port jetzt anwenden")
+        self.rx_hw_port_apply.setEnabled(False)
+        self.rx_hw_port_apply.clicked.connect(lambda: self._apply_rx_hardware_port(log_result=True))
+        self.rx_hw_port_status=QLabel("Keine feste Portauswahl aktiv.")
+        self.rx_hw_port_status.setWordWrap(True)
         self.rx_meter=QProgressBar(); self.rx_meter.setRange(0,100); self.rx_meter.setFormat("Funk RX %p %")
         self.rx_status=QLabel("● FUNK RX FREI")
 
@@ -469,6 +1501,12 @@ class MainWindow(QMainWindow):
         ); note.setWordWrap(True)
 
         f.addRow("Funk-Empfangsquelle:",self.rx_source)
+        f.addRow(self.rx_hw_port_enable)
+        f.addRow("Hardware-Eingangsport:",self.rx_hw_port)
+        f.addRow(self.rx_hw_port_restore)
+        f.addRow(self.rx_hw_port_watchdog)
+        f.addRow(self.rx_hw_port_apply)
+        f.addRow("",self.rx_hw_port_status)
         f.addRow(self.rx_status); f.addRow(self.rx_meter)
         f.addRow("RX-Erkennungsschwelle (EIN):",self.rx_threshold)
         f.addRow("RX-Hysterese:",self.rx_hysteresis)
@@ -492,6 +1530,7 @@ class MainWindow(QMainWindow):
         f.addRow("CW-Geschwindigkeit:",self.roger_wpm)
         f.addRow("Rogerbeep-Lautstärke:",self.roger_volume)
         f.addRow("Eigene WAV:",row)
+        f.addRow("",self._default_wav_hint_label())
         f.addRow(test); f.addRow(note)
         self.tabs.addTab(w,"RX / Rogerbeep")
 
@@ -512,7 +1551,9 @@ class MainWindow(QMainWindow):
             "freien VoIP/TX-Weg und das Ende interner Aussendungen. Erst nach dem tatsächlichen "
             "Ende der Bake beginnt das eingestellte Intervall erneut."
         ); safe_note.setWordWrap(True)
-        f.addRow("Ansage:",row); f.addRow("Intervall:",self.id_interval); f.addRow("Aufnahmedauer:",self.id_record_seconds)
+        f.addRow("Ansage:",row)
+        f.addRow("",self._default_wav_hint_label())
+        f.addRow("Intervall:",self.id_interval); f.addRow("Aufnahmedauer:",self.id_record_seconds)
         f.addRow(rec); f.addRow(prev); f.addRow(self.id_auto); f.addRow(self.id_wait_free)
         f.addRow("Freiwartezeit vor Bake:",self.id_free_wait_ms)
         f.addRow("",safe_note)
@@ -543,6 +1584,8 @@ class MainWindow(QMainWindow):
         self.parrot_mute_voip.toggled.connect(lambda _=False:self._set_tx_forward_muted(False))
         self.parrot_return_guard=QCheckBox("Rücklaufschutz nach Papagei-Wiedergabe verwenden"); self.parrot_return_guard.setChecked(True)
         self.parrot_roger=QCheckBox("Rogerbeep nach Papagei-Wiedergabe senden"); self.parrot_roger.setChecked(False)
+        self.parrot_channel_commander=QCheckBox("Channel Commander während Papagei-Wiedergabe setzen")
+        self.parrot_channel_commander.setChecked(False)
 
         self.parrot_beacon_enabled=QCheckBox("Papageibake aktiv"); self.parrot_beacon_enabled.setChecked(True)
         self.parrot_beacon_file=QLineEdit()
@@ -584,6 +1627,7 @@ class MainWindow(QMainWindow):
         pf.addRow("",self.parrot_mute_voip)
         pf.addRow("",self.parrot_return_guard)
         pf.addRow("",self.parrot_roger)
+        pf.addRow("",self.parrot_channel_commander)
         pf.addRow(QLabel("<b>Papageibake</b>"))
         pf.addRow("",self.parrot_beacon_enabled)
         pf.addRow("Papageibake WAV:",prow)
@@ -640,6 +1684,24 @@ class MainWindow(QMainWindow):
         self.pc_parrot_status.setWordWrap(True)
         refresh=QPushButton("Audiogeräte neu laden")
         refresh.clicked.connect(self.refresh_pc_audio_devices)
+
+        self.pc_hw_port_enable=QCheckBox("Hardware-Port fest vorgeben (z. B. Front-/Rear-Mic oder Line-In)")
+        self.pc_hw_port=QComboBox()
+        self.pc_hw_port.setEnabled(False)
+        self.pc_hw_port_restore=QCheckBox("Gewählten Hardware-Port nach Audio-Neusuche und beim PC-User-Start wiederherstellen")
+        self.pc_hw_port_restore.setChecked(True)
+        self.pc_hw_port_restore.setEnabled(False)
+        self.pc_hw_port_watchdog=QCheckBox("Hardware-Port im PC-User-Betrieb überwachen und automatisch zurückstellen")
+        self.pc_hw_port_watchdog.setChecked(True)
+        self.pc_hw_port_watchdog.setEnabled(False)
+        self.pc_hw_port_apply=QPushButton("Hardware-Port jetzt anwenden")
+        self.pc_hw_port_apply.setEnabled(False)
+        self.pc_hw_port_status=QLabel("Keine feste Hardware-Port-Auswahl aktiv.")
+        self.pc_hw_port_status.setWordWrap(True)
+        self.pc_hw_port_enable.toggled.connect(self._pc_hw_port_enabled_changed)
+        self.pc_hw_port_apply.clicked.connect(lambda:self._apply_pc_hardware_port(log_result=True))
+        self.pc_parrot_input.currentIndexChanged.connect(self._refresh_pc_hardware_ports)
+
         self.pc_parrot_start.clicked.connect(self.start_pc_parrot)
         self.pc_parrot_stop.clicked.connect(self.stop_pc_parrot)
         row=QHBoxLayout()
@@ -647,14 +1709,20 @@ class MainWindow(QMainWindow):
         row.addWidget(self.pc_parrot_stop)
         pf.addRow("Mikrofon:",self.pc_parrot_input)
         pf.addRow("Wiedergabe:",self.pc_parrot_output)
+        pf.addRow(self.pc_hw_port_enable)
+        pf.addRow("Hardware-Port:",self.pc_hw_port)
+        pf.addRow(self.pc_hw_port_restore)
+        pf.addRow(self.pc_hw_port_watchdog)
+        pf.addRow(self.pc_hw_port_apply)
+        pf.addRow("",self.pc_hw_port_status)
         pf.addRow("Aufnahmedauer:",self.pc_parrot_seconds)
         pf.addRow(refresh)
         pf.addRow(row)
         pf.addRow("",self.pc_parrot_status)
         note=QLabel(
-            "Der PC-Papagei verwendet den normalen PulseAudio/PipeWire-Desktopweg und kann "
-            "dadurch dieselben Standardgeräte wie TeamSpeak benutzen. Zuerst wird nur "
-            "aufgenommen; erst danach wird wiedergegeben. Aufnahme und Wiedergabe laufen "
+            "Der PC-Papagei ist absichtlich rückkopplungssicher aufgebaut: "
+            "Zuerst wird nur aufgenommen. Erst nach Ende der Aufnahme wird die Aufnahme "
+            "auf dem gewählten Ausgang wiedergegeben. Aufnahme und Wiedergabe laufen "
             "nicht gleichzeitig. Es wird kein Funkgeräte-PTT betätigt."
         )
         note.setWordWrap(True)
@@ -672,6 +1740,515 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(w,"PC / TeamSpeak")
         self.refresh_pc_audio_devices()
+
+    def build_voip_parrot(self):
+        """Platform-neutral VoIP parrot for TeamSpeak, Mumble, TeamTalk, etc."""
+        w=QWidget()
+        v=QVBoxLayout(w)
+
+        title=QLabel(
+            "<h2>VoIP-Papagei</h2>"
+            "<p>Dieser Papagei ist vom lokalen PC-Mikrofontest und vom Funk-Papagei getrennt. "
+            "Er nimmt Audio aus einer frei wählbaren PulseAudio/PipeWire-Quelle auf und gibt den "
+            "Durchgang anschließend über einen eigenen virtuellen VoIP-Mikrofoneingang zurück.</p>"
+        )
+        title.setWordWrap(True)
+        v.addWidget(title)
+
+        box=QGroupBox("VoIP-Papagei")
+        f=QFormLayout(box)
+        self.voip_parrot_enabled=QCheckBox("VoIP-Papagei aktiv")
+        self.voip_parrot_input=QComboBox()
+        self.voip_parrot_expert_source=QCheckBox("Expertenquelle verwenden")
+        self.voip_parrot_expert_source.setChecked(False)
+        self.voip_parrot_expert_source.toggled.connect(self._voip_parrot_expert_source_toggled)
+        self.voip_parrot_threshold=QSpinBox(); self.voip_parrot_threshold.setRange(-80,-5); self.voip_parrot_threshold.setValue(-42); self.voip_parrot_threshold.setSuffix(" dBFS")
+        self.voip_parrot_prebuffer_ms=QSpinBox(); self.voip_parrot_prebuffer_ms.setRange(0,5000); self.voip_parrot_prebuffer_ms.setValue(1500); self.voip_parrot_prebuffer_ms.setSuffix(" ms")
+        self.voip_parrot_hang_ms=QSpinBox(); self.voip_parrot_hang_ms.setRange(100,5000); self.voip_parrot_hang_ms.setValue(700); self.voip_parrot_hang_ms.setSuffix(" ms")
+        self.voip_parrot_delay_ms=QSpinBox(); self.voip_parrot_delay_ms.setRange(0,10000); self.voip_parrot_delay_ms.setValue(750); self.voip_parrot_delay_ms.setSuffix(" ms")
+        self.voip_parrot_max_seconds=QSpinBox(); self.voip_parrot_max_seconds.setRange(1,300); self.voip_parrot_max_seconds.setValue(30); self.voip_parrot_max_seconds.setSuffix(" s")
+        self.voip_parrot_guard_ms=QSpinBox(); self.voip_parrot_guard_ms.setRange(0,10000); self.voip_parrot_guard_ms.setValue(1200); self.voip_parrot_guard_ms.setSuffix(" ms")
+        self.voip_parrot_auto_route=QCheckBox("VoIP-Client-Audio beim Start automatisch auf Papagei-RX umleiten")
+        self.voip_parrot_auto_route.setChecked(True)
+        self.voip_parrot_commander=QCheckBox("Channel Commander während Papagei-Rückgabe setzen")
+        self.voip_parrot_commander.setChecked(False)
+        self.voip_parrot_status=QLabel("Bereit")
+        self.voip_parrot_status.setWordWrap(True)
+        self.voip_parrot_virtual_rx=QLabel("FunkGateway_VoIP_Parrot_RX")
+        self.voip_parrot_virtual_rx.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.voip_parrot_virtual_source=QLabel("FunkGateway_VoIP_Parrot_Input")
+        self.voip_parrot_virtual_source.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        refresh=QPushButton("VoIP-Audioquellen neu laden")
+        refresh.clicked.connect(self.refresh_voip_parrot_sources)
+        start=QPushButton("VoIP-Papagei starten")
+        stop=QPushButton("VoIP-Papagei stoppen")
+        self.voip_parrot_start_btn=start; self.voip_parrot_stop_btn=stop
+        stop.setEnabled(False)
+        start.clicked.connect(lambda: self.voip_parrot_enabled.setChecked(True))
+        stop.clicked.connect(lambda: self.voip_parrot_enabled.setChecked(False))
+        self.voip_parrot_enabled.toggled.connect(self._voip_parrot_enabled_toggled)
+
+        row=QHBoxLayout(); row.addWidget(start); row.addWidget(stop)
+        f.addRow("Eingangsquelle (VoIP-Audio):",self.voip_parrot_input)
+        f.addRow("",self.voip_parrot_expert_source)
+        f.addRow("Spracherkennungsschwelle:",self.voip_parrot_threshold)
+        f.addRow("Vorlaufpuffer:",self.voip_parrot_prebuffer_ms)
+        f.addRow("Nachlauf / Sprachende:",self.voip_parrot_hang_ms)
+        f.addRow("Pause vor Rückgabe:",self.voip_parrot_delay_ms)
+        f.addRow("Maximale Sprechzeit:",self.voip_parrot_max_seconds)
+        f.addRow("Rückkopplungssperre nach Wiedergabe:",self.voip_parrot_guard_ms)
+        f.addRow("",self.voip_parrot_auto_route)
+        f.addRow("",self.voip_parrot_commander)
+        f.addRow("VoIP-Wiedergabegerät (RX):",self.voip_parrot_virtual_rx)
+        f.addRow("Virtuelles VoIP-Mikrofon (TX):",self.voip_parrot_virtual_source)
+        f.addRow(refresh)
+        f.addRow(row)
+        f.addRow("",self.voip_parrot_enabled)
+        f.addRow("Status:",self.voip_parrot_status)
+
+        note=QLabel(
+            "<b>Einrichtung im VoIP-Programm:</b> Als Wiedergabegerät <b>FunkGateway_VoIP_Parrot_RX</b> "
+            "und als Mikrofon/Aufnahmegerät <b>FunkGateway_VoIP_Parrot_Input</b> auswählen. FunkGateway lauscht "
+            "standardmäßig fest auf dem Monitor des RX-Geräts. Nur mit „Expertenquelle verwenden“ kann für Sonderfälle eine andere Quelle gewählt werden. "
+            "Der Vorlaufpuffer hängt Audio von unmittelbar vor der Spracherkennung an den Anfang "
+            "des Durchgangs. Während der Rückgabe wird nicht neu aufgenommen; zusätzlich verhindert die "
+            "Rückkopplungssperre eine erneute Aufnahme der eigenen Wiedergabe. Die maximale Sprechzeit "
+            "begrenzt einen einzelnen aufgenommenen Durchgang."
+        )
+        note.setWordWrap(True)
+        v.addWidget(box)
+        v.addWidget(note)
+        v.addStretch(1)
+        self.tabs.addTab(w,"VoIP-Papagei")
+
+        self.voip_parrot_ui_timer=QTimer(self)
+        self.voip_parrot_ui_timer.setInterval(150)
+        self.voip_parrot_ui_timer.timeout.connect(self._update_voip_parrot_ui)
+        self.voip_parrot_ui_timer.start()
+        self.refresh_voip_parrot_sources()
+
+    def _ensure_voip_parrot_virtual_audio(self):
+        """Create a null sink + regular remapped source used as VoIP microphone."""
+        if shutil.which("pactl") is None:
+            raise RuntimeError("pactl fehlt")
+        sinks=[name for name,_ in self._pactl_list_short("sink")]
+        if "funkgateway_voip_parrot_rx" not in sinks:
+            r=subprocess.run([
+                "pactl","load-module","module-null-sink",
+                "sink_name=funkgateway_voip_parrot_rx",
+                "sink_properties=device.description=FunkGateway_VoIP_Parrot_RX"
+            ],capture_output=True,text=True,timeout=5,check=False)
+            if r.returncode!=0:
+                raise RuntimeError((r.stderr or r.stdout or "VoIP-Papagei-RX konnte nicht erzeugt werden").strip())
+        if "funkgateway_voip_parrot" not in sinks:
+            r=subprocess.run([
+                "pactl","load-module","module-null-sink",
+                "sink_name=funkgateway_voip_parrot",
+                "sink_properties=device.description=FunkGateway_VoIP_Parrot"
+            ],capture_output=True,text=True,timeout=5,check=False)
+            if r.returncode!=0:
+                raise RuntimeError((r.stderr or r.stdout or "module-null-sink konnte nicht geladen werden").strip())
+        sources=[name for name,_ in self._pactl_list_short("source")]
+        if "funkgateway_voip_parrot_source" not in sources:
+            r=subprocess.run([
+                "pactl","load-module","module-remap-source",
+                "master=funkgateway_voip_parrot.monitor",
+                "source_name=funkgateway_voip_parrot_source",
+                "source_properties=device.description=FunkGateway_VoIP_Parrot_Input"
+            ],capture_output=True,text=True,timeout=5,check=False)
+            if r.returncode!=0:
+                raise RuntimeError((r.stderr or r.stdout or "module-remap-source konnte nicht geladen werden").strip())
+
+    def _voip_parrot_expert_source_toggled(self, checked):
+        if hasattr(self,"voip_parrot_input"):
+            self.voip_parrot_input.setEnabled(bool(checked))
+        if not checked and hasattr(self,"voip_parrot_input"):
+            dedicated_rx="funkgateway_voip_parrot_rx.monitor"
+            i=self.voip_parrot_input.findData(dedicated_rx)
+            if i>=0:
+                self.voip_parrot_input.setCurrentIndex(i)
+        try: self.save_cfg()
+        except Exception: pass
+
+    def refresh_voip_parrot_sources(self):
+        if not hasattr(self,"voip_parrot_input"):
+            return
+        expert=bool(self.voip_parrot_expert_source.isChecked()) if hasattr(self,"voip_parrot_expert_source") else False
+        wanted=(self.voip_parrot_input.currentData() or getattr(self,"_wanted_voip_parrot_input",None)) if expert else None
+        self.voip_parrot_input.clear()
+        if shutil.which("parec") is None or shutil.which("paplay") is None or shutil.which("pactl") is None:
+            self.voip_parrot_input.addItem("PulseAudio/PipeWire-Werkzeuge fehlen",None)
+            self.voip_parrot_status_text="parec, paplay und pactl werden benötigt."
+            return
+        try:
+            self._ensure_voip_parrot_virtual_audio()
+        except Exception as e:
+            self.voip_parrot_status_text=f"Virtuelles VoIP-Audio konnte nicht erzeugt werden: {e}"
+        default_source=self._pactl_default("source")
+        dedicated_rx="funkgateway_voip_parrot_rx.monitor"
+        names=[]
+        if dedicated_rx:
+            names.append(dedicated_rx)
+        if default_source and default_source not in names:
+            names.append(default_source)
+        for name,_ in self._pactl_list_short("source"):
+            if name not in names and name != "funkgateway_voip_parrot_source":
+                names.append(name)
+        for name in names:
+            if name==dedicated_rx:
+                label=f"Empfohlen – FunkGateway VoIP Papagei RX ({name})"
+            else:
+                label=(f"Systemstandard – {name}" if name==default_source else name)
+            self.voip_parrot_input.addItem(label,name)
+        target=(wanted or dedicated_rx) if expert else dedicated_rx
+        if target:
+            i=self.voip_parrot_input.findData(target)
+            if i>=0: self.voip_parrot_input.setCurrentIndex(i)
+        self.voip_parrot_input.setEnabled(expert)
+        if self.voip_parrot_input.count() and self.voip_parrot_status_text.startswith("Bereit"):
+            self.voip_parrot_status_text="Bereit"
+
+    def _voip_parrot_enabled_toggled(self, checked):
+        if checked and self._is_voip_parrot_mode():
+            self.start_voip_parrot()
+        elif not checked:
+            self.stop_voip_parrot()
+        try: self.save_cfg()
+        except Exception: pass
+
+    def _voip_parrot_settings_snapshot(self):
+        """Read all Qt settings on the GUI thread before the worker starts."""
+        return {
+            "source":(self.voip_parrot_input.currentData() if self.voip_parrot_expert_source.isChecked() else "funkgateway_voip_parrot_rx.monitor"),
+            "threshold":int(self.voip_parrot_threshold.value()),
+            "prebuffer_ms":int(self.voip_parrot_prebuffer_ms.value()),
+            "hang_ms":int(self.voip_parrot_hang_ms.value()),
+            "delay_ms":int(self.voip_parrot_delay_ms.value()),
+            "max_seconds":int(self.voip_parrot_max_seconds.value()),
+            "guard_ms":int(self.voip_parrot_guard_ms.value()),
+            "commander":bool(self.voip_parrot_commander.isChecked()),
+        }
+
+    def start_voip_parrot(self):
+        if not self._is_voip_parrot_mode():
+            self.voip_parrot_status_text="Bitte Betriebsart VoIP-Papagei auswählen."
+            return
+        if self.voip_parrot_running:
+            return
+        cfg=self._voip_parrot_settings_snapshot()
+        if not cfg["source"]:
+            self.voip_parrot_status_text="Keine VoIP-Eingangsquelle ausgewählt."
+            return
+        try:
+            self._ensure_voip_parrot_virtual_audio()
+        except Exception as e:
+            self.voip_parrot_status_text=f"Start fehlgeschlagen: {e}"
+            return
+        self._cleanup_voip_parrot_temp()
+        self.voip_parrot_stop.clear()
+        self.voip_parrot_running=True
+        self.voip_parrot_phase="listen"
+        self.voip_parrot_status_text="Lauscht auf VoIP-Audio …"
+        self.voip_parrot_start_btn.setEnabled(False)
+        self.voip_parrot_stop_btn.setEnabled(True)
+        self._voip_saved_routes={}
+        if self.voip_parrot_auto_route.isChecked():
+            self._route_voip_clients_to_parrot_rx()
+            self.voip_parrot_route_timer=QTimer(self)
+            self.voip_parrot_route_timer.setInterval(1000)
+            self.voip_parrot_route_timer.timeout.connect(self._route_voip_clients_to_parrot_rx)
+            self.voip_parrot_route_timer.start()
+        self.voip_parrot_thread=threading.Thread(target=self._voip_parrot_worker,args=(cfg,),daemon=True)
+        self.voip_parrot_thread.start()
+        self.log("VoIP-Papagei gestartet.")
+
+    def _cleanup_voip_parrot_temp(self):
+        """Remove the temporary VoIP-parrot WAV after use or abort."""
+        try:
+            self.voip_parrot_temp_file.unlink(missing_ok=True)
+        except Exception as e:
+            try: self.log(f"VoIP-Papagei: temporäre WAV konnte nicht gelöscht werden: {e}")
+            except Exception: pass
+
+    def stop_voip_parrot(self):
+        self.voip_parrot_stop.set()
+        for proc in (getattr(self,"voip_parrot_proc",None),getattr(self,"voip_parrot_play_proc",None)):
+            if proc is not None and proc.poll() is None:
+                try: proc.terminate()
+                except Exception: pass
+        t=getattr(self,"voip_parrot_thread",None)
+        if t and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=1.5)
+        was_running=self.voip_parrot_running
+        self.voip_parrot_running=False
+        self.voip_parrot_phase="idle"
+        self.voip_parrot_proc=None
+        self.voip_parrot_play_proc=None
+        if hasattr(self,"voip_parrot_route_timer"):
+            try: self.voip_parrot_route_timer.stop()
+            except Exception: pass
+        self._restore_voip_client_routes()
+        self._set_parrot_channel_commander(False,"VoIP-Papagei")
+        self._cleanup_voip_parrot_temp()
+        self.voip_parrot_status_text="Gestoppt" if was_running else "Bereit"
+        if hasattr(self,"voip_parrot_start_btn"):
+            self.voip_parrot_start_btn.setEnabled(True)
+            self.voip_parrot_stop_btn.setEnabled(False)
+        if was_running:
+            self.log("VoIP-Papagei gestoppt.")
+
+    @staticmethod
+    def _voip_dbfs(data):
+        if not data:
+            return -120.0
+        usable=len(data)-(len(data)%2)
+        if usable<=0:
+            return -120.0
+        vals=array.array('h')
+        vals.frombytes(data[:usable])
+        if not vals:
+            return -120.0
+        rms=math.sqrt(sum(float(v)*float(v) for v in vals)/len(vals))
+        return 20.0*math.log10(max(rms,1.0)/32768.0)
+
+    def _write_voip_parrot_wav(self, raw):
+        ensure_cfg()
+        with wave.open(str(self.voip_parrot_temp_file),'wb') as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(48000); wf.writeframes(raw)
+
+    def _voip_parrot_worker(self, cfg):
+        """Continuous level-triggered recorder with prebuffer and echo guard."""
+        bytes_per_second=48000*2
+        chunk_bytes=4800  # 50 ms mono s16le
+        pre_max=max(0,int(bytes_per_second*cfg["prebuffer_ms"]/1000))
+        hang_s=max(0.1,cfg["hang_ms"]/1000.0)
+        max_s=max(1,cfg["max_seconds"])
+        threshold=float(cfg["threshold"])
+        pre=bytearray()
+        recording=False
+        record=bytearray()
+        started=0.0
+        last_loud=0.0
+        guard_until=0.0
+        try:
+            self.voip_parrot_proc=subprocess.Popen([
+                "parec",f"--device={cfg['source']}","--format=s16le","--rate=48000","--channels=1"
+            ],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            while not self.voip_parrot_stop.is_set():
+                data=self.voip_parrot_proc.stdout.read(chunk_bytes)
+                if not data:
+                    break
+                now=time.monotonic()
+                db=self._voip_dbfs(data)
+                loud=db>=threshold
+
+                if now < guard_until or self.voip_parrot_phase in ("delay","playback"):
+                    pre.clear()
+                    continue
+
+                if not recording:
+                    if pre_max>0:
+                        pre.extend(data)
+                        if len(pre)>pre_max:
+                            del pre[:len(pre)-pre_max]
+                    if loud:
+                        recording=True
+                        started=now
+                        last_loud=now
+                        record=bytearray(pre)
+                        record.extend(data)
+                        pre.clear()
+                        self.voip_parrot_phase="record"
+                        self.voip_parrot_status_text="VoIP-Durchgang wird aufgenommen …"
+                    continue
+
+                record.extend(data)
+                if loud:
+                    last_loud=now
+                elapsed=now-started
+                end_by_silence=(now-last_loud)>=hang_s
+                end_by_limit=elapsed>=max_s
+                if not (end_by_silence or end_by_limit):
+                    continue
+
+                self.voip_parrot_last_seconds=min(elapsed,max_s)
+                raw=bytes(record[:int(bytes_per_second*max_s)])
+                recording=False
+                record.clear(); pre.clear()
+                if len(raw) < int(bytes_per_second*0.12):
+                    self.voip_parrot_phase="listen"
+                    self.voip_parrot_status_text="Zu kurzer Durchgang verworfen – lauscht weiter …"
+                    continue
+                self._write_voip_parrot_wav(raw)
+                if end_by_limit:
+                    self.voip_parrot_status_text=f"Maximale Sprechzeit {max_s} s erreicht – Rückgabe folgt …"
+                else:
+                    self.voip_parrot_status_text="Sprachende erkannt – Rückgabe folgt …"
+                self.voip_parrot_phase="delay"
+                if self.voip_parrot_stop.wait(cfg["delay_ms"]/1000.0):
+                    break
+                self.voip_parrot_phase="playback"
+                self.voip_parrot_status_text=f"Wiedergabe ins VoIP ({self.voip_parrot_last_seconds:.1f} s) …"
+                if cfg.get("commander"):
+                    self._set_parrot_channel_commander(True,"VoIP-Papagei")
+                # Route only the temporary papagei playback into the dedicated
+                # virtual VoIP sink.  Never change the system default sink: the
+                # user's normal PC/VoIP audio routing must remain untouched.
+                play_env=os.environ.copy()
+                play_env["PULSE_SINK"]="funkgateway_voip_parrot"
+                self.voip_parrot_play_proc=subprocess.Popen([
+                    "paplay","--device=funkgateway_voip_parrot",str(self.voip_parrot_temp_file)
+                ],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env=play_env)
+
+                # PipeWire/PulseAudio compatibility fallback: some setups ignore
+                # paplay --device/PULSE_SINK and initially attach the stream to
+                # the default sink.  Move only this paplay process' sink-input.
+                # No global/default sink is modified, so after playback/stop the
+                # original routing is automatically unchanged.
+                try:
+                    self._force_voip_parrot_playback_sink(self.voip_parrot_play_proc.pid)
+                except Exception as e:
+                    try: self.log(f"VoIP-Papagei: Routing-Fallback fehlgeschlagen: {e}")
+                    except Exception: pass
+
+                while self.voip_parrot_play_proc.poll() is None and not self.voip_parrot_stop.wait(0.05):
+                    pass
+                if self.voip_parrot_stop.is_set():
+                    try: self.voip_parrot_play_proc.terminate()
+                    except Exception: pass
+                    break
+                if cfg.get("commander"):
+                    self._set_parrot_channel_commander(False,"VoIP-Papagei")
+                self._cleanup_voip_parrot_temp()
+                guard_until=time.monotonic()+cfg["guard_ms"]/1000.0
+                self.voip_parrot_phase="listen"
+                self.voip_parrot_status_text=f"Rückgabe beendet ({self.voip_parrot_last_seconds:.1f} s) – lauscht weiter …"
+        except Exception as e:
+            try: self.log(f"VoIP-Papagei Fehler: {e}")
+            except Exception: pass
+            self.voip_parrot_status_text=f"Fehler: {e} – Papagei gestoppt, Start erneut möglich."
+        finally:
+            for proc in (getattr(self,"voip_parrot_proc",None),getattr(self,"voip_parrot_play_proc",None)):
+                if proc is not None and proc.poll() is None:
+                    try: proc.terminate()
+                    except Exception: pass
+            self.voip_parrot_proc=None
+            self.voip_parrot_play_proc=None
+            if cfg.get("commander"):
+                self._set_parrot_channel_commander(False,"VoIP-Papagei")
+            self._cleanup_voip_parrot_temp()
+            self.voip_parrot_running=False
+            self.voip_parrot_phase="idle"
+
+
+    def _is_supported_voip_stream(self, stream):
+        text=" ".join(str(stream.get(k,"") or "") for k in ("app","binary","media")).lower()
+        return any(x in text for x in ("teamspeak","ts3client","mumble","teamtalk","tt5","discord","zello"))
+
+    def _route_voip_clients_to_parrot_rx(self):
+        if not self.voip_parrot_auto_route.isChecked() or shutil.which("pactl") is None:
+            return
+        target_name="funkgateway_voip_parrot_rx"
+        target_id=""
+        for name,_ in self._pactl_list_short("sink"):
+            if name==target_name:
+                target_id=name; break
+        if not target_id: return
+        if not hasattr(self,"_voip_saved_routes"): self._voip_saved_routes={}
+        for stream in self._read_sink_inputs():
+            sid=str(stream.get("id","") or "")
+            if not sid or not self._is_supported_voip_stream(stream): continue
+            if stream.get("sink") in (target_name,): continue
+            if sid not in self._voip_saved_routes:
+                self._voip_saved_routes[sid]=stream.get("sink")
+            try:
+                subprocess.run(["pactl","move-sink-input",sid,target_name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.0)
+            except Exception: pass
+
+    def _restore_voip_client_routes(self):
+        saved=getattr(self,"_voip_saved_routes",{}) or {}
+        for sid,sink in list(saved.items()):
+            if not sink: continue
+            try:
+                subprocess.run(["pactl","move-sink-input",str(sid),str(sink)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.0)
+            except Exception: pass
+        self._voip_saved_routes={}
+
+    def _set_parrot_channel_commander(self, active, source="Papagei"):
+        """Thread-safe request to toggle TeamSpeak Channel Commander for papagei playback."""
+        try:
+            self.parrotCommanderRequested.emit(bool(active), str(source))
+        except Exception as e:
+            try: self.log(f"Channel Commander {source}: Signalfehler: {e}")
+            except Exception: pass
+
+    def _apply_parrot_channel_commander(self, active, source="Papagei"):
+        """Runs on the Qt GUI thread via parrotCommanderRequested.
+
+        Papagei playback owns Channel Commander for the complete playback
+        interval.  Normal VOX/RX polling must not switch it off during a
+        short quiet passage inside the returned audio.
+        """
+        try:
+            wanted=bool(active)
+            if wanted:
+                self.parrot_commander_hold=True
+                self.parrot_commander_hold_source=str(source)
+            elif self.parrot_commander_hold_source in ("", str(source)):
+                self.parrot_commander_hold=False
+                self.parrot_commander_hold_source=""
+
+            if not self.ts_enabled.isChecked():
+                self.log(f"Channel Commander {source}: TeamSpeak-Integration ist nicht aktiviert.")
+                return
+            self._configure_teamspeak()
+            self.ts_client.set_channel_commander(wanted)
+            self.ts_commander_state=wanted
+            self.ts_commander_wanted=wanted
+            self.ts_commander_needs_sync=False
+            self.log(f"TeamSpeak Channel Commander: {'EIN' if wanted else 'AUS'} ({source})")
+        except Exception as e:
+            self.log(f"Channel Commander {source}: {e}")
+
+    def _force_voip_parrot_playback_sink(self, pid):
+        """Move only the paplay stream for this playback to the VoIP parrot sink.
+
+        This deliberately does *not* change the default sink or move unrelated
+        application streams.  Therefore stopping the papagei leaves the user's
+        original desktop/VoIP routing exactly as it was.
+        """
+        if not pid or shutil.which("pactl") is None:
+            return
+        deadline=time.monotonic()+1.2
+        target="funkgateway_voip_parrot"
+        while time.monotonic()<deadline and not self.voip_parrot_stop.is_set():
+            try:
+                cp=subprocess.run(["pactl","-f","json","list","sink-inputs"],
+                                  capture_output=True,text=True,timeout=1.0)
+                if cp.returncode==0 and cp.stdout.strip():
+                    import json
+                    rows=json.loads(cp.stdout)
+                    for row in rows if isinstance(rows,list) else []:
+                        props=row.get("properties") or {}
+                        proc_id=str(props.get("application.process.id", ""))
+                        if proc_id==str(pid):
+                            idx=row.get("index")
+                            if idx is not None:
+                                subprocess.run(["pactl","move-sink-input",str(idx),target],
+                                               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.0)
+                                return
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    def _update_voip_parrot_ui(self):
+        if not hasattr(self,"voip_parrot_status"):
+            return
+        self.voip_parrot_status.setText(self.voip_parrot_status_text)
+        running=bool(self.voip_parrot_running)
+        self.voip_parrot_start_btn.setEnabled(not running)
+        self.voip_parrot_stop_btn.setEnabled(running)
 
     def build_pc_moderation(self):
         """Dedicated TeamSpeak moderation tab for PC mode."""
@@ -746,58 +2323,238 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(w,"Moderation")
 
+    def _mode(self):
+        return self.operating_mode.currentData() if hasattr(self,"operating_mode") else "gateway"
+
     def _is_pc_mode(self):
-        return hasattr(self,"operating_mode") and self.operating_mode.currentData() == "pc"
+        return self._mode()=="pc"
+
+    def _is_voip_parrot_mode(self):
+        return self._mode()=="voip_parrot"
+
+    def _is_radio_parrot_mode(self):
+        return self._mode()=="radio_parrot"
+
+    def _needs_radio_stack(self):
+        return self._mode() in ("gateway","radio_parrot")
 
     def _operating_mode_changed(self, *_args):
-        if self._is_pc_mode() and (self.bridge or self.rx_detector or self.ptt):
-            self.log("Betriebsart PC / TeamSpeak gewählt: laufender Funk-Gateway-Betrieb wird beendet.")
-            self.stop_gateway()
+        mode=self._mode()
+        if mode!="voip_parrot" and getattr(self,"voip_parrot_running",False):
+            self.stop_voip_parrot()
+        if mode in ("pc","voip_parrot"):
+            if self.bridge or self.rx_detector or self.ptt:
+                self.log("Betriebsart ohne Funk-HF gewählt: laufender Funk-Gateway-Betrieb wird beendet.")
+                self.stop_gateway()
+            # Defensive Trennung: auch verwaiste/alte PTT-Objekte sicher schließen.
+            self._shutdown_ptt()
+        if mode=="radio_parrot" and hasattr(self,"parrot_enabled"):
+            self.parrot_enabled.setChecked(True)
         self._apply_operating_mode_ui()
+        self._apply_simple_widget_visibility()
+        if mode=="voip_parrot" and hasattr(self,"voip_parrot_enabled") and self.voip_parrot_enabled.isChecked() and not self.voip_parrot_running:
+            QTimer.singleShot(0,self.start_voip_parrot)
+        try: self.save_cfg()
+        except Exception: pass
+
+    def _set_form_field_visible(self, widget, visible):
+        """Show/hide one form field together with its label, where possible."""
+        if widget is None:
+            return
+        widget.setVisible(bool(visible))
+        # Find the QFormLayout that owns this widget and hide its text label too.
+        for form in self.findChildren(QFormLayout):
+            try:
+                label=form.labelForField(widget)
+            except Exception:
+                label=None
+            if label is not None:
+                label.setVisible(bool(visible))
+
+    def _apply_simple_widget_visibility(self):
+        """Hide expert tuning controls in simple gateway mode.
+
+        Values remain active internally. New installations therefore use the
+        tested defaults, while existing custom values are preserved and are
+        never silently overwritten merely by switching views.
+        """
+        if self._is_pc_mode():
+            return
+
+        show_advanced=bool(self.advanced_ui.isChecked())
+
+        # These are tuning/detail controls. The operator-facing core controls
+        # on the same pages stay visible in simple mode.
+        advanced_names=[
+            # Audio tuning / routing details
+            "threshold","hang","stream_combo","auto_route","stream_status",
+
+            # PTT fine tuning; method/port/GPIO selection stays visible
+            "invert","lead","tot",
+
+            # RX/Roger fine tuning
+            "rx_hysteresis","rx_min_signal","rx_ignore_after_roger",
+            "roger_min_free","roger_cooldown","diagnostic_mode",
+            "roger_delay","roger_freq","roger_wpm",
+
+            # Callsign beacon timing details
+            "id_record_seconds","id_wait_free","id_free_wait_ms",
+
+            # Radio parrot timing/details
+            "parrot_rx_prebuffer_ms","parrot_delay_ms","parrot_lead_ms",
+            "parrot_return_guard","parrot_roger",
+            "parrot_beacon_free_wait_ms","parrot_beacon_lead_ms",
+            "parrot_beacon_tail_ms",
+
+            # DTMF protocol timing – defaults are normally sufficient
+            "dtmf_start_char","dtmf_end_char","dtmf_interdigit_ms",
+            "dtmf_session_max_s","dtmf_release_ms",
+
+            # DTMF AUTH/TOTP low-level timing/security knobs
+            "dtmf_auth_prefix","dtmf_auth_logout_code","dtmf_auth_valid_s",
+            "dtmf_auth_max_attempts","dtmf_auth_lockout_s",
+            "dtmf_totp_digits","dtmf_totp_period","dtmf_totp_window",
+
+            # DTMF ACK drain timing
+            "dtmf_ack_tail_ms",
+
+            # Integration tuning that normally does not need daily adjustment
+            "voip_hf_voice_filter","ts_host","ts_port",
+        ]
+
+        for name in advanced_names:
+            widget=getattr(self,name,None)
+            if widget is not None:
+                self._set_form_field_visible(widget,show_advanced)
+
+    def _advanced_ui_toggled(self, *_args):
+        self._apply_operating_mode_ui()
+        self._apply_simple_widget_visibility()
         try:
             self.save_cfg()
         except Exception:
             pass
 
-    def _apply_operating_mode_ui(self):
-        pc=self._is_pc_mode()
-        radio_tabs={
-            "Start","Audio-Automatik","PTT / Modem","COS / Kanal","RX / Rogerbeep",
-            "Rufzeichen","CW / DTMF","Papagei","DTMF","Schutz"
-        }
-        pc_tabs={"PC / TeamSpeak","Moderation","Integrationen","Updates","Protokoll","Hilfe"}
+    def _select_tab_by_title(self, title):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == title:
+                try:
+                    if self.tabs.isTabVisible(i):
+                        self.tabs.setCurrentIndex(i)
+                    else:
+                        self.tabs.setCurrentIndex(i)
+                except AttributeError:
+                    self.tabs.setCurrentIndex(i)
+                return True
+        return False
 
+    def _update_setup_mode_content(self):
+        if not hasattr(self,"setup_mode_note"):
+            return
+        mode=self._mode()
+        if mode=="pc":
+            self.setup_mode_note.setText("<b>PC-User:</b> Audio, TeamSpeak/ClientQuery, lokaler Mikrofontest, Channel Commander, Diagnose und Profile.")
+            self.setup_wizard_note.setText("PC-Wizard: Willkommen → Audio → TeamSpeak → Papagei → Channel Commander → Test → Fertig")
+        elif mode=="voip_parrot":
+            self.setup_mode_note.setText("<b>VoIP-Papagei:</b> plattformunabhängiger VoIP-Echo-Betrieb mit getrenntem RX/TX-Audiopfad.")
+            self.setup_wizard_note.setText("VoIP-Papagei-Wizard: Willkommen → Papagei → Fertig")
+        elif mode=="radio_parrot":
+            self.setup_mode_note.setText("<b>Funk-Papagei:</b> Funk-RX aufnehmen und über Funk zurücksenden; Audio/PTT/RX bleiben verfügbar.")
+            self.setup_wizard_note.setText("Funk-Papagei-Wizard: Willkommen → Papagei → Fertig")
+        else:
+            self.setup_mode_note.setText("<b>Funk-Gateway:</b> vollständige Einrichtung für Audio, PTT, RX, VoIP, Rufzeichen, Papagei und DTMF.")
+            self.setup_wizard_note.setText("Gateway-Wizard: Willkommen → Audio → PTT / Modem → RX-Erkennung → TeamSpeak / Mumble → Rufzeichen / Papagei / DTMF → Gesamttest → Fertig")
+        pc_like=mode in ("pc","voip_parrot")
+        if hasattr(self,"setup_pc_box"): self.setup_pc_box.setVisible(pc_like)
+        if hasattr(self,"setup_gateway_box"): self.setup_gateway_box.setVisible(not pc_like)
+
+    def _update_start_mode_view(self):
+        """Adapt the Start page to the selected operating role."""
+        if not hasattr(self,"start_mode_note"):
+            return
+        mode=self._mode()
+        radio=mode in ("gateway","radio_parrot")
+        self.funk_rx_big.setVisible(radio)
+        self.tx_lbl.setVisible(radio)
+        self.cos_lbl.setVisible(radio)
+        self.status_ptt_caption.setVisible(radio)
+        self.status_ptt.setVisible(radio)
+        if mode=="pc":
+            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>PC-User / TeamSpeak</p>")
+            self.start_mode_note.setText("Normaler PC-Audiobetrieb. Funk-PTT, COS und Funk-RX sind in diesem Modus vollständig deaktiviert.")
+            self.gateway_state_big.setText("PC-USER AKTIV")
+            self.start_controls_note.setText("Audioquelle, Mikrofon-Hardware-Port und TeamSpeak werden im Reiter PC / TeamSpeak eingerichtet.")
+            self.meter.setFormat("PC-Audio %p %")
+        elif mode=="voip_parrot":
+            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>VoIP-Papagei</p>")
+            self.start_mode_note.setText("VoIP-Echo-Betrieb mit getrenntem RX- und TX-Pfad. Funkhardware und Funk-PTT bleiben deaktiviert.")
+            self.gateway_state_big.setText("VOIP-PAPAGEI" + (" AKTIV" if getattr(self,"voip_parrot_running",False) else " BEREIT"))
+            self.start_controls_note.setText("Start/Stop und Papagei-Parameter befinden sich im Reiter VoIP-Papagei.")
+            self.meter.setFormat("VoIP-Audio %p %")
+        elif mode=="radio_parrot":
+            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>Funk-Papagei</p>")
+            self.start_mode_note.setText("Funkdurchgänge werden aufgenommen und anschließend wieder über Funk ausgesendet.")
+            self.gateway_state_big.setText("FUNK-PAPAGEI BEREIT")
+            self.start_controls_note.setText("Start, Stop und NOT-AUS bleiben oben erreichbar; Rufzeichen-Sofortsendung ist in diesem Modus ausgeblendet.")
+            self.meter.setFormat("Funk-Audio %p %")
+        else:
+            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>Funk-Gateway</p>")
+            self.start_mode_note.setText("Vollständiger Gateway-Betrieb zwischen Funk und den aktivierten VoIP-Integrationen.")
+            self._set_gateway_protection_display()
+            self.start_controls_note.setText("Start, Stop, NOT-AUS und Rufzeichen bleiben oben unabhängig vom gewählten Reiter erreichbar.")
+            self.meter.setFormat("Audio %p %")
+
+    def _apply_operating_mode_ui(self):
+        mode=self._mode()
+        self._update_setup_mode_content()
+        self._update_start_mode_view()
+        if mode=="pc" and hasattr(self,"pc_hw_port"):
+            self._refresh_pc_hardware_ports()
+            if self.pc_hw_port_enable.isChecked() and self.pc_hw_port_restore.isChecked():
+                self._apply_pc_hardware_port(log_result=False)
+        advanced=bool(hasattr(self,"advanced_ui") and self.advanced_ui.isChecked())
+        mode_tabs={
+            "pc":{"Start","Einrichtung","PC / TeamSpeak","Moderation","Integrationen","Updates","Protokoll","Hilfe"},
+            "voip_parrot":{"Start","Einrichtung","VoIP-Papagei","Integrationen","Updates","Protokoll","Hilfe"},
+            "radio_parrot":{"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Papagei","Integrationen","Updates","Protokoll","Hilfe"},
+        }
+        simple_gateway={"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Rufzeichen","Papagei","DTMF","Integrationen","Updates","Protokoll","Hilfe"}
         for i in range(self.tabs.count()):
             title=self.tabs.tabText(i)
-            if pc:
-                visible=title in pc_tabs
+            if mode in mode_tabs:
+                visible=title in mode_tabs[mode]
             else:
-                visible=title != "PC / TeamSpeak"
-            try:
-                self.tabs.setTabVisible(i,visible)
-            except AttributeError:
-                self.tabs.setTabEnabled(i,visible)
+                visible=True if advanced else title in simple_gateway
+                if title in {"PC / TeamSpeak","VoIP-Papagei","Moderation"}: visible=False
+            try: self.tabs.setTabVisible(i,visible)
+            except AttributeError: self.tabs.setTabEnabled(i,visible)
 
-        self.start_main_btn.setVisible(not pc)
-        self.stop_main_btn.setVisible(not pc)
-        self.emergency_main_btn.setVisible(not pc)
-        self.ident_main_btn.setVisible(not pc)
-
-        if pc:
-            self.setWindowTitle(f"{APP_NAME} {VERSION} – PC / TeamSpeak")
-            for i in range(self.tabs.count()):
-                if self.tabs.tabText(i) == "PC / TeamSpeak":
-                    self.tabs.setCurrentIndex(i)
-                    break
-            if hasattr(self,"pc_ts_status"):
-                self.pc_ts_status.setText(
-                    "PC-Modus aktiv – HF/PTT deaktiviert. TeamSpeak-Funktionen arbeiten unabhängig vom Funk-Gateway."
-                )
-            QTimer.singleShot(250,self.refresh_pc_moderation)
+        radio=mode in ("gateway","radio_parrot")
+        self.start_main_btn.setVisible(radio)
+        self.stop_main_btn.setVisible(radio)
+        self.emergency_main_btn.setVisible(radio)
+        self.ident_main_btn.setVisible(mode=="gateway")
+        labels={"pc":"PC-User","gateway":"Funk-Gateway","radio_parrot":"Funk-Papagei","voip_parrot":"VoIP-Papagei"}
+        self.setWindowTitle(f"{APP_NAME} {VERSION} – {labels.get(mode,mode)}" + ((" – Erweiterte Ansicht") if mode=="gateway" and advanced else ""))
+        if mode=="radio_parrot":
+            self.start_main_btn.setText("Funk-Papagei starten")
+            self.stop_main_btn.setText("Funk-Papagei stoppen")
         else:
-            self.setWindowTitle(f"{APP_NAME} {VERSION}")
-            if hasattr(self,"pc_ts_commander_manual") and self.pc_ts_commander_manual.isChecked():
-                self.pc_ts_commander_manual.setChecked(False)
+            self.start_main_btn.setText("Gateway starten")
+            self.stop_main_btn.setText("Gateway stoppen")
+        preferred={"pc":"PC / TeamSpeak","voip_parrot":"VoIP-Papagei","radio_parrot":"Papagei","gateway":"Start"}.get(mode,"Start")
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i)==preferred:
+                try:
+                    if self.tabs.isTabVisible(i): self.tabs.setCurrentIndex(i)
+                except AttributeError:
+                    self.tabs.setCurrentIndex(i)
+                break
+        if mode=="pc" and hasattr(self,"pc_ts_status"):
+            self.pc_ts_status.setText("PC-User aktiv – HF/PTT deaktiviert.")
+            QTimer.singleShot(250,self.refresh_pc_moderation)
+        if mode!="pc" and hasattr(self,"pc_ts_commander_manual"):
+            self.ts_commander_wanted=False; self.ts_commander_needs_sync=True
 
     def _pc_commander_toggled(self, checked):
         if not self._is_pc_mode():
@@ -805,6 +2562,7 @@ class MainWindow(QMainWindow):
         if checked and not self.ts_enabled.isChecked():
             self.ts_enabled.setChecked(True)
             self.log("PC / TeamSpeak: TeamSpeak-Modul für sprechabhängigen Channel Commander automatisch aktiviert.")
+        # Der tatsächliche Sollzustand kommt aus client_flag_talking des eigenen TS-Clients.
         self.ts_commander_wanted=False
         self.ts_commander_needs_sync=True
         if hasattr(self,"pc_ts_status"):
@@ -850,12 +2608,10 @@ class MainWindow(QMainWindow):
                 for i in range(self.pc_mod_clients.count()):
                     d=self.pc_mod_clients.itemData(i)
                     if isinstance(d,dict) and d.get("clid")==old_clid:
-                        self.pc_mod_clients.setCurrentIndex(i)
-                        break
+                        self.pc_mod_clients.setCurrentIndex(i); break
             if old_cid:
                 pos=self.pc_mod_channels.findData(old_cid)
-                if pos>=0:
-                    self.pc_mod_channels.setCurrentIndex(pos)
+                if pos>=0: self.pc_mod_channels.setCurrentIndex(pos)
 
             self.pc_mod_status.setText(
                 f"Moderation bereit: {len(clients)} Benutzer, {len(channels)} Channels sichtbar."
@@ -879,7 +2635,7 @@ class MainWindow(QMainWindow):
             self.pc_mod_status.setText(f'Poke an {info["nickname"]} gesendet.')
             self.log(f'PC-Moderation: Poke an {info["nickname"]} gesendet.')
         except Exception as e:
-            QMessageBox.warning(self,"Moderation",f"Poke konnte nicht gesendet werden:\n{e}")
+            QMessageBox.warning(self,"Moderation",f"Poke konnte nicht gesendet werden:\\n{e}")
             self.log(f"PC-Moderation Poke Fehler: {e}")
 
     def pc_moderation_move(self):
@@ -901,7 +2657,7 @@ class MainWindow(QMainWindow):
             self.pc_mod_status.setText("Benutzer verschoben.")
             QTimer.singleShot(300,self.refresh_pc_moderation)
         except Exception as e:
-            QMessageBox.warning(self,"Moderation",f"Verschieben fehlgeschlagen:\n{e}")
+            QMessageBox.warning(self,"Moderation",f"Verschieben fehlgeschlagen:\\n{e}")
             self.log(f"PC-Moderation Move Fehler: {e}")
 
     def pc_moderation_kick(self, from_server=False):
@@ -917,7 +2673,7 @@ class MainWindow(QMainWindow):
             return
         where="vom Server" if from_server else "aus dem Channel"
         reason=self.pc_mod_reason.text().strip()
-        extra=f"\nGrund: {reason}" if reason else ""
+        extra=f"\\nGrund: {reason}" if reason else ""
         if QMessageBox.question(
             self,"Kick bestätigen",
             f'{info["nickname"]} wirklich {where} kicken?{extra}',
@@ -931,7 +2687,7 @@ class MainWindow(QMainWindow):
             self.pc_mod_status.setText(f'{info["nickname"]} {where} gekickt.')
             QTimer.singleShot(300,self.refresh_pc_moderation)
         except Exception as e:
-            QMessageBox.warning(self,"Moderation",f"Kick fehlgeschlagen:\n{e}")
+            QMessageBox.warning(self,"Moderation",f"Kick fehlgeschlagen:\\n{e}")
             self.log(f"PC-Moderation Kick Fehler: {e}")
 
     def _pactl_default(self, kind):
@@ -979,6 +2735,7 @@ class MainWindow(QMainWindow):
 
         wanted_in=self.pc_parrot_input.currentData()
         wanted_out=self.pc_parrot_output.currentData()
+
         self.pc_parrot_input.clear()
         self.pc_parrot_output.clear()
 
@@ -995,9 +2752,13 @@ class MainWindow(QMainWindow):
         default_sink=self._pactl_default("sink")
 
         if default_source:
-            self.pc_parrot_input.addItem(f"Systemstandard – {default_source}",default_source)
+            self.pc_parrot_input.addItem(
+                f"Systemstandard – {default_source}", default_source
+            )
         if default_sink:
-            self.pc_parrot_output.addItem(f"Systemstandard – {default_sink}",default_sink)
+            self.pc_parrot_output.addItem(
+                f"Systemstandard – {default_sink}", default_sink
+            )
 
         seen=set()
         if default_source:
@@ -1031,15 +2792,24 @@ class MainWindow(QMainWindow):
             )
         else:
             self.pc_parrot_status.setText("Keine passenden PulseAudio/PipeWire-Geräte gefunden.")
+        if hasattr(self,"pc_hw_port"):
+            self._refresh_pc_hardware_ports()
+            if self._is_pc_mode() and self.pc_hw_port_enable.isChecked() and self.pc_hw_port_restore.isChecked():
+                self._apply_pc_hardware_port(log_result=False)
 
     def start_pc_parrot(self):
         if not self._is_pc_mode():
             return
 
+        if hasattr(self,"pc_hw_port_enable") and self.pc_hw_port_enable.isChecked():
+            self._apply_pc_hardware_port(log_result=False)
         source=self.pc_parrot_input.currentData()
         sink=self.pc_parrot_output.currentData()
         if not source or not sink:
-            QMessageBox.warning(self,"PC-Papagei","Bitte Mikrofon und Wiedergabegerät auswählen.")
+            QMessageBox.warning(
+                self,"PC-Papagei",
+                "Bitte Mikrofon und Wiedergabegerät auswählen."
+            )
             return
 
         seconds=int(self.pc_parrot_seconds.value())
@@ -1123,7 +2893,11 @@ class MainWindow(QMainWindow):
 
         try:
             self.pc_parrot_proc=subprocess.Popen(
-                ["paplay",f"--device={self.pc_parrot_output_device}",str(self.pc_parrot_file)],
+                [
+                    "paplay",
+                    f"--device={self.pc_parrot_output_device}",
+                    str(self.pc_parrot_file),
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1584,6 +3358,7 @@ class MainWindow(QMainWindow):
         self.dtmf_auth_success_wav=QLineEdit()
         self.dtmf_auth_required_wav=QLineEdit()
         self.dtmf_auth_failed_wav=QLineEdit()
+        f.addRow("",self._default_wav_hint_label())
         for label_text,field in (
             ("Ansage „AUTH erfolgreich“:",self.dtmf_auth_success_wav),
             ("Ansage „AUTH erforderlich“:",self.dtmf_auth_required_wav),
@@ -1642,6 +3417,7 @@ class MainWindow(QMainWindow):
         f.addRow("Mumble UNDEAF:",self.dtmf_code_mumble_undeaf)
 
         f.addRow(QLabel("<b>Vollzugsmeldung über Funk</b>"))
+        f.addRow("",self._default_wav_hint_label())
         self.dtmf_ack_enabled=QCheckBox("Nach ausgeführtem DTMF-Befehl Bestätigung über Funk senden")
         self.dtmf_ack_enabled.setChecked(True)
         self.dtmf_ack_tail_ms=QSpinBox()
@@ -1804,6 +3580,7 @@ class MainWindow(QMainWindow):
         self.protect_room_repeat.setToolTip("Wiederholt die gemeinsame Störungsraum-Ansage nach dem eingestellten Zeitraum – unabhängig davon, ob TeamSpeak oder Mumble verwendet wird.")
 
         af.addRow("",shared_note)
+        af.addRow("",self._default_wav_hint_label())
         af.addRow("Ansage bei Stummschaltung:",r1)
         af.addRow("Ansage im Störungsraum:",r2)
         af.addRow("",self.protect_room_repeat)
@@ -1843,6 +3620,7 @@ class MainWindow(QMainWindow):
         rb=QPushButton("WAV auswählen")
         rb.clicked.connect(lambda:self.choose_protection_wav(self.return_lost_wav))
         rr=QHBoxLayout(); rr.addWidget(self.return_lost_wav); rr.addWidget(rb)
+        rf_default_wav_note=self._default_wav_hint_label()
 
         defaults = {
             self.return_guard_ms:"Schutzfenster nach Sendeende. RX, das in diesem Fenster beginnt, wird zunächst nicht zu VoIP übertragen. Standard: 3500 ms.",
@@ -3364,11 +5142,15 @@ class MainWindow(QMainWindow):
             info=self.ts_client.test()
             cid,cname=self.ts_client.current_channel()
             self.ts_status.setText(f"TeamSpeak: ClientQuery verbunden ({info})")
+            if hasattr(self,"pc_ts_status"):
+                self.pc_ts_status.setText(f"TeamSpeak: ClientQuery verbunden ({info}), Channel: {cname}")
             self.ts_channel.setText(f"Aktiver TeamSpeak-Channel: {cname} (CID {cid})")
             self.log(f"TeamSpeak ClientQuery: Verbindungstest erfolgreich ({info}, Channel={cname}).")
             self.refresh_ts_channels()
         except Exception as e:
             self.ts_status.setText(f"TeamSpeak: nicht verbunden ({e})")
+            if hasattr(self,"pc_ts_status"):
+                self.pc_ts_status.setText(f"TeamSpeak: nicht verbunden ({e})")
             self.log(f"TeamSpeak ClientQuery: Verbindungstest fehlgeschlagen: {e}")
             self.show_copyable_error("TeamSpeak ClientQuery", str(e))
 
@@ -3416,6 +5198,8 @@ class MainWindow(QMainWindow):
 
         try:
             self._configure_teamspeak()
+            # current_channel() ruft whoami() auf und setzt damit die eigene Client-ID.
+            # Danach kann speakers() den eigenen Sprechstatus sicher erkennen.
             current_cid,current_name=self.ts_client.current_channel()
             speakers=self.ts_client.speakers()
             self.ts_status.setText("TeamSpeak: ClientQuery verbunden")
@@ -3423,7 +5207,21 @@ class MainWindow(QMainWindow):
             speaker_text=", ".join(speakers) if speakers else "—"
             self.ts_speaker.setText(f"Aktueller TeamSpeak-Sprecher: {speaker_text}")
 
-            if self._is_pc_mode():
+            if getattr(self,"parrot_commander_hold",False):
+                # During a papagei return, playback state is authoritative.
+                # Do not let TeamSpeak VOX/self_talking or Funk-RX polling
+                # briefly clear Channel Commander in quiet audio passages.
+                wanted=True
+                self.ts_commander_wanted=True
+                if self.ts_commander_needs_sync or not self.ts_commander_state:
+                    self.ts_client.set_channel_commander(True)
+                    self.ts_commander_state=True
+                    self.ts_commander_needs_sync=False
+                    self.log(
+                        "TeamSpeak Channel Commander: EIN "
+                        f"({self.parrot_commander_hold_source or 'Papagei'} – Wiedergabe-Haltefunktion)"
+                    )
+            elif self._is_pc_mode():
                 auto=bool(self.pc_ts_commander_manual.isChecked())
                 talking=bool(self.ts_client.self_talking())
                 wanted=bool(auto and talking)
@@ -4601,6 +6399,285 @@ done"""
             self.refresh_audio_streams()
             self._sync_parrot_voip_playback_mute()
 
+    def _source_hardware_ports(self, source_name):
+        """Return [(port_name, description, availability)] for one Pulse/PipeWire source."""
+        if not source_name:
+            return []
+        try:
+            out=subprocess.check_output(
+                ["pactl","list","sources"], text=True, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            return []
+        in_source=False
+        in_ports=False
+        ports=[]
+        for raw in out.splitlines():
+            line=raw.rstrip()
+            stripped=line.strip()
+            if stripped.startswith("Name:"):
+                name=stripped.split(":",1)[1].strip()
+                in_source=(name == str(source_name))
+                in_ports=False
+                continue
+            if not in_source:
+                continue
+            if stripped == "Ports:":
+                in_ports=True
+                continue
+            if stripped.startswith("Active Port:") or stripped.startswith("Aktiver Port:"):
+                in_ports=False
+                continue
+            if in_ports:
+                m=re.match(r"^([A-Za-z0-9_.-]+):\s*(.+)$", stripped)
+                if not m:
+                    continue
+                port=m.group(1)
+                rest=m.group(2)
+                # Keep the human-readable description before metadata in parentheses.
+                desc=rest.split(" (",1)[0].strip() or port
+                low=rest.lower()
+                if "not available" in low or "nicht verfügbar" in low:
+                    availability="nicht verfügbar"
+                elif "available" in low or "verfügbar" in low:
+                    availability="verfügbar"
+                else:
+                    availability="unbekannt"
+                ports.append((port,desc,availability))
+        return ports
+
+    def _active_source_hardware_port(self, source_name):
+        if not source_name:
+            return ""
+        try:
+            out=subprocess.check_output(
+                ["pactl","list","sources"], text=True, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            return ""
+        in_source=False
+        for raw in out.splitlines():
+            stripped=raw.strip()
+            if stripped.startswith("Name:"):
+                in_source=(stripped.split(":",1)[1].strip() == str(source_name))
+                continue
+            if in_source and (stripped.startswith("Active Port:") or stripped.startswith("Aktiver Port:")):
+                return stripped.split(":",1)[1].strip()
+        return ""
+
+    def _refresh_pc_hardware_ports(self):
+        """Refresh the hardware route selector for the PC-User input only."""
+        if not hasattr(self,"pc_hw_port") or not hasattr(self,"pc_parrot_input"):
+            return
+        source=self.pc_parrot_input.currentData()
+        active=self._active_source_hardware_port(source)
+        ports=self._source_hardware_ports(source)
+        wanted=getattr(self,"_wanted_pc_hw_port",None) or self.pc_hw_port.currentData()
+        self.pc_hw_port.blockSignals(True)
+        self.pc_hw_port.clear()
+        for port,desc,availability in ports:
+            suffix=f" – {availability}" if availability else ""
+            self.pc_hw_port.addItem(f"{desc} ({port}){suffix}",port)
+        if wanted:
+            i=self.pc_hw_port.findData(wanted)
+            if i>=0:
+                self.pc_hw_port.setCurrentIndex(i)
+        elif active:
+            i=self.pc_hw_port.findData(active)
+            if i>=0:
+                self.pc_hw_port.setCurrentIndex(i)
+        self.pc_hw_port.blockSignals(False)
+        self._wanted_pc_hw_port=None
+        enabled=self.pc_hw_port_enable.isChecked()
+        available=bool(ports)
+        self.pc_hw_port.setEnabled(enabled and available)
+        self.pc_hw_port_restore.setEnabled(enabled and available)
+        self.pc_hw_port_watchdog.setEnabled(enabled and available)
+        self.pc_hw_port_apply.setEnabled(enabled and available)
+        if not ports:
+            self.pc_hw_port_status.setText("Diese PC-Aufnahmequelle meldet keine umschaltbaren Hardware-Ports.")
+        elif len(ports)==1:
+            self.pc_hw_port_status.setText(f"Ein Hardware-Port erkannt: {ports[0][1]}. Aktuell aktiv: {active or 'unbekannt'}.")
+        else:
+            self.pc_hw_port_status.setText(f"{len(ports)} Hardware-Ports erkannt. Aktuell aktiv: {active or 'unbekannt'}.")
+
+    def _pc_hw_port_enabled_changed(self, checked):
+        self._refresh_pc_hardware_ports()
+        if checked and self.pc_hw_port_restore.isChecked():
+            self._apply_pc_hardware_port(log_result=False)
+
+    def _apply_pc_hardware_port(self, log_result=False):
+        if not self._is_pc_mode():
+            return False
+        if not hasattr(self,"pc_hw_port_enable") or not self.pc_hw_port_enable.isChecked():
+            return False
+        source=self.pc_parrot_input.currentData() if hasattr(self,"pc_parrot_input") else None
+        port=self.pc_hw_port.currentData() if hasattr(self,"pc_hw_port") else None
+        if not source or not port:
+            if log_result:
+                self.log("PC-Hardware-Port: Quelle oder Port fehlt.")
+            return False
+        try:
+            subprocess.run(
+                ["pactl","set-source-port",str(source),str(port)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            active=self._active_source_hardware_port(source)
+            ok=(active==str(port))
+            self.pc_hw_port_status.setText(
+                f"Hardware-Port aktiv: {active or 'unbekannt'}" + ("" if ok else f" (gewünscht: {port})")
+            )
+            if log_result or ok:
+                self.log(f"PC-Hardware-Port: {source} -> {port}" + ("" if ok else f"; aktiv gemeldet: {active or 'unbekannt'}"))
+            return ok
+        except Exception as e:
+            self.pc_hw_port_status.setText(f"PC-Hardware-Port konnte nicht gesetzt werden: {e}")
+            if log_result:
+                self.log(f"PC-Hardware-Port konnte nicht gesetzt werden: {e}")
+            return False
+
+    def _watch_pc_hardware_port(self):
+        """Pin the selected PC-User microphone route without touching radio RX settings."""
+        if not self._is_pc_mode():
+            return
+        if not hasattr(self,"pc_hw_port_enable") or not self.pc_hw_port_enable.isChecked():
+            return
+        if not self.pc_hw_port_watchdog.isChecked():
+            return
+        source=self.pc_parrot_input.currentData()
+        wanted=self.pc_hw_port.currentData()
+        if not source or not wanted:
+            return
+        active=self._active_source_hardware_port(source)
+        if not active or active==str(wanted):
+            return
+        try:
+            subprocess.run(
+                ["pactl","set-source-port",str(source),str(wanted)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            now=self._active_source_hardware_port(source)
+            if now==str(wanted):
+                self.pc_hw_port_status.setText(f"Hardware-Port aktiv: {now} (Watchdog)")
+                self.log(f"PC-Hardware-Port-Watchdog: {active} -> {wanted}")
+            else:
+                self.pc_hw_port_status.setText(
+                    f"PC-Hardware-Port-Watchdog: aktiv {now or 'unbekannt'}, gewünscht {wanted}"
+                )
+        except Exception as e:
+            self.pc_hw_port_status.setText(f"PC-Hardware-Port-Watchdog konnte Port nicht setzen: {e}")
+
+    def _refresh_rx_hardware_ports(self):
+        if not hasattr(self,"rx_hw_port"):
+            return
+        source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
+        wanted=getattr(self,"_wanted_rx_hw_port",None) or self.rx_hw_port.currentData()
+        self.rx_hw_port.blockSignals(True)
+        self.rx_hw_port.clear()
+        ports=self._source_hardware_ports(source)
+        active=self._active_source_hardware_port(source)
+        for port,desc,availability in ports:
+            suffix=[]
+            if port == active:
+                suffix.append("aktiv")
+            if availability == "nicht verfügbar":
+                suffix.append("Treiber meldet nicht verfügbar")
+            label=f"{desc} ({port})"
+            if suffix:
+                label += " – " + ", ".join(suffix)
+            self.rx_hw_port.addItem(label,port)
+        if wanted:
+            i=self.rx_hw_port.findData(wanted)
+            if i>=0:
+                self.rx_hw_port.setCurrentIndex(i)
+        elif active:
+            i=self.rx_hw_port.findData(active)
+            if i>=0:
+                self.rx_hw_port.setCurrentIndex(i)
+        self.rx_hw_port.blockSignals(False)
+        self._wanted_rx_hw_port=None
+        has_multiple=len(ports)>1
+        enabled=self.rx_hw_port_enable.isChecked()
+        self.rx_hw_port.setEnabled(enabled and bool(ports))
+        self.rx_hw_port_restore.setEnabled(enabled and bool(ports))
+        if hasattr(self,"rx_hw_port_watchdog"):
+            self.rx_hw_port_watchdog.setEnabled(enabled and bool(ports))
+        self.rx_hw_port_apply.setEnabled(enabled and bool(ports))
+        if not ports:
+            self.rx_hw_port_status.setText("Diese Aufnahmequelle meldet keine umschaltbaren Hardware-Ports.")
+        elif has_multiple:
+            self.rx_hw_port_status.setText(
+                f"{len(ports)} Hardware-Ports erkannt. Aktuell aktiv: {active or 'unbekannt'}."
+            )
+        else:
+            self.rx_hw_port_status.setText(
+                f"Nur ein Hardware-Port erkannt ({ports[0][1]}). Eine feste Auswahl ist normalerweise nicht nötig."
+            )
+
+    def _rx_hw_port_enabled_changed(self, checked):
+        self._refresh_rx_hardware_ports()
+        if checked and self.rx_hw_port_restore.isChecked():
+            self._apply_rx_hardware_port(log_result=False)
+
+    def _apply_rx_hardware_port(self, log_result=False):
+        if not hasattr(self,"rx_hw_port_enable") or not self.rx_hw_port_enable.isChecked():
+            return False
+        source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
+        port=self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None
+        if not source or not port:
+            if log_result:
+                self.log("RX-Hardware-Port: Quelle oder Port fehlt.")
+            return False
+        try:
+            subprocess.run(
+                ["pactl","set-source-port",str(source),str(port)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            active=self._active_source_hardware_port(source)
+            ok=(active == str(port))
+            self.rx_hw_port_status.setText(
+                f"Hardware-Port aktiv: {active or 'unbekannt'}" + ("" if ok else f" (gewünscht: {port})")
+            )
+            if log_result or ok:
+                self.log(f"RX-Hardware-Port: {source} -> {port}" + ("" if ok else f"; aktiv gemeldet: {active or 'unbekannt'}"))
+            return ok
+        except Exception as e:
+            self.rx_hw_port_status.setText(f"Hardware-Port konnte nicht gesetzt werden: {e}")
+            if log_result:
+                self.log(f"RX-Hardware-Port konnte nicht gesetzt werden: {e}")
+            return False
+
+    def _watch_rx_hardware_port(self):
+        """Keep a configured shared Mic/Line-In port pinned during radio operation."""
+        if not self._needs_radio_stack():
+            return
+        if not hasattr(self,"rx_hw_port_enable") or not self.rx_hw_port_enable.isChecked():
+            return
+        if hasattr(self,"rx_hw_port_watchdog") and not self.rx_hw_port_watchdog.isChecked():
+            return
+        source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
+        wanted=self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None
+        if not source or not wanted:
+            return
+        active=self._active_source_hardware_port(source)
+        if not active or active == str(wanted):
+            return
+        try:
+            subprocess.run(
+                ["pactl","set-source-port",str(source),str(wanted)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            now_active=self._active_source_hardware_port(source)
+            if now_active == str(wanted):
+                self.rx_hw_port_status.setText(f"Hardware-Port aktiv: {now_active} (Watchdog)")
+                self.log(f"RX-Hardware-Port-Watchdog: {active} -> {wanted}")
+            else:
+                self.rx_hw_port_status.setText(
+                    f"Hardware-Port-Watchdog: aktiv {now_active or 'unbekannt'}, gewünscht {wanted}"
+                )
+        except Exception as e:
+            self.rx_hw_port_status.setText(f"Hardware-Port-Watchdog konnte Port nicht setzen: {e}")
+
     def refresh_audio_devices(self):
         """Load real PipeWire/PulseAudio recording sources."""
         self.refresh_sinks()
@@ -4666,6 +6743,9 @@ done"""
                     i=self.rx_source.findData(default_source)
                     if i>=0: self.rx_source.setCurrentIndex(i)
                 self._wanted_rx_source=None
+                self._refresh_rx_hardware_ports()
+                if self.rx_hw_port_enable.isChecked() and self.rx_hw_port_restore.isChecked():
+                    self._apply_rx_hardware_port(log_result=False)
 
         except Exception as e:
             self.input_device.addItem(
@@ -4688,7 +6768,36 @@ done"""
         try: make_virtual_sink(); self.log("FunkGateway_TX ist bereit."); QMessageBox.information(self,"Audio","FunkGateway_TX ist bereit und kann als Audio-Ausgang gewählt werden.")
         except Exception as e: self.show_copyable_error("Audio",str(e))
 
+    def _ptt_mode_allowed(self):
+        """PTT darf ausschließlich in echten Funk-Betriebsarten aktiv sein."""
+        try:
+            return self._mode() in ("gateway", "radio_parrot")
+        except Exception:
+            return False
+
+    def _shutdown_ptt(self):
+        """PTT sicher freigeben und Objekt schließen, ohne Nicht-Funk-Modi zu belasten."""
+        ptt=getattr(self, "ptt", None)
+        if ptt is not None:
+            try:
+                ptt.key(False)
+            except Exception:
+                pass
+            try:
+                ptt.close()
+            except Exception:
+                pass
+        self.ptt=None
+        self.tx=False
+        self.tx_since=None
+        if hasattr(self, "tx_lbl"):
+            self.tx_lbl.setText("● PTT AUS")
+
     def create_ptt(self):
+        if not self._ptt_mode_allowed():
+            self._shutdown_ptt()
+            self.log("PTT-Initialisierung in PC-/VoIP-Modus blockiert.")
+            return
         if self.ptt:
             try: self.ptt.close()
             except Exception: pass
@@ -4731,7 +6840,28 @@ done"""
         self.log(f"Selbstrücklauf-Schutz gestartet nach {kind}: RX→VoIP für neue RX-Starts {ms} ms geschützt (Standard: 3500 ms).")
 
     def set_ptt(self,on):
+        # PC-User und VoIP-Papagei dürfen niemals Funk-PTT ansteuern.
+        if not self._ptt_mode_allowed():
+            if getattr(self, "ptt", None) is not None:
+                self._shutdown_ptt()
+            else:
+                self.tx=False
+                self.tx_since=None
+                if hasattr(self, "tx_lbl"):
+                    self.tx_lbl.setText("● PTT AUS")
+            if on:
+                self.log("PTT-EIN ignoriert: aktuelle Betriebsart verwendet keine Funk-PTT.")
+            return
         if self.tx==on: return
+        if getattr(self, "ptt", None) is None:
+            if not on:
+                self.tx=False
+                self.tx_since=None
+                if hasattr(self, "tx_lbl"):
+                    self.tx_lbl.setText("● PTT AUS")
+                return
+            self.log("PTT-EIN angefordert, aber kein PTT-Gerät initialisiert.")
+            return
         try:
             if on and self.lead.value()>0:
                 self.ptt.key(True); self.tx=True; self.tx_since=time.monotonic(); self.tx_lbl.setText("● PTT EIN / TX"); self.log("PTT EIN")
@@ -5407,6 +7537,8 @@ done"""
 
         self.parrot_playing=True
         self.parrot_cycle_active=True
+        if hasattr(self,"parrot_channel_commander") and self.parrot_channel_commander.isChecked():
+            self._set_parrot_channel_commander(True,"Funk-Papagei")
         self.roger_pending_token += 1
         self.active_tx_kind="parrot"
         with self.parrot_capture_lock:
@@ -5432,6 +7564,8 @@ done"""
                     self.log(f"Papagei: PTT AUS fehlgeschlagen: {e}")
                 self.parrot_playing=False
                 self.parrot_cycle_active=False
+                if hasattr(self,"parrot_channel_commander") and self.parrot_channel_commander.isChecked():
+                    self._set_parrot_channel_commander(False,"Funk-Papagei")
                 self.log("Papagei: bereit.")
 
             QTimer.singleShot(max(100,self.hang.value()),release_ptt)
@@ -5993,6 +8127,9 @@ done"""
             self.rx_detector=None
             rx_source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
             if rx_source:
+                if (hasattr(self,"rx_hw_port_enable") and self.rx_hw_port_enable.isChecked()
+                        and hasattr(self,"rx_hw_port_restore") and self.rx_hw_port_restore.isChecked()):
+                    self._apply_rx_hardware_port(log_result=False)
                 make_rx_source()
                 self.rx_detector=RxActivityDetector(
                     rx_source,self.rx_threshold.value(),self.rx_hang.value(),
@@ -6033,6 +8170,7 @@ done"""
         self.dtmf_mode_ack_generation += 1
         self.dtmf_mode_ack_pending=False
         if self.ptt: self.set_ptt(False)
+        self._shutdown_ptt()
         self.log("Gateway gestoppt.")
 
     def emergency(self):
@@ -6299,13 +8437,32 @@ done"""
 
     def save_cfg(self):
         ensure_cfg(); data={"operating_mode":self.operating_mode.currentData(),
+        "advanced_ui":self.advanced_ui.isChecked(),
         "pc_ts_commander_manual":self.pc_ts_commander_manual.isChecked(),
         "pc_parrot_input":self.pc_parrot_input.currentData(),"pc_parrot_output":self.pc_parrot_output.currentData(),
+        "pc_hw_port_enable":self.pc_hw_port_enable.isChecked(),"pc_hw_port":self.pc_hw_port.currentData(),
+        "pc_hw_port_restore":self.pc_hw_port_restore.isChecked(),"pc_hw_port_watchdog":self.pc_hw_port_watchdog.isChecked(),
         "pc_parrot_seconds":self.pc_parrot_seconds.value(),
+        "voip_parrot_enabled":self.voip_parrot_enabled.isChecked(),
+        "voip_parrot_input":self.voip_parrot_input.currentData(),
+        "voip_parrot_expert_source":self.voip_parrot_expert_source.isChecked(),
+        "voip_parrot_threshold":self.voip_parrot_threshold.value(),
+        "voip_parrot_prebuffer_ms":self.voip_parrot_prebuffer_ms.value(),
+        "voip_parrot_hang_ms":self.voip_parrot_hang_ms.value(),
+        "voip_parrot_delay_ms":self.voip_parrot_delay_ms.value(),
+        "voip_parrot_max_seconds":self.voip_parrot_max_seconds.value(),
+        "voip_parrot_guard_ms":self.voip_parrot_guard_ms.value(),
+        "voip_parrot_auto_route":self.voip_parrot_auto_route.isChecked(),
+        "voip_parrot_commander":self.voip_parrot_commander.isChecked(),
+        "parrot_channel_commander":self.parrot_channel_commander.isChecked(),
         "ptt_method":self.ptt_method.currentText(),"com_port":self.selected_port(),"com_line":self.com_line.currentText(),
         "cm_dev":self.cm_dev.text(),"gpio_chip":self.gpio_chip.text(),"gpio_line":self.gpio_line.value(),"invert":self.invert.isChecked(),
         "lead":self.lead.value(),"tot":self.tot.value(),"target_sink":self.target_sink.currentData(),"threshold":self.threshold.value(),
-        "hang":self.hang.value(),"tx_gain_db":self.tx_gain.value(),"rx_source":self.rx_source.currentData(),"rx_threshold":self.rx_threshold.value(),"rx_hang":self.rx_hang.value(),"rx_gain_db":self.rx_gain.value(),
+        "hang":self.hang.value(),"tx_gain_db":self.tx_gain.value(),"rx_source":self.rx_source.currentData(),
+        "rx_hw_port_enable":self.rx_hw_port_enable.isChecked(),"rx_hw_port":self.rx_hw_port.currentData(),
+        "rx_hw_port_restore":self.rx_hw_port_restore.isChecked(),
+        "rx_hw_port_watchdog":self.rx_hw_port_watchdog.isChecked(),
+        "rx_threshold":self.rx_threshold.value(),"rx_hang":self.rx_hang.value(),"rx_gain_db":self.rx_gain.value(),
         "rx_hysteresis_db":self.rx_hysteresis.value(),"rx_min_signal_ms":self.rx_min_signal.value(),"rx_ignore_after_roger_ms":self.rx_ignore_after_roger.value(),
         "roger_min_free_ms":self.roger_min_free.value(),"roger_cooldown_ms":self.roger_cooldown.value(),"diagnostic_mode":self.diagnostic_mode.isChecked(),
         "verbose_log":self.verbose_log.isChecked(),
@@ -6407,10 +8564,31 @@ done"""
             mi=self.operating_mode.findData(mode)
             if mi>=0:
                 self.operating_mode.setCurrentIndex(mi)
+            self.advanced_ui.setChecked(bool(d.get("advanced_ui",False)))
             self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
             self.pc_parrot_seconds.setValue(int(d.get("pc_parrot_seconds",5) or 5))
             self._wanted_pc_parrot_input=d.get("pc_parrot_input")
             self._wanted_pc_parrot_output=d.get("pc_parrot_output")
+            self._wanted_pc_hw_port=d.get("pc_hw_port")
+            self.pc_hw_port_enable.blockSignals(True)
+            self.pc_hw_port_enable.setChecked(bool(d.get("pc_hw_port_enable",False)))
+            self.pc_hw_port_enable.blockSignals(False)
+            self.pc_hw_port_restore.setChecked(bool(d.get("pc_hw_port_restore",True)))
+            self.pc_hw_port_watchdog.setChecked(bool(d.get("pc_hw_port_watchdog",True)))
+            self.voip_parrot_expert_source.setChecked(bool(d.get("voip_parrot_expert_source",False)))
+            self._wanted_voip_parrot_input=d.get("voip_parrot_input")
+            self.voip_parrot_threshold.setValue(int(d.get("voip_parrot_threshold",-42) or -42))
+            self.voip_parrot_prebuffer_ms.setValue(int(d.get("voip_parrot_prebuffer_ms",1500) or 0))
+            self.voip_parrot_hang_ms.setValue(int(d.get("voip_parrot_hang_ms",700) or 700))
+            self.voip_parrot_delay_ms.setValue(int(d.get("voip_parrot_delay_ms",750) or 0))
+            self.voip_parrot_max_seconds.setValue(int(d.get("voip_parrot_max_seconds",30) or 30))
+            self.voip_parrot_guard_ms.setValue(int(d.get("voip_parrot_guard_ms",1200) or 0))
+            self.voip_parrot_auto_route.setChecked(bool(d.get("voip_parrot_auto_route",True)))
+            self.voip_parrot_commander.setChecked(bool(d.get("voip_parrot_commander",False)))
+            self.parrot_channel_commander.setChecked(bool(d.get("parrot_channel_commander",False)))
+            self.voip_parrot_enabled.blockSignals(True)
+            self.voip_parrot_enabled.setChecked(bool(d.get("voip_parrot_enabled",False)))
+            self.voip_parrot_enabled.blockSignals(False)
             for combo,val in ((self.ptt_method,d.get("ptt_method")),(self.com_line,d.get("com_line"))):
                 i=combo.findText(val or "")
                 if i>=0: combo.setCurrentIndex(i)
@@ -6418,7 +8596,14 @@ done"""
             self.gpio_line.setValue(d.get("gpio_line",3)); self.invert.setChecked(d.get("invert",False)); self.lead.setValue(d.get("lead",250)); self.tot.setValue(d.get("tot",180))
             self.threshold.setValue(d.get("threshold",-42)); self.hang.setValue(d.get("hang",550))
             self.tx_gain.setValue(int(d.get("tx_gain_db",0) or 0))
-            self._wanted_rx_source=d.get("rx_source"); self.rx_threshold.setValue(d.get("rx_threshold",-45)); self.rx_hang.setValue(d.get("rx_hang",550))
+            self._wanted_rx_source=d.get("rx_source")
+            self._wanted_rx_hw_port=d.get("rx_hw_port")
+            self.rx_hw_port_enable.blockSignals(True)
+            self.rx_hw_port_enable.setChecked(bool(d.get("rx_hw_port_enable",False)))
+            self.rx_hw_port_enable.blockSignals(False)
+            self.rx_hw_port_restore.setChecked(bool(d.get("rx_hw_port_restore",True)))
+            self.rx_hw_port_watchdog.setChecked(bool(d.get("rx_hw_port_watchdog",True)))
+            self.rx_threshold.setValue(d.get("rx_threshold",-45)); self.rx_hang.setValue(d.get("rx_hang",550))
             self.rx_gain.setValue(int(d.get("rx_gain_db",0) or 0))
             self.rx_hysteresis.setValue(int(d.get("rx_hysteresis_db",3) or 0))
             self.rx_min_signal.setValue(int(d.get("rx_min_signal_ms",200) or 0))
@@ -6566,14 +8751,16 @@ done"""
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")
 
 
+
     def _default_wav_path(self, filename):
         p=DEFAULT_WAV_DIR / filename
         return str(p) if p.is_file() else ""
 
     def _apply_default_wavs(self):
-        """Fill only empty WAV slots from the shipped default_wavs directory.
+        """Fill empty WAV slots from the shipped default_wavs directory.
 
-        Existing custom paths are deliberately preserved and never overwritten.
+        Existing custom paths are never overwritten. This also means an older
+        configuration with already selected user recordings keeps them.
         """
         slots=(
             (self.roger_wav,"01_rogerbeep.wav"),
@@ -6593,8 +8780,7 @@ done"""
         applied=0
         tooltip=(
             "FunkGateway liefert hierfür eine generische Standardansage mit. "
-            "Du kannst diese jederzeit über „WAV auswählen“ durch eine eigene Ansage ersetzen. "
-            "Eine bereits gespeicherte eigene Ansage wird nicht überschrieben."
+            "Du kannst diese jederzeit über „WAV auswählen“ durch eine eigene Ansage ersetzen."
         )
         for field,filename in slots:
             field.setToolTip(tooltip)
@@ -6604,23 +8790,22 @@ done"""
                     field.setText(p)
                     applied+=1
         if applied:
-            self.log(
-                f"Standard-WAVs: {applied} leere Ansage-Slots mit mitgelieferten "
-                "Standardansagen belegt."
-            )
+            self.log(f"Standard-WAVs: {applied} leere Ansage-Slots mit mitgelieferten Standardansagen belegt.")
 
     def _default_wav_hint_label(self):
         note=QLabel(
             "Hinweis: FunkGateway liefert für diese WAV-Funktion eine generische deutsche "
-            "Standardansage im Ordner <b>default_wavs</b> mit. Sie wird nur verwendet, "
-            "wenn noch keine eigene Ansage hinterlegt ist. Über „WAV auswählen“ kann sie "
-            "jederzeit ersetzt werden."
+            "Standardansage im Ordner <b>default_wavs</b> mit. Die Datei ist bereits "
+            "voreingestellt und kann jederzeit über „WAV auswählen“ durch eine eigene Ansage "
+            "ersetzt werden. Eigene bereits gespeicherte WAV-Pfade werden nicht überschrieben."
         )
         note.setWordWrap(True)
         return note
 
 
     def closeEvent(self,ev):
+        if getattr(self,"voip_parrot_running",False):
+            self.stop_voip_parrot()
         if getattr(self,"pc_parrot_running",False):
             self.stop_pc_parrot()
         self.save_cfg(); self.stop_gateway()

@@ -113,12 +113,17 @@ def _expected_sha256(release, asset):
     return None
 
 
+
 def _make_update_scripts_executable(target: Path):
     """Restore executable bits that can be lost by ZIP extraction."""
     target = Path(target)
     changed = []
     candidates = []
+
+    # All shell scripts in the package should be directly executable.
     candidates.extend(target.rglob("*.sh"))
+
+    # Keep this explicit for future launchers without a .sh suffix.
     for name in ("start.sh", "install.sh", "install-desktop.sh", "repair-venv.sh"):
         p = target / name
         if p.exists():
@@ -134,6 +139,7 @@ def _make_update_scripts_executable(target: Path):
             continue
         seen.add(p)
         mode = p.stat().st_mode
+        # u/g/o +x, keep existing read/write bits.
         new_mode = mode | 0o111
         if new_mode != mode:
             p.chmod(new_mode)
@@ -153,6 +159,7 @@ def find_preferred_installer(target: Path):
         names.append(f"install-ubuntu-{ver}.sh")
     if os_id == "debian" and ver:
         names.append(f"install-debian-{ver}.sh")
+
     names.extend(("install-linux.sh", "install.sh"))
 
     for name in names:
@@ -181,7 +188,7 @@ def _terminal_command(script_path: Path):
 
 
 def create_update_install_launcher(target: Path, install_desktop=True):
-    """Create a launcher that runs installer + optional desktop shortcut."""
+    """Create a small local launcher that runs installer + optional desktop shortcut."""
     target = Path(target)
     installer = find_preferred_installer(target)
     if not installer:
@@ -260,7 +267,6 @@ def launch_update_installer(target: Path, install_desktop=True):
         "terminal_command": cmd[0],
         "desktop": bool(install_desktop),
     }
-
 
 def download_and_prepare(release, asset, install_parent: Path):
     cache = Path.home() / ".cache" / "funkgateway-ui" / "updates"

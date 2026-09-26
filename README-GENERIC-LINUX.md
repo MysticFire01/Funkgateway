@@ -1,15 +1,7 @@
-# FunkGateway UI 0.5.9.19 – Generic Linux
+# FunkGateway UI 0.5.9.44 – Generic Linux
 
-Dieses Paket enthält FunkGateway UI 0.5.9.19 für **Generic Linux**.
+Installation: `./install-linux.sh`
 
-## Installation
+Danach: `./start.sh`
 
-```bash
-chmod +x install-linux.sh
-./install-linux.sh
-./start.sh
-```
-
-Optional: `./install-desktop.sh`
-
-Siehe `CHANGELOG-RELEASE-0.5.9.19.md` für die Neuerungen.
+Für Debian und Ubuntu werden über den GitHub-Release zusätzlich distributionsspezifische Pakete bereitgestellt.
