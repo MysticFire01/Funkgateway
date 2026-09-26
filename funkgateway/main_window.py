@@ -195,6 +195,16 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(0,0,0,0)
         controls_layout.setSpacing(6)
 
+        self.operating_mode=QComboBox()
+        self.operating_mode.addItem("Funk-Gateway","gateway")
+        self.operating_mode.addItem("PC / TeamSpeak","pc")
+        self.operating_mode.setToolTip(
+            "Funk-Gateway zeigt alle Funk-, PTT- und Audiofunktionen. "
+            "PC / TeamSpeak baut eine vereinfachte Oberfläche ohne HF-/PTT-Funktionen auf."
+        )
+        controls_layout.addWidget(QLabel("Betriebsart:"))
+        controls_layout.addWidget(self.operating_mode)
+
         self.start_main_btn=self.big("Gateway starten")
         self.start_main_btn.clicked.connect(self.start_gateway)
         self.stop_main_btn=self.big("Gateway stoppen")
@@ -214,30 +224,45 @@ class MainWindow(QMainWindow):
         self.emergency_main_btn.setToolTip("Sofort PTT ausschalten. Der NOT-AUS bleibt in jedem Reiter sichtbar.")
         self.ident_main_btn.setToolTip("Rufzeichen/ID sofort senden. Diese Hauptsteuerung bleibt in jedem Reiter sichtbar.")
 
+        self.gateway_controls=controls
         central_layout.addWidget(controls,0)
         self.tabs=QTabWidget()
         central_layout.addWidget(self.tabs,1)
         self.setCentralWidget(central)
 
         self.build_start(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
-        self.build_ids(); self.build_tools(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
+        self.build_ids(); self.build_tools(); self.build_pc_mode(); self.build_pc_moderation(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
         self._make_all_tab_pages_scrollable()
 
         self.load_cfg()
         self._apply_default_wavs()
+        self.operating_mode.currentIndexChanged.connect(self._operating_mode_changed)
+        self._apply_operating_mode_ui()
         if hasattr(self,"ts_api_key") and not self.ts_api_key.text().strip():
             key=read_default_api_key()
             if key:
                 self.ts_api_key.setText(key)
         self.refresh_ports()
         self.refresh_audio_devices()
-        self.ensure_gateway_sink()
-        try:
-            make_rx_source()
-            self.log("FunkGateway_RX_Input ist als virtuelle Aufnahmequelle bereit.")
-        except Exception as e:
-            self.log(f"FunkGateway_RX_Input konnte nicht angelegt werden: {e}")
-        self.refresh_audio_streams()
+        self.refresh_pc_audio_devices()
+        for combo,wanted in (
+            (self.pc_parrot_input,getattr(self,"_wanted_pc_parrot_input",None)),
+            (self.pc_parrot_output,getattr(self,"_wanted_pc_parrot_output",None))
+        ):
+            if wanted is not None:
+                pos=combo.findData(wanted)
+                if pos>=0:
+                    combo.setCurrentIndex(pos)
+        if not self._is_pc_mode():
+            self.ensure_gateway_sink()
+            try:
+                make_rx_source()
+                self.log("FunkGateway_RX_Input ist als virtuelle Aufnahmequelle bereit.")
+            except Exception as e:
+                self.log(f"FunkGateway_RX_Input konnte nicht angelegt werden: {e}")
+            self.refresh_audio_streams()
+        else:
+            self.log("PC / TeamSpeak: HF-Audio, PTT und virtuelle Funkgerätewege bleiben deaktiviert.")
         self.log(f"FunkGateway {VERSION} gestartet.")
 
         self.tick_timer=QTimer(self); self.tick_timer.timeout.connect(self.tick)
@@ -568,6 +593,602 @@ class MainWindow(QMainWindow):
         pf.addRow("PTT-Nachlauf Papageibake:",self.parrot_beacon_tail_ms)
         pf.addRow("",pnote)
         self.tabs.addTab(parrot_box,"Papagei")
+
+    def build_pc_mode(self):
+        """Simplified desktop/TeamSpeak surface without radio/PTT functions."""
+        w=QWidget()
+        v=QVBoxLayout(w)
+
+        title=QLabel(
+            "<h2>PC / TeamSpeak</h2>"
+            "<p>Vereinfachter Betrieb für einen normalen PC-Benutzer. "
+            "HF, PTT, COS, Funk-RX und Funkgeräte-Audio sind in dieser Betriebsart deaktiviert.</p>"
+        )
+        title.setWordWrap(True)
+        v.addWidget(title)
+
+        tsbox=QGroupBox("TeamSpeak")
+        tf=QFormLayout(tsbox)
+        self.pc_ts_commander_manual=QCheckBox("Channel Commander beim Sprechen automatisch setzen")
+        self.pc_ts_commander_manual.setToolTip(
+            "Setzt Channel Commander nur solange der eigene TeamSpeak-Client tatsächlich spricht. "
+            "Sobald du aufhörst zu sprechen, wird Channel Commander wieder entfernt. "
+            "Dafür muss das TeamSpeak-Modul unter Integrationen aktiviert sein."
+        )
+        self.pc_ts_commander_manual.toggled.connect(self._pc_commander_toggled)
+        self.pc_ts_status=QLabel("TeamSpeak: noch nicht geprüft")
+        self.pc_ts_status.setWordWrap(True)
+        pc_ts_test=QPushButton("TeamSpeak-Verbindung testen")
+        pc_ts_test.clicked.connect(self.test_teamspeak)
+        tf.addRow(self.pc_ts_commander_manual)
+        tf.addRow(pc_ts_test)
+        tf.addRow("",self.pc_ts_status)
+        v.addWidget(tsbox)
+
+        pbox=QGroupBox("PC-Papagei / Mikrofontest")
+        pf=QFormLayout(pbox)
+        self.pc_parrot_input=QComboBox()
+        self.pc_parrot_output=QComboBox()
+        self.pc_parrot_seconds=QSpinBox()
+        self.pc_parrot_seconds.setRange(1,30)
+        self.pc_parrot_seconds.setValue(5)
+        self.pc_parrot_seconds.setSuffix(" s")
+        self.pc_parrot_start=QPushButton("Aufnehmen und danach wiedergeben")
+        self.pc_parrot_stop=QPushButton("Papagei stoppen")
+        self.pc_parrot_stop.setEnabled(False)
+        self.pc_parrot_status=QLabel("Bereit")
+        self.pc_parrot_status.setWordWrap(True)
+        refresh=QPushButton("Audiogeräte neu laden")
+        refresh.clicked.connect(self.refresh_pc_audio_devices)
+        self.pc_parrot_start.clicked.connect(self.start_pc_parrot)
+        self.pc_parrot_stop.clicked.connect(self.stop_pc_parrot)
+        row=QHBoxLayout()
+        row.addWidget(self.pc_parrot_start)
+        row.addWidget(self.pc_parrot_stop)
+        pf.addRow("Mikrofon:",self.pc_parrot_input)
+        pf.addRow("Wiedergabe:",self.pc_parrot_output)
+        pf.addRow("Aufnahmedauer:",self.pc_parrot_seconds)
+        pf.addRow(refresh)
+        pf.addRow(row)
+        pf.addRow("",self.pc_parrot_status)
+        note=QLabel(
+            "Der PC-Papagei verwendet den normalen PulseAudio/PipeWire-Desktopweg und kann "
+            "dadurch dieselben Standardgeräte wie TeamSpeak benutzen. Zuerst wird nur "
+            "aufgenommen; erst danach wird wiedergegeben. Aufnahme und Wiedergabe laufen "
+            "nicht gleichzeitig. Es wird kein Funkgeräte-PTT betätigt."
+        )
+        note.setWordWrap(True)
+        pf.addRow("",note)
+        v.addWidget(pbox)
+
+        hint=QLabel(
+            "<b>PC-Modus:</b> Die normale FunkGateway-Oberfläche wird ausgeblendet. "
+            "TeamSpeak, Moderation, Updates, Protokoll und Hilfe bleiben verfügbar. "
+            "Zurück auf „Funk-Gateway“ schaltet die vollständige Funkoberfläche wieder frei."
+        )
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        v.addStretch(1)
+
+        self.tabs.addTab(w,"PC / TeamSpeak")
+        self.refresh_pc_audio_devices()
+
+    def build_pc_moderation(self):
+        """Dedicated TeamSpeak moderation tab for PC mode."""
+        w=QWidget()
+        v=QVBoxLayout(w)
+
+        title=QLabel(
+            "<h2>TeamSpeak-Moderation</h2>"
+            "<p>Manuelle Moderationswerkzeuge für den normalen PC-Benutzer. "
+            "Es werden nur die Rechte verwendet, die dein TeamSpeak-Client bereits besitzt.</p>"
+        )
+        title.setWordWrap(True)
+        v.addWidget(title)
+
+        top=QHBoxLayout()
+
+        left=QGroupBox("Benutzer")
+        lf=QFormLayout(left)
+        self.pc_mod_clients=QComboBox()
+        self.pc_mod_poke_text=QLineEdit()
+        self.pc_mod_poke_text.setPlaceholderText("Kurze Nachricht für Poke")
+        poke_btn=QPushButton("Poke senden")
+        poke_btn.clicked.connect(self.pc_moderation_poke)
+        lf.addRow("Benutzer:",self.pc_mod_clients)
+        lf.addRow("Poke:",self.pc_mod_poke_text)
+        lf.addRow("",poke_btn)
+
+        right=QGroupBox("Aktionen")
+        rf=QFormLayout(right)
+        self.pc_mod_channels=QComboBox()
+        self.pc_mod_reason=QLineEdit()
+        self.pc_mod_reason.setPlaceholderText("Optionaler Grund für Kick")
+
+        move_btn=QPushButton("Benutzer verschieben")
+        move_btn.clicked.connect(self.pc_moderation_move)
+        kick_channel_btn=QPushButton("Aus Channel kicken")
+        kick_channel_btn.clicked.connect(lambda: self.pc_moderation_kick(False))
+        kick_server_btn=QPushButton("Vom Server kicken")
+        kick_server_btn.clicked.connect(lambda: self.pc_moderation_kick(True))
+
+        kick_row=QHBoxLayout()
+        kick_row.addWidget(kick_channel_btn)
+        kick_row.addWidget(kick_server_btn)
+
+        rf.addRow("Ziel-Channel:",self.pc_mod_channels)
+        rf.addRow("",move_btn)
+        rf.addRow("Kick-Grund:",self.pc_mod_reason)
+        rf.addRow("",kick_row)
+
+        top.addWidget(left,1)
+        top.addWidget(right,1)
+        v.addLayout(top)
+
+        refresh_mod=QPushButton("Benutzer und Channels neu laden")
+        refresh_mod.clicked.connect(self.refresh_pc_moderation)
+        v.addWidget(refresh_mod)
+
+        self.pc_mod_status=QLabel(
+            "Moderationsaktionen verwenden nur die Rechte deines normalen TeamSpeak-Clients."
+        )
+        self.pc_mod_status.setWordWrap(True)
+        v.addWidget(self.pc_mod_status)
+
+        mod_note=QLabel(
+            "<b>Sicherheit:</b> Verschieben und Kick sind immer manuelle Aktionen. "
+            "Channel-Kick und Server-Kick verlangen eine Bestätigung. "
+            "FunkGateway bekommt dadurch keine zusätzlichen TeamSpeak-Rechte."
+        )
+        mod_note.setWordWrap(True)
+        v.addWidget(mod_note)
+        v.addStretch(1)
+
+        self.tabs.addTab(w,"Moderation")
+
+    def _is_pc_mode(self):
+        return hasattr(self,"operating_mode") and self.operating_mode.currentData() == "pc"
+
+    def _operating_mode_changed(self, *_args):
+        if self._is_pc_mode() and (self.bridge or self.rx_detector or self.ptt):
+            self.log("Betriebsart PC / TeamSpeak gewählt: laufender Funk-Gateway-Betrieb wird beendet.")
+            self.stop_gateway()
+        self._apply_operating_mode_ui()
+        try:
+            self.save_cfg()
+        except Exception:
+            pass
+
+    def _apply_operating_mode_ui(self):
+        pc=self._is_pc_mode()
+        radio_tabs={
+            "Start","Audio-Automatik","PTT / Modem","COS / Kanal","RX / Rogerbeep",
+            "Rufzeichen","CW / DTMF","Papagei","DTMF","Schutz"
+        }
+        pc_tabs={"PC / TeamSpeak","Moderation","Integrationen","Updates","Protokoll","Hilfe"}
+
+        for i in range(self.tabs.count()):
+            title=self.tabs.tabText(i)
+            if pc:
+                visible=title in pc_tabs
+            else:
+                visible=title != "PC / TeamSpeak"
+            try:
+                self.tabs.setTabVisible(i,visible)
+            except AttributeError:
+                self.tabs.setTabEnabled(i,visible)
+
+        self.start_main_btn.setVisible(not pc)
+        self.stop_main_btn.setVisible(not pc)
+        self.emergency_main_btn.setVisible(not pc)
+        self.ident_main_btn.setVisible(not pc)
+
+        if pc:
+            self.setWindowTitle(f"{APP_NAME} {VERSION} – PC / TeamSpeak")
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i) == "PC / TeamSpeak":
+                    self.tabs.setCurrentIndex(i)
+                    break
+            if hasattr(self,"pc_ts_status"):
+                self.pc_ts_status.setText(
+                    "PC-Modus aktiv – HF/PTT deaktiviert. TeamSpeak-Funktionen arbeiten unabhängig vom Funk-Gateway."
+                )
+            QTimer.singleShot(250,self.refresh_pc_moderation)
+        else:
+            self.setWindowTitle(f"{APP_NAME} {VERSION}")
+            if hasattr(self,"pc_ts_commander_manual") and self.pc_ts_commander_manual.isChecked():
+                self.pc_ts_commander_manual.setChecked(False)
+
+    def _pc_commander_toggled(self, checked):
+        if not self._is_pc_mode():
+            return
+        if checked and not self.ts_enabled.isChecked():
+            self.ts_enabled.setChecked(True)
+            self.log("PC / TeamSpeak: TeamSpeak-Modul für sprechabhängigen Channel Commander automatisch aktiviert.")
+        self.ts_commander_wanted=False
+        self.ts_commander_needs_sync=True
+        if hasattr(self,"pc_ts_status"):
+            self.pc_ts_status.setText(
+                "Channel Commander folgt jetzt dem eigenen Sprechstatus."
+                if checked else "Automatischer Channel Commander ausgeschaltet."
+            )
+
+    def _pc_selected_client(self):
+        data=self.pc_mod_clients.currentData() if hasattr(self,"pc_mod_clients") else None
+        return data if isinstance(data,dict) else None
+
+    def refresh_pc_moderation(self):
+        if not self._is_pc_mode() or not hasattr(self,"pc_mod_clients"):
+            return
+        if not self.ts_enabled.isChecked():
+            self.pc_mod_status.setText(
+                "TeamSpeak-Integration ist ausgeschaltet. Für Moderation bitte TeamSpeak aktivieren."
+            )
+            return
+        try:
+            self._configure_teamspeak()
+            old_client=self._pc_selected_client()
+            old_clid=old_client.get("clid") if old_client else None
+            old_cid=self.pc_mod_channels.currentData()
+
+            clients=self.ts_client.clients(False)
+            channels=self.ts_client.channels()
+
+            self.pc_mod_clients.clear()
+            for info in clients:
+                suffix=" (du)" if info.get("is_self") else ""
+                talking=" • spricht" if info.get("talking") else ""
+                self.pc_mod_clients.addItem(
+                    f'{info.get("nickname","?")}{suffix}{talking}', info
+                )
+
+            self.pc_mod_channels.clear()
+            for cid,name in channels:
+                self.pc_mod_channels.addItem(name,cid)
+
+            if old_clid:
+                for i in range(self.pc_mod_clients.count()):
+                    d=self.pc_mod_clients.itemData(i)
+                    if isinstance(d,dict) and d.get("clid")==old_clid:
+                        self.pc_mod_clients.setCurrentIndex(i)
+                        break
+            if old_cid:
+                pos=self.pc_mod_channels.findData(old_cid)
+                if pos>=0:
+                    self.pc_mod_channels.setCurrentIndex(pos)
+
+            self.pc_mod_status.setText(
+                f"Moderation bereit: {len(clients)} Benutzer, {len(channels)} Channels sichtbar."
+            )
+        except Exception as e:
+            self.pc_mod_status.setText(f"Moderation nicht verfügbar: {e}")
+            self.log(f"PC-Moderation: Liste konnte nicht geladen werden: {e}")
+
+    def pc_moderation_poke(self):
+        info=self._pc_selected_client()
+        if not info:
+            QMessageBox.warning(self,"Moderation","Bitte zuerst einen Benutzer auswählen.")
+            return
+        msg=self.pc_mod_poke_text.text().strip()
+        if not msg:
+            QMessageBox.warning(self,"Moderation","Bitte eine Poke-Nachricht eingeben.")
+            return
+        try:
+            self._configure_teamspeak()
+            self.ts_client.poke_client(int(info["clid"]),msg)
+            self.pc_mod_status.setText(f'Poke an {info["nickname"]} gesendet.')
+            self.log(f'PC-Moderation: Poke an {info["nickname"]} gesendet.')
+        except Exception as e:
+            QMessageBox.warning(self,"Moderation",f"Poke konnte nicht gesendet werden:\n{e}")
+            self.log(f"PC-Moderation Poke Fehler: {e}")
+
+    def pc_moderation_move(self):
+        info=self._pc_selected_client()
+        cid=self.pc_mod_channels.currentData() if hasattr(self,"pc_mod_channels") else None
+        if not info or not cid:
+            QMessageBox.warning(self,"Moderation","Bitte Benutzer und Ziel-Channel auswählen.")
+            return
+        question=f'{info["nickname"]} nach „{self.pc_mod_channels.currentText()}“ verschieben?'
+        if QMessageBox.question(
+            self,"Benutzer verschieben",question,
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self._configure_teamspeak()
+            self.ts_client.move_client(int(info["clid"]),int(cid))
+            self.log(f'PC-Moderation: {info["nickname"]} nach {self.pc_mod_channels.currentText()} verschoben.')
+            self.pc_mod_status.setText("Benutzer verschoben.")
+            QTimer.singleShot(300,self.refresh_pc_moderation)
+        except Exception as e:
+            QMessageBox.warning(self,"Moderation",f"Verschieben fehlgeschlagen:\n{e}")
+            self.log(f"PC-Moderation Move Fehler: {e}")
+
+    def pc_moderation_kick(self, from_server=False):
+        info=self._pc_selected_client()
+        if not info:
+            QMessageBox.warning(self,"Moderation","Bitte zuerst einen Benutzer auswählen.")
+            return
+        if info.get("is_self"):
+            QMessageBox.warning(
+                self,"Moderation",
+                "Der eigene TeamSpeak-Client wird über diese Moderationsfunktion nicht gekickt."
+            )
+            return
+        where="vom Server" if from_server else "aus dem Channel"
+        reason=self.pc_mod_reason.text().strip()
+        extra=f"\nGrund: {reason}" if reason else ""
+        if QMessageBox.question(
+            self,"Kick bestätigen",
+            f'{info["nickname"]} wirklich {where} kicken?{extra}',
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self._configure_teamspeak()
+            self.ts_client.kick_client(int(info["clid"]),bool(from_server),reason)
+            self.log(f'PC-Moderation: {info["nickname"]} {where} gekickt.')
+            self.pc_mod_status.setText(f'{info["nickname"]} {where} gekickt.')
+            QTimer.singleShot(300,self.refresh_pc_moderation)
+        except Exception as e:
+            QMessageBox.warning(self,"Moderation",f"Kick fehlgeschlagen:\n{e}")
+            self.log(f"PC-Moderation Kick Fehler: {e}")
+
+    def _pactl_default(self, kind):
+        """Return current PulseAudio/PipeWire default source or sink name."""
+        cmd="get-default-source" if kind=="source" else "get-default-sink"
+        try:
+            r=subprocess.run(
+                ["pactl",cmd],capture_output=True,text=True,timeout=3,check=False
+            )
+            if r.returncode==0:
+                return r.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _pactl_list_short(self, kind):
+        """Return [(name, description)] for PulseAudio/PipeWire sources/sinks."""
+        obj="sources" if kind=="source" else "sinks"
+        result=[]
+        try:
+            r=subprocess.run(
+                ["pactl","list","short",obj],
+                capture_output=True,text=True,timeout=4,check=False
+            )
+            if r.returncode!=0:
+                return result
+            for line in r.stdout.splitlines():
+                parts=line.split("\t")
+                if len(parts)>=2:
+                    name=parts[1].strip()
+                    if name:
+                        result.append((name,name))
+        except Exception:
+            pass
+        return result
+
+    def refresh_pc_audio_devices(self):
+        """Populate PC-Papagei devices from PulseAudio/PipeWire, not raw ALSA.
+
+        This allows TeamSpeak and FunkGateway to share the normal desktop
+        audio devices without competing for exclusive ALSA hardware access.
+        """
+        if not hasattr(self,"pc_parrot_input"):
+            return
+
+        wanted_in=self.pc_parrot_input.currentData()
+        wanted_out=self.pc_parrot_output.currentData()
+        self.pc_parrot_input.clear()
+        self.pc_parrot_output.clear()
+
+        if shutil.which("pactl") is None or shutil.which("parec") is None or shutil.which("paplay") is None:
+            self.pc_parrot_input.addItem("PulseAudio/PipeWire-Werkzeuge fehlen",None)
+            self.pc_parrot_output.addItem("PulseAudio/PipeWire-Werkzeuge fehlen",None)
+            self.pc_parrot_start.setEnabled(False)
+            self.pc_parrot_status.setText(
+                "Für den PC-Papagei werden pactl, parec und paplay benötigt."
+            )
+            return
+
+        default_source=self._pactl_default("source")
+        default_sink=self._pactl_default("sink")
+
+        if default_source:
+            self.pc_parrot_input.addItem(f"Systemstandard – {default_source}",default_source)
+        if default_sink:
+            self.pc_parrot_output.addItem(f"Systemstandard – {default_sink}",default_sink)
+
+        seen=set()
+        if default_source:
+            seen.add(default_source)
+        for name,_desc in self._pactl_list_short("source"):
+            if name in seen:
+                continue
+            self.pc_parrot_input.addItem(name,name)
+            seen.add(name)
+
+        seen=set()
+        if default_sink:
+            seen.add(default_sink)
+        for name,_desc in self._pactl_list_short("sink"):
+            if name in seen:
+                continue
+            self.pc_parrot_output.addItem(name,name)
+            seen.add(name)
+
+        for combo,wanted in ((self.pc_parrot_input,wanted_in),(self.pc_parrot_output,wanted_out)):
+            if wanted:
+                pos=combo.findData(wanted)
+                if pos>=0:
+                    combo.setCurrentIndex(pos)
+
+        ok=self.pc_parrot_input.count()>0 and self.pc_parrot_output.count()>0
+        self.pc_parrot_start.setEnabled(ok)
+        if ok:
+            self.pc_parrot_status.setText(
+                "Bereit – verwendet PulseAudio/PipeWire und kann das Desktop-Audio mit TeamSpeak teilen."
+            )
+        else:
+            self.pc_parrot_status.setText("Keine passenden PulseAudio/PipeWire-Geräte gefunden.")
+
+    def start_pc_parrot(self):
+        if not self._is_pc_mode():
+            return
+
+        source=self.pc_parrot_input.currentData()
+        sink=self.pc_parrot_output.currentData()
+        if not source or not sink:
+            QMessageBox.warning(self,"PC-Papagei","Bitte Mikrofon und Wiedergabegerät auswählen.")
+            return
+
+        seconds=int(self.pc_parrot_seconds.value())
+        self.pc_parrot_file=CFG_DIR / "pc-papagei.wav"
+        try:
+            if self.pc_parrot_file.exists():
+                self.pc_parrot_file.unlink()
+        except Exception:
+            pass
+
+        cmd=[
+            "parec",
+            f"--device={source}",
+            "--file-format=wav",
+            "--rate=48000",
+            "--channels=1",
+            str(self.pc_parrot_file),
+        ]
+        try:
+            self.pc_parrot_proc=subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True
+            )
+            self.pc_parrot_output_device=str(sink)
+            self.pc_parrot_running=True
+            self.pc_parrot_phase="record"
+            self.pc_parrot_start.setEnabled(False)
+            self.pc_parrot_stop.setEnabled(True)
+            self.pc_parrot_status.setText(f"Aufnahme läuft … {seconds} s")
+            self.log(
+                f"PC-Papagei: Aufnahme über PulseAudio/PipeWire gestartet "
+                f"({seconds} s, Quelle {source})."
+            )
+            QTimer.singleShot(seconds*1000,self._finish_pc_parrot_recording)
+        except Exception as e:
+            self.pc_parrot_status.setText(f"Aufnahmefehler: {e}")
+            self.log(f"PC-Papagei: Aufnahme konnte nicht gestartet werden: {e}")
+            self._reset_pc_parrot_ui()
+
+    def _finish_pc_parrot_recording(self):
+        if not getattr(self,"pc_parrot_running",False) or getattr(self,"pc_parrot_phase","")!="record":
+            return
+
+        proc=getattr(self,"pc_parrot_proc",None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        if not getattr(self,"pc_parrot_file",None) or not self.pc_parrot_file.exists():
+            err=""
+            try:
+                err=(proc.stderr.read() or "").strip() if proc and proc.stderr else ""
+            except Exception:
+                pass
+            self.pc_parrot_status.setText("Keine Aufnahme erzeugt.")
+            self.log("PC-Papagei: Keine WAV-Aufnahme erzeugt." + (f" {err}" if err else ""))
+            self._reset_pc_parrot_ui()
+            return
+
+        try:
+            if self.pc_parrot_file.stat().st_size < 128:
+                self.pc_parrot_status.setText("Aufnahme war leer.")
+                self.log("PC-Papagei: Aufnahme war leer.")
+                self._reset_pc_parrot_ui()
+                return
+        except Exception:
+            pass
+
+        self.pc_parrot_phase="play"
+        self.pc_parrot_status.setText("Aufnahme beendet – Wiedergabe läuft …")
+        self.log("PC-Papagei: Aufnahme beendet; Wiedergabe startet jetzt.")
+
+        try:
+            self.pc_parrot_proc=subprocess.Popen(
+                ["paplay",f"--device={self.pc_parrot_output_device}",str(self.pc_parrot_file)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True
+            )
+            self.pc_parrot_poll_timer=QTimer(self)
+            self.pc_parrot_poll_timer.timeout.connect(self._poll_pc_parrot_playback)
+            self.pc_parrot_poll_timer.start(100)
+        except Exception as e:
+            self.pc_parrot_status.setText(f"Wiedergabefehler: {e}")
+            self.log(f"PC-Papagei: Wiedergabe konnte nicht gestartet werden: {e}")
+            self._reset_pc_parrot_ui()
+
+    def _poll_pc_parrot_playback(self):
+        proc=getattr(self,"pc_parrot_proc",None)
+        if proc is None or proc.poll() is None:
+            return
+        if hasattr(self,"pc_parrot_poll_timer"):
+            self.pc_parrot_poll_timer.stop()
+
+        if proc.returncode==0:
+            self.log("PC-Papagei: Wiedergabe beendet.")
+            self.pc_parrot_status.setText("Papagei-Test beendet.")
+        else:
+            err=""
+            try:
+                err=(proc.stderr.read() or "").strip() if proc.stderr else ""
+            except Exception:
+                pass
+            self.log(
+                f"PC-Papagei: paplay beendet mit Code {proc.returncode}"
+                + (f": {err}" if err else "")
+            )
+            self.pc_parrot_status.setText(
+                "Wiedergabe fehlgeschlagen." + (f" {err}" if err else "")
+            )
+        self._reset_pc_parrot_ui()
+
+    def stop_pc_parrot(self):
+        proc=getattr(self,"pc_parrot_proc",None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        if hasattr(self,"pc_parrot_poll_timer"):
+            try:
+                self.pc_parrot_poll_timer.stop()
+            except Exception:
+                pass
+        if getattr(self,"pc_parrot_running",False):
+            self.log("PC-Papagei: manuell gestoppt.")
+        self.pc_parrot_status.setText("Papagei gestoppt.")
+        self._reset_pc_parrot_ui()
+
+    def _reset_pc_parrot_ui(self):
+        self.pc_parrot_running=False
+        self.pc_parrot_phase=""
+        self.pc_parrot_proc=None
+        self.pc_parrot_start.setEnabled(True)
+        self.pc_parrot_stop.setEnabled(False)
 
     def build_integrations(self):
         """Build optional VoIP integrations in tidy sub-tabs.
@@ -2795,14 +3416,35 @@ class MainWindow(QMainWindow):
 
         try:
             self._configure_teamspeak()
-            speakers=self.ts_client.speakers()
             current_cid,current_name=self.ts_client.current_channel()
+            speakers=self.ts_client.speakers()
             self.ts_status.setText("TeamSpeak: ClientQuery verbunden")
             self.ts_channel.setText(f"Aktiver TeamSpeak-Channel: {current_name} (CID {current_cid})")
             speaker_text=", ".join(speakers) if speakers else "—"
             self.ts_speaker.setText(f"Aktueller TeamSpeak-Sprecher: {speaker_text}")
 
-            if self.ts_commander_enabled.isChecked():
+            if self._is_pc_mode():
+                auto=bool(self.pc_ts_commander_manual.isChecked())
+                talking=bool(self.ts_client.self_talking())
+                wanted=bool(auto and talking)
+                self.ts_commander_wanted=wanted
+                if self.ts_commander_needs_sync or self.ts_commander_state != wanted:
+                    self.ts_client.set_channel_commander(wanted)
+                    self.ts_commander_state=wanted
+                    self.ts_commander_needs_sync=False
+                    self.log(
+                        "TeamSpeak Channel Commander: " +
+                        ("EIN (eigener PC-User spricht)" if wanted else "AUS")
+                    )
+                if hasattr(self,"pc_ts_status"):
+                    if not auto:
+                        detail="Automatik AUS"
+                    elif talking:
+                        detail="du sprichst – Channel Commander EIN"
+                    else:
+                        detail="du sprichst nicht – Channel Commander AUS"
+                    self.pc_ts_status.setText("TeamSpeak verbunden – " + detail)
+            elif self.ts_commander_enabled.isChecked():
                 if self.ts_commander_needs_sync or self.ts_commander_state != self.ts_commander_wanted:
                     self.ts_client.set_channel_commander(self.ts_commander_wanted)
                     self.ts_commander_state=self.ts_commander_wanted
@@ -2831,6 +3473,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             msg=str(e)
             self.ts_status.setText(f"TeamSpeak: nicht verbunden ({msg})")
+            if hasattr(self,"pc_ts_status") and self._is_pc_mode():
+                self.pc_ts_status.setText(f"TeamSpeak: nicht verbunden ({msg})")
             self.ts_channel.setText("Aktiver TeamSpeak-Channel: —")
             self.ts_speaker.setText("Aktueller TeamSpeak-Sprecher: —")
             if self.ts_last_status != msg:
@@ -5654,7 +6298,11 @@ done"""
         self._parrot_tick(now)
 
     def save_cfg(self):
-        ensure_cfg(); data={"ptt_method":self.ptt_method.currentText(),"com_port":self.selected_port(),"com_line":self.com_line.currentText(),
+        ensure_cfg(); data={"operating_mode":self.operating_mode.currentData(),
+        "pc_ts_commander_manual":self.pc_ts_commander_manual.isChecked(),
+        "pc_parrot_input":self.pc_parrot_input.currentData(),"pc_parrot_output":self.pc_parrot_output.currentData(),
+        "pc_parrot_seconds":self.pc_parrot_seconds.value(),
+        "ptt_method":self.ptt_method.currentText(),"com_port":self.selected_port(),"com_line":self.com_line.currentText(),
         "cm_dev":self.cm_dev.text(),"gpio_chip":self.gpio_chip.text(),"gpio_line":self.gpio_line.value(),"invert":self.invert.isChecked(),
         "lead":self.lead.value(),"tot":self.tot.value(),"target_sink":self.target_sink.currentData(),"threshold":self.threshold.value(),
         "hang":self.hang.value(),"tx_gain_db":self.tx_gain.value(),"rx_source":self.rx_source.currentData(),"rx_threshold":self.rx_threshold.value(),"rx_hang":self.rx_hang.value(),"rx_gain_db":self.rx_gain.value(),
@@ -5755,6 +6403,14 @@ done"""
         if not CFG_FILE.exists(): return
         try:
             d=json.loads(CFG_FILE.read_text(encoding="utf-8"))
+            mode=str(d.get("operating_mode","gateway") or "gateway")
+            mi=self.operating_mode.findData(mode)
+            if mi>=0:
+                self.operating_mode.setCurrentIndex(mi)
+            self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
+            self.pc_parrot_seconds.setValue(int(d.get("pc_parrot_seconds",5) or 5))
+            self._wanted_pc_parrot_input=d.get("pc_parrot_input")
+            self._wanted_pc_parrot_output=d.get("pc_parrot_output")
             for combo,val in ((self.ptt_method,d.get("ptt_method")),(self.com_line,d.get("com_line"))):
                 i=combo.findText(val or "")
                 if i>=0: combo.setCurrentIndex(i)
@@ -5965,6 +6621,8 @@ done"""
 
 
     def closeEvent(self,ev):
+        if getattr(self,"pc_parrot_running",False):
+            self.stop_pc_parrot()
         self.save_cfg(); self.stop_gateway()
         try:
             if self.ts_commander_state:
