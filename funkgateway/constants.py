@@ -5,7 +5,7 @@ Keeping paths in one place makes the rest of the source easier to read.
 from pathlib import Path
 
 APP_NAME = "FunkGateway UI"
-VERSION = "0.5.9.22"
+VERSION = "0.5.9.25"
 CFG_DIR = Path.home() / ".config" / "funkgateway-ui"
 CFG_FILE = CFG_DIR / "config.json"
 LOG_FILE = CFG_DIR / "gateway.log"
