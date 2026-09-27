@@ -1,4 +1,4 @@
-# FunkGateway UI 0.5.9.28
+# FunkGateway UI 0.6.0
 
 
 ## Neu in 0.6.0: Themes und geschützte Baken
@@ -9,7 +9,21 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.28**
+**Aktuelle stabile Version: 0.6.0**
+
+## Screenshots
+
+Die vier Betriebsarten von FunkGateway UI 0.6.0:
+
+| PC-User | Funk-Gateway |
+|---|---|
+| ![PC-User](docs/screenshots/pc-user.png) | ![Funk-Gateway](docs/screenshots/funk-gateway.png) |
+
+| Funk-Papagei | VoIP-Papagei |
+|---|---|
+| ![Funk-Papagei](docs/screenshots/funk-papagei.png) | ![VoIP-Papagei](docs/screenshots/voip-papagei.png) |
+
+
 
 ## Betriebsarten
 
