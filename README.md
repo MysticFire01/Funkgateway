@@ -27,12 +27,14 @@ Die vier Betriebsarten von FunkGateway UI 0.6.0:
 
 ## Betriebsarten
 
-Ab **0.5.9.28** kann FunkGateway zwischen zwei Oberflächen umschalten:
+FunkGateway UI **0.6.0** besitzt vier klar getrennte Betriebsarten:
 
-- **Funk-Gateway** – vollständiger Betrieb mit Audio-Routing, RX, PTT, Rogerbeep, Rufzeichen, Papagei, DTMF und Schutzfunktionen.
-- **PC / TeamSpeak** – vereinfachte Oberfläche für einen normalen Linux-PC ohne Funkgerät. HF-/PTT-Funktionen werden ausgeblendet und nicht initialisiert. Enthalten sind unter anderem ein sprechabhängiger TeamSpeak Channel Commander und ein rückkopplungssicherer lokaler PC-Papagei/Mikrofontest.
+- **PC-User / TeamSpeak** – normaler PC-/VoIP-Betrieb ohne Funkhardware. Funk-PTT, COS und Funk-RX bleiben vollständig deaktiviert. Die VoIP-Software verwendet ihre normalen **Standard/Default**-Audio-Geräte.
+- **Funk-Gateway** – vollständiger Funk ↔ VoIP-Betrieb mit Audio-Routing, RX-Erkennung, PTT, Rogerbeep, Rufzeichenbake, DTMF und Schutzfunktionen.
+- **Funk-Papagei** – nimmt einen empfangenen Funkdurchgang auf und sendet ihn anschließend wieder über Funk zurück. Während interner Aussendungen schützt die HF-Isolation vor eingemischtem VoIP-Audio.
+- **VoIP-Papagei** – Echo-/Testbetrieb für VoIP mit getrenntem Aufnahme- und Wiedergabepfad. Funkhardware und Funk-PTT bleiben dabei deaktiviert.
 
-Beim PC-Papagei wird zuerst aufgenommen und erst danach wiedergegeben. So entsteht innerhalb von FunkGateway keine Aufnahme-Wiedergabe-Endlosschleife.
+Beim Wechsel der Betriebsart übernimmt FunkGateway das Routing unterstützter VoIP-Streams automatisch. In TeamSpeak, Mumble, TeamTalk, Zello und ähnlichen Programmen sollen **Mikrofon/Input und Wiedergabe/Output auf Standard/Default** bleiben; die internen FunkGateway-Audiogeräte müssen normalerweise nicht manuell ausgewählt werden.
 
 ## TeamSpeak-Moderation im PC-Modus
 
