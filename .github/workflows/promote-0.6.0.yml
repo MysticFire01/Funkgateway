@@ -1,0 +1,187 @@
+name: Promote FunkGateway UI 0.6.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.release-staging/source.b64'
+      - '.github/workflows/promote-0.6.0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct validated 0.6.0 source overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .release-staging/source.b64 > /tmp/funkgateway-0.6.0-source.tar.xz
+          echo 'd1dee556a1d3df3755a09f9f19a1f760cf5c6a8b0b2176667f24b2abadaf9ffc  /tmp/funkgateway-0.6.0-source.tar.xz' | sha256sum -c -
+          tar -xJf /tmp/funkgateway-0.6.0-source.tar.xz -C .
+          rm -rf .release-staging
+          rm -f .github/workflows/promote-0.6.0.yml
+          chmod 755 ./*.sh 2>/dev/null || true
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q funkgateway main.py
+          for f in ./*.sh; do
+            [ -f "$f" ] || continue
+            bash -n "$f"
+          done
+          grep -q 'VERSION = "0.6.0"' funkgateway/constants.py
+          grep -q '__version__ = "0.6.0"' funkgateway/__init__.py
+          grep -qi 'Standard/Default' funkgateway/helptext.py
+
+      - name: Commit 0.6.0 source
+        id: source_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+          else
+            git commit -m 'Release FunkGateway UI 0.6.0'
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='0.6.0'
+          rm -rf dist /tmp/fg-release
+          mkdir -p dist /tmp/fg-release
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, shutil, stat, zipfile, hashlib
+
+          root = Path.cwd()
+          dist = root / 'dist'
+          work = Path('/tmp/fg-release')
+          version = '0.6.0'
+          variants = [
+              ('Generic-Linux', 'Generic Linux'),
+              ('Ubuntu22.04-LTS', 'Ubuntu 22.04 LTS'),
+              ('Ubuntu24.04-LTS', 'Ubuntu 24.04 LTS'),
+              ('Ubuntu26.04-LTS', 'Ubuntu 26.04 LTS'),
+              ('Debian12', 'Debian 12'),
+              ('Debian13', 'Debian 13'),
+          ]
+          skip_top = {'.git', '.github', 'dist', '_release_build', '.release-staging', '__pycache__'}
+
+          def ignore(path, names):
+              ignored = set()
+              if Path(path) == root:
+                  ignored |= {n for n in names if n in skip_top}
+              ignored |= {n for n in names if n == '__pycache__' or n.endswith('.pyc')}
+              return ignored
+
+          def write_zip(src: Path, dst: Path):
+              with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+                  for p in sorted(src.rglob('*')):
+                      if not p.is_file():
+                          continue
+                      rel = p.relative_to(src.parent)
+                      zi = zipfile.ZipInfo.from_file(p, str(rel))
+                      mode = p.stat().st_mode
+                      if p.suffix == '.sh':
+                          mode = (mode & ~0o777) | 0o755
+                      zi.external_attr = (mode & 0xFFFF) << 16
+                      zi.compress_type = zipfile.ZIP_DEFLATED
+                      with p.open('rb') as f:
+                          zf.writestr(zi, f.read(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+          sums = []
+          for slug, label in variants:
+              pkgname = f'FunkGateway-UI-{version}-{slug}'
+              pkg = work / pkgname
+              shutil.copytree(root, pkg, ignore=ignore)
+              for sh in pkg.rglob('*.sh'):
+                  sh.chmod(0o755)
+              (pkg / 'BUILD-TARGET.txt').write_text(
+                  f'FunkGateway UI {version}\nRelease target: {label}\n'
+                  'VoIP software: leave microphone/input and playback/output on Standard/Default.\n'
+                  'FunkGateway routes supported VoIP streams automatically for the active operating mode.\n',
+                  encoding='utf-8')
+              out = dist / f'{pkgname}.zip'
+              write_zip(pkg, out)
+              digest = hashlib.sha256(out.read_bytes()).hexdigest()
+              (dist / f'{out.name}.sha256').write_text(f'{digest}  {out.name}\n', encoding='utf-8')
+              sums.append(f'{digest}  {out.name}')
+
+          (dist / 'ALL-SHA256.txt').write_text('\n'.join(sums) + '\n', encoding='utf-8')
+          shutil.copy2(root / 'CHANGELOG.md', dist / 'CHANGELOG-0.6.0.md')
+          PY
+
+          for z in dist/*.zip; do unzip -t "$z" >/dev/null; done
+          python3 - <<'PY'
+          import zipfile, glob
+          for fn in glob.glob('dist/*.zip'):
+              with zipfile.ZipFile(fn) as z:
+                  bad=[]
+                  for i in z.infolist():
+                      if i.filename.endswith('.sh'):
+                          mode=(i.external_attr >> 16) & 0o777
+                          if mode != 0o755:
+                              bad.append((i.filename, oct(mode)))
+                  if bad:
+                      raise SystemExit(f'{fn}: shell permissions invalid: {bad}')
+          print('ZIP permissions verified: all .sh files are 755')
+          PY
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          # FunkGateway UI 0.6.0
+
+          Die 0.6.0 ist ein großer Funktions- und Oberflächenstand mit vier klar getrennten Betriebsarten: PC-User, Funk-Gateway, Funk-Papagei und VoIP-Papagei.
+
+          ## Wichtig für TeamSpeak, Mumble, TeamTalk, Zello & Co.
+          Mikrofon/Input und Wiedergabe/Output in der VoIP-Software auf **Standard/Default** lassen. FunkGateway erkennt unterstützte VoIP-Streams und routet sie passend zur aktiven Betriebsart automatisch. Die internen Geräte `FunkGateway_TX`, `FunkGateway_RX_Input` und die Papagei-Geräte müssen normalerweise nicht manuell in der VoIP-Software ausgewählt werden.
+
+          ## Highlights
+          - Neues 0.6-Design mit Hell/Dunkel/System, Farbschemata, Modusfarben, Icons, Dashboard und Live-S-Meter.
+          - Modusabhängiges Audio-Routing mit Routing-Wächter und sauberer Rückkehr zu System-Default im PC-User-Modus.
+          - Funk-Papagei mit RX-Vorlaufpuffer, Aufnahme/Rückgabe, Papageibake und robuster DTMF-Fernsteuerung.
+          - VoIP-Papagei mit getrenntem RX-/Replay-Pfad und automatischer Stream-Umschaltung.
+          - DTMF `*91#` aktiviert den Funk-Papagei; `*90#` kehrt zuverlässig in den Funk-Gateway-Betrieb zurück, jeweils mit Vollzugsmeldung.
+          - Beim DTMF-Rückwechsel wird der Gateway-Audioweg nach der Vollzugsmeldung genau einmal sauber neu initialisiert.
+          - HF-/Bake-Schutz: interne Papagei-, Bake- und DTMF-Aussendungen sperren VoIP→Funk bis zum vollständigen Ende der Aussendung.
+          - Selbstrücklauf-Schutz, Channel Commander, Rogerbeep und Hardware-Port-Watchdog bleiben mode-sicher integriert.
+          - Kontrollierte Pipe-Abbrüche beim Neuarmieren werden als erwarteter Neustart behandelt statt als Fehler.
+          - Linux-Shellskripte werden in den Release-ZIPs mit ausführbaren Rechten (`755`) ausgeliefert.
+
+          Vollständige Details stehen im beigefügten Changelog.
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.6.0 --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo 'Release v0.6.0 already exists; replacing assets and notes.'
+            gh release edit v0.6.0 --repo "${{ github.repository }}" --target "${{ steps.source_commit.outputs.sha }}" --title 'FunkGateway UI 0.6.0' --notes-file RELEASE_NOTES.md
+            gh release upload v0.6.0 dist/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create v0.6.0 dist/* --repo "${{ github.repository }}" --target "${{ steps.source_commit.outputs.sha }}" --title 'FunkGateway UI 0.6.0' --notes-file RELEASE_NOTES.md
+          fi
