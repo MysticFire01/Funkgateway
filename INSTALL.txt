@@ -1,4 +1,4 @@
-FunkGateway UI 0.5.9.44 – Debian 12
+FunkGateway UI 0.6.0 – Debian 12
 
 Installation:
   chmod +x install-debian-12.sh

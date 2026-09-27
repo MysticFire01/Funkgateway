@@ -8,5 +8,5 @@ fi
 
 echo "Virtuelle Python-Umgebung fehlt."
 echo "Bitte zuerst ausfuehren:"
-echo "  ./install-debian-12.sh"
+echo "  ./install.sh"
 exit 1

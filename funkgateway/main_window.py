@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QGroupBox,QApplication,QCheckBox,QComboBox,QFileDialog,
     QFormLayout,QHBoxLayout,QLabel,QLineEdit,QMainWindow,QMessageBox,QPushButton,
     QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,
-    QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage)
-from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal
-from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap
+    QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage,QSizePolicy)
+from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal, QSize
+from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap, QIcon
 from PySide6.QtPrintSupport import QPrinter
 
 try:
@@ -40,6 +40,84 @@ from .helptext import HELP_HTML
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
+from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
+
+
+class AnalogSMeter(QWidget):
+    """Compact analogue radio-style level meter used by the 0.6 dashboard.
+
+    The input value is dBFS (-60..0).  Radio-like S markings are visual only;
+    the exact dBFS value is always shown below the needle so PC/VoIP levels are
+    not misrepresented as calibrated RF field strength.
+    """
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._dbfs=-120.0
+        self._accent="#2F80ED"
+        self._caption="Audio"
+        self.setMinimumHeight(118)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+
+    def setLevel(self,dbfs):
+        try: value=float(dbfs)
+        except Exception: value=-120.0
+        value=max(-120.0,min(0.0,value))
+        if abs(value-self._dbfs) >= 0.2:
+            self._dbfs=value
+            self.update()
+
+    def setAccent(self,color):
+        color=str(color or "#2F80ED")
+        if color != self._accent:
+            self._accent=color
+            self.update()
+
+    def setCaption(self,text):
+        text=str(text or "Audio")
+        if text != self._caption:
+            self._caption=text
+            self.update()
+
+    def paintEvent(self,event):
+        from PySide6.QtGui import QPainter,QPen,QColor,QFont
+        from PySide6.QtCore import QPointF,QRectF
+        p=QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing,True)
+        w=max(220,self.width()); h=self.height()
+        bg=QColor("#171A1F")
+        border=QColor("#3B424A")
+        fg=QColor("#E9EEF5")
+        muted=QColor("#98A2AD")
+        accent=QColor(self._accent)
+        p.setPen(QPen(border,1.2)); p.setBrush(bg)
+        p.drawRoundedRect(QRectF(1,1,w-2,h-2),10,10)
+
+        cx=w/2.0; cy=h-18.0; radius=min(w*0.40,h*0.78)
+        start_deg=205.0; span_deg=130.0
+        labels=[("S1",-54),("S3",-42),("S5",-30),("S7",-18),("S9",-9),("+20",-3)]
+        p.setFont(QFont(self.font().family(),8))
+        import math as _m
+        for label,db in labels:
+            frac=max(0.0,min(1.0,(db+60.0)/60.0))
+            ang=_m.radians(start_deg+span_deg*frac)
+            x1=cx+_m.cos(ang)*(radius-8); y1=cy+_m.sin(ang)*(radius-8)
+            x2=cx+_m.cos(ang)*radius; y2=cy+_m.sin(ang)*radius
+            p.setPen(QPen(muted,1.0)); p.drawLine(QPointF(x1,y1),QPointF(x2,y2))
+            tx=cx+_m.cos(ang)*(radius-22); ty=cy+_m.sin(ang)*(radius-22)
+            p.setPen(fg); p.drawText(QRectF(tx-19,ty-8,38,16),Qt.AlignCenter,label)
+
+        shown=max(-60.0,min(0.0,self._dbfs))
+        frac=(shown+60.0)/60.0
+        ang=_m.radians(start_deg+span_deg*frac)
+        nx=cx+_m.cos(ang)*(radius-27); ny=cy+_m.sin(ang)*(radius-27)
+        p.setPen(QPen(accent,3.0)); p.drawLine(QPointF(cx,cy),QPointF(nx,ny))
+        p.setBrush(accent); p.setPen(Qt.NoPen); p.drawEllipse(QPointF(cx,cy),5,5)
+
+        p.setPen(fg); p.setFont(QFont(self.font().family(),9,QFont.Bold))
+        p.drawText(QRectF(10,6,w-20,20),Qt.AlignCenter,self._caption)
+        db_text="< -60 dBFS" if self._dbfs < -60.0 else f"{self._dbfs:.1f} dBFS"
+        p.setFont(QFont(self.font().family(),8))
+        p.setPen(muted); p.drawText(QRectF(10,h-24,w-20,18),Qt.AlignCenter,db_text)
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +137,12 @@ class MainWindow(QMainWindow):
         # Sink-input IDs that FunkGateway itself muted while Papagei mode
         # was active. Only these streams are unmuted again when leaving Papagei.
         self.parrot_muted_voip_streams=set()
+        # Allgemeiner HF-Exklusivschutz für interne Baken/Ansagen. Während
+        # eines geschützten Durchgangs werden bekannte VoIP-Wiedergabeströme
+        # vom HF-Weg getrennt und danach exakt wieder freigegeben.
+        self.rf_exclusive_tokens={}
+        self.rf_exclusive_seq=0
+        self.rf_exclusive_active=False
 
         # DTMF-Fernsteuerung (0.5.9.x)
         self.dtmf_session_active=False
@@ -201,7 +285,19 @@ class MainWindow(QMainWindow):
         self.voip_parrot_phase="idle"
         self.voip_parrot_status_text="Bereit"
         self.voip_parrot_last_seconds=0.0
+        self.voip_parrot_dbfs=-120.0
         self.voip_parrot_temp_file=CFG_DIR / "voip-papagei-temp.wav"
+
+        # 0.6 Dashboard-Livestatus für den PC-User.  Die Pegelanzeige läuft
+        # über einen kleinen, gemeinsam nutzbaren Pulse/PipeWire-Capture und
+        # verändert weder das Standardgerät noch TeamSpeak-Routing.
+        self.pc_mic_monitor_proc=None
+        self.pc_mic_monitor_thread=None
+        self.pc_mic_monitor_stop=threading.Event()
+        self.pc_mic_monitor_source=None
+        self.pc_mic_dbfs=-120.0
+        self.pc_mic_active=False
+        self.ts_self_talking=False
 
         # Hauptsteuerung bleibt unabhängig vom gewählten Reiter immer sichtbar.
         # Dadurch sind Start/Stop/NOT-AUS/Rufzeichen auch bei kleinen Fenstern
@@ -217,10 +313,11 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(6)
 
         self.operating_mode=QComboBox()
-        self.operating_mode.addItem("PC-User","pc")
-        self.operating_mode.addItem("Funk-Gateway","gateway")
-        self.operating_mode.addItem("Funk-Papagei","radio_parrot")
-        self.operating_mode.addItem("VoIP-Papagei","voip_parrot")
+        self.operating_mode.setIconSize(QSize(24,24))
+        self.operating_mode.addItem(self._mode_icon("pc"),"PC-User","pc")
+        self.operating_mode.addItem(self._mode_icon("gateway"),"Funk-Gateway","gateway")
+        self.operating_mode.addItem(self._mode_icon("radio_parrot"),"Funk-Papagei","radio_parrot")
+        self.operating_mode.addItem(self._mode_icon("voip_parrot"),"VoIP-Papagei","voip_parrot")
         self.operating_mode.setToolTip(
             "PC-User: normaler PC-/TeamSpeak-Betrieb. Funk-Gateway: vollständiges Gateway. "
             "Funk-Papagei: Funk-RX aufnehmen und über Funk zurückgeben. "
@@ -250,17 +347,30 @@ class MainWindow(QMainWindow):
 
         self.gateway_controls=controls
         central_layout.addWidget(controls,0)
+
+        # 0.6.0: kompakte Live-Statusleiste, in jedem Reiter sichtbar.
+        self.live_status_bar=QLabel("Status wird geladen …")
+        self.live_status_bar.setWordWrap(True)
+        self.live_status_bar.setMinimumHeight(34)
+        self.live_status_bar.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        central_layout.addWidget(self.live_status_bar,0)
+
         self.tabs=QTabWidget()
         central_layout.addWidget(self.tabs,1)
         self.setCentralWidget(central)
 
         self.build_start(); self.build_setup(); self.build_audio(); self.build_ptt(); self.build_cos(); self.build_roger()
-        self.build_ids(); self.build_tools(); self.build_pc_mode(); self.build_voip_parrot(); self.build_pc_moderation(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_updates(); self.build_log(); self.build_help()
+        self.build_ids(); self.build_tools(); self.build_pc_mode(); self.build_voip_parrot(); self.build_pc_moderation(); self.build_integrations(); self.build_dtmf(); self.build_protection(); self.build_appearance(); self.build_updates(); self.build_log(); self.build_help()
         self._make_all_tab_pages_scrollable()
 
         self._first_start = not CFG_FILE.exists()
         self.load_cfg()
         self._apply_default_wavs()
+        self.theme_mode.currentIndexChanged.connect(self._appearance_changed)
+        self.color_scheme.currentIndexChanged.connect(self._appearance_changed)
+        self.mode_colors.toggled.connect(self._appearance_changed)
+        self.banner_enabled.toggled.connect(self._banner_enabled_changed)
+        self._apply_theme_from_ui(save=False)
         self.operating_mode.currentIndexChanged.connect(self._operating_mode_changed)
         self._apply_operating_mode_ui()
         self._apply_simple_widget_visibility()
@@ -286,6 +396,8 @@ class MainWindow(QMainWindow):
             self._refresh_pc_hardware_ports()
             if self._is_pc_mode() and self.pc_hw_port_enable.isChecked() and self.pc_hw_port_restore.isChecked():
                 self._apply_pc_hardware_port(log_result=False)
+        if self._is_pc_mode():
+            self._start_pc_mic_monitor()
         if self._needs_radio_stack():
             self.ensure_gateway_sink()
         if getattr(self,"_first_start",False):
@@ -305,7 +417,9 @@ class MainWindow(QMainWindow):
         self.integration_timer=QTimer(self); self.integration_timer.timeout.connect(self.poll_integrations)
         self.integration_timer.start(750)
         self.start_status_timer=QTimer(self); self.start_status_timer.timeout.connect(self.update_start_status)
-        self.start_status_timer.start(2500)
+        # Dashboard-Zustände (Mikrofon/Papagei/RX/TX) sollen sichtbar live
+        # reagieren. 500 ms ist schnell genug für die Anzeige, ohne das UI zu fluten.
+        self.start_status_timer.start(500)
         self.rx_hw_port_watchdog_timer=QTimer(self)
         self.rx_hw_port_watchdog_timer.timeout.connect(self._watch_rx_hardware_port)
         self.rx_hw_port_watchdog_timer.start(1000)
@@ -317,6 +431,261 @@ class MainWindow(QMainWindow):
 
     def big(self,text):
         b=QPushButton(text); b.setMinimumHeight(56); return b
+
+    def _mode_icon(self,mode):
+        names={"pc":"pc.svg","gateway":"gateway.svg","radio_parrot":"radio_parrot.svg","voip_parrot":"voip_parrot.svg"}
+        path=Path(__file__).resolve().parent / "icons" / names.get(mode,"gateway.svg")
+        return QIcon(str(path))
+
+    def _apply_mode_visual_identity(self):
+        mode=self._mode()
+        if hasattr(self,"start_mode_icon"):
+            self.start_mode_icon.setPixmap(self._mode_icon(mode).pixmap(52,52))
+        if not hasattr(self,"start_mode_note"):
+            return
+        palette=getattr(self,"current_theme_palette",None) or {}
+        use_mode=not hasattr(self,"mode_colors") or self.mode_colors.isChecked()
+        color=MODE_COLORS.get(mode,palette.get("accent","#2F80ED")) if use_mode else palette.get("accent","#2F80ED")
+        panel=palette.get("panel_alt","#EAF0F5")
+        text=palette.get("text","#18212A")
+        border=palette.get("border","#C7D0D9")
+        self.start_mode_note.setStyleSheet(
+            f"font-weight:600; padding:8px 11px; border-radius:8px; "
+            f"background:{panel}; color:{text}; border:1px solid {border}; border-left:5px solid {color};"
+        )
+        self._update_mode_cards()
+        if hasattr(self,"live_status_bar"):
+            self.live_status_bar.setStyleSheet(
+                f"padding:7px 10px; border-radius:8px; border-left:5px solid {color}; "
+                f"background:{palette.get('panel','#FFFFFF')}; color:{palette.get('text','#18212A')}; font-weight:600;"
+            )
+        self._apply_mode_tab_color()
+
+    def _mode_title(self,mode=None):
+        mode=mode or self._mode()
+        return {
+            "pc":"PC-User",
+            "gateway":"Funk-Gateway",
+            "radio_parrot":"Funk-Papagei",
+            "voip_parrot":"VoIP-Papagei",
+        }.get(mode,"Funk-Gateway")
+
+    def _select_mode_from_card(self,mode):
+        idx=self.operating_mode.findData(mode)
+        if idx>=0 and idx!=self.operating_mode.currentIndex():
+            self.operating_mode.setCurrentIndex(idx)
+
+    def _update_mode_cards(self):
+        if not hasattr(self,"mode_cards"):
+            return
+        palette=getattr(self,"current_theme_palette",None) or {}
+        panel=palette.get("panel_alt","#EAF0F5")
+        text=palette.get("text","#18212A")
+        border=palette.get("border","#C7D0D9")
+        active=self._mode()
+        use_mode=not hasattr(self,"mode_colors") or self.mode_colors.isChecked()
+        for mode,button in self.mode_cards.items():
+            color=MODE_COLORS.get(mode,palette.get("accent","#2F80ED")) if use_mode else palette.get("accent","#2F80ED")
+            # Bewusst nur Qt-QSS-Basisproperties verwenden. Einige ältere
+            # Qt/PySide6-Builds melden bei CSS-Shorthand/text-align auf
+            # QPushButton sonst "Could not parse stylesheet".
+            if mode==active:
+                button.setStyleSheet(
+                    f"background-color: {panel}; color: {text}; "
+                    f"border: 2px solid {color}; border-radius: 10px; "
+                    "padding: 10px; font-weight: bold;"
+                )
+            else:
+                button.setStyleSheet(
+                    f"background-color: {panel}; color: {text}; "
+                    f"border: 1px solid {border}; border-radius: 10px; "
+                    "padding: 10px; font-weight: bold;"
+                )
+
+    def _apply_mode_tab_color(self):
+        """Colour the selected tab with the active operating-mode colour."""
+        palette=getattr(self,"current_theme_palette",None) or {}
+        use_mode=not hasattr(self,"mode_colors") or self.mode_colors.isChecked()
+        color=MODE_COLORS.get(self._mode(),palette.get("accent","#2F80ED")) if use_mode else palette.get("accent","#2F80ED")
+        fg=contrast_text(color)
+        # Apply to the main tabs and nested tab widgets. Inactive tabs continue
+        # to inherit the selected light/dark theme from the application QSS.
+        tabs=[self.tabs] if hasattr(self,"tabs") else []
+        tabs += [t for t in self.findChildren(QTabWidget) if t not in tabs]
+        qss=(
+            f"QTabBar::tab:selected {{ background-color: {color}; color: {fg}; "
+            f"border: 1px solid {color}; }}"
+        )
+        for tab in tabs:
+            tab.setStyleSheet(qss)
+
+    def _status_badge_style(self,state="neutral"):
+        """Quiet dashboard card with a semantic accent stripe."""
+        palette=getattr(self,"current_theme_palette",None) or {}
+        accents={
+            "ok":"#2E9D57", "active":"#27AE60", "wait":"#D99018",
+            "warn":"#F2994A", "error":"#C62828", "special":"#9B51E0",
+            "neutral":palette.get("border","#C7D0D9"),
+        }
+        accent=accents.get(state,accents["neutral"])
+        bg=palette.get("panel_alt","#EAF0F5")
+        fg=palette.get("text","#18212A")
+        border=palette.get("border","#C7D0D9")
+        return (
+            f"padding:9px 11px; border-radius:9px; border:1px solid {border}; "
+            f"border-left:5px solid {accent}; background:{bg}; color:{fg}; font-weight:700;"
+        )
+
+    def _dashboard_card_style(self,mode=None,state="normal"):
+        """Mode-coloured dashboard card.
+
+        The four operating modes keep their own visual identity on the Start
+        dashboard: PC blue, gateway green, radio parrot orange and VoIP parrot
+        violet.  Only real errors override the mode colour with red.
+        """
+        mode=mode or self._mode()
+        palette=getattr(self,"current_theme_palette",None) or {}
+        use_mode=not hasattr(self,"mode_colors") or self.mode_colors.isChecked()
+        accent=MODE_COLORS.get(mode,palette.get("accent","#2F80ED")) if use_mode else palette.get("accent","#2F80ED")
+        if state=="error":
+            accent="#C62828"
+        elif state=="warn":
+            accent="#F2994A"
+        bg=palette.get("panel_alt","#EAF0F5")
+        fg=palette.get("text","#18212A")
+        border=palette.get("border","#C7D0D9")
+        return (
+            f"padding:9px 11px; border-radius:9px; border:1px solid {border}; "
+            f"border-left:5px solid {accent}; background:{bg}; color:{fg}; font-weight:700;"
+        )
+
+    def _dashboard_main_state_style(self,mode=None):
+        """Large mode-state card using the same colour identity as the mode tiles."""
+        mode=mode or self._mode()
+        palette=getattr(self,"current_theme_palette",None) or {}
+        use_mode=not hasattr(self,"mode_colors") or self.mode_colors.isChecked()
+        accent=MODE_COLORS.get(mode,palette.get("accent","#2F80ED")) if use_mode else palette.get("accent","#2F80ED")
+        bg=palette.get("panel","#FFFFFF")
+        fg=palette.get("text","#18212A")
+        return (
+            f"font-size:20px; font-weight:700; padding:8px; border:2px solid {accent}; "
+            f"border-radius:10px; background:{bg}; color:{fg};"
+        )
+
+    @staticmethod
+    def _pretty_hw_port(port):
+        """Turn Pulse/PipeWire hardware port IDs into short dashboard labels."""
+        value=str(port or "").strip()
+        low=value.lower()
+        if not value:
+            return "—"
+        known=(
+            ("analog-input-linein","Line In"),
+            ("analog-input-rear-mic","Rear Mic"),
+            ("analog-input-front-mic","Front Mic"),
+            ("analog-input-mic","Mic"),
+            ("analog-input-headset-mic","Headset Mic"),
+        )
+        for needle,label in known:
+            if needle in low:
+                return label
+        # Unknown port IDs remain recognizable, but lose the common prefix.
+        return value.replace("analog-input-","").replace("-"," ").strip().title() or value
+
+    def _choose_banner(self):
+        path,_=QFileDialog.getOpenFileName(
+            self,"Bannerbild auswählen","","Bilder (*.png *.jpg *.jpeg *.webp *.bmp)"
+        )
+        if not path:
+            return
+        pix=QPixmap(path)
+        if pix.isNull():
+            QMessageBox.warning(self,"Banner","Das gewählte Bild konnte nicht geladen werden.")
+            return
+        self.banner_path.setText(path)
+        self.banner_enabled.setChecked(True)
+        self._load_banner_pixmap(path)
+        self.save_cfg()
+
+    def _clear_banner(self):
+        self.banner_enabled.setChecked(False)
+        self.banner_path.clear()
+        self._banner_original_pixmap=QPixmap()
+        if hasattr(self,"start_banner"):
+            self.start_banner.clear()
+            self.start_banner.hide()
+        self.save_cfg()
+
+    def _load_banner_pixmap(self,path=None):
+        path=str(path if path is not None else (self.banner_path.text() if hasattr(self,"banner_path") else "")).strip()
+        self._banner_original_pixmap=QPixmap(path) if path else QPixmap()
+        if not self._banner_original_pixmap.isNull():
+            self._update_banner_pixmap()
+        elif hasattr(self,"start_banner"):
+            self.start_banner.clear()
+            self.start_banner.hide()
+
+    def _banner_enabled_changed(self,checked):
+        if hasattr(self,"start_banner"):
+            self.start_banner.setVisible(bool(checked and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))
+            if checked:
+                self._update_banner_pixmap()
+        if CFG_FILE.exists():
+            self.save_cfg()
+
+    def _update_banner_pixmap(self):
+        if not hasattr(self,"start_banner") or not hasattr(self,"banner_enabled") or not self.banner_enabled.isChecked():
+            return
+        pix=getattr(self,"_banner_original_pixmap",QPixmap())
+        if pix.isNull():
+            return
+        # Banner skaliert proportional mit der nutzbaren Fensterbreite.
+        # Seitenverhältnis bleibt immer erhalten; keine Verzerrung/Abschneidung.
+        # Nutze nahezu die gesamte Startseitenbreite. QLabel.width() kann direkt
+        # nach dem Aufbau noch klein sein; deshalb dient die Tab-/Fensterbreite
+        # als robuste zweite Quelle.
+        label_w=max(0,self.start_banner.width()-4)
+        tab_w=max(0,(self.tabs.width()-42) if hasattr(self,"tabs") else 0)
+        win_w=max(0,self.width()-70)
+        width=max(260,label_w,tab_w)
+        width=min(width,win_w if win_w>0 else width)
+        scaled=pix.scaledToWidth(width,Qt.SmoothTransformation)
+        # Banner bleibt panoramisch und darf das Dashboard nicht verdrängen.
+        max_h=max(100,min(245,int(self.height()*0.29)))
+        if scaled.height()>max_h:
+            scaled=pix.scaled(max(200,width),max_h,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        self.start_banner.setPixmap(scaled)
+        self.start_banner.setFixedHeight(scaled.height()+8)
+        self.start_banner.show()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,"start_banner"):
+            QTimer.singleShot(0,self._update_banner_pixmap)
+
+    def _appearance_changed(self,*_args):
+        self._apply_theme_from_ui(save=True)
+
+    def _apply_theme_from_ui(self,save=False):
+        if not hasattr(self,"theme_mode"):
+            return
+        app=QApplication.instance()
+        self.current_theme_palette=apply_app_theme(app,self.theme_mode.currentText(),self.color_scheme.currentText())
+        self._apply_mode_visual_identity()
+        if hasattr(self,"theme_preview"):
+            p=self.current_theme_palette
+            self.theme_preview.setText(
+                f"Vorschau – {self.theme_mode.currentText()} / {self.color_scheme.currentText()}\n"
+                f"Akzent {p['accent']} • Text automatisch kontrastiert"
+            )
+            self.theme_preview.setStyleSheet(
+                f"padding: 16px; border-radius: 10px; background-color: {p['accent']}; color: {p['accent_text']}; font-weight: bold;"
+            )
+        self._update_mode_cards()
+        if hasattr(self,"start_banner"):
+            self._update_banner_pixmap()
+        if save and CFG_FILE.exists():
+            self.save_cfg()
 
     def _make_all_tab_pages_scrollable(self):
         """Make settings pages safely scrollable on small windows / larger fonts.
@@ -376,27 +745,72 @@ class MainWindow(QMainWindow):
 
     def build_start(self):
         w=QWidget(); v=QVBoxLayout(w)
-        self.start_title=QLabel(f"<h1>FunkGateway {VERSION}</h1><p>Linux Radio Gateway – Open Source</p>")
+        self.start_title=QLabel(f"<div style='font-size:24px;font-weight:700'>FunkGateway {VERSION}</div><div>Linux Radio Gateway – Open Source</div>")
         self.start_title.setWordWrap(True)
         v.addWidget(self.start_title)
-        self.start_mode_note=QLabel()
-        self.start_mode_note.setWordWrap(True)
-        self.start_mode_note.setStyleSheet("font-weight: bold; padding: 4px;")
-        v.addWidget(self.start_mode_note)
+
+        # Optionales allgemeines Banner. Die Original-Pixmap bleibt erhalten und
+        # wird in resizeEvent proportional an die aktuelle Fensterbreite angepasst.
+        self.start_banner=QLabel()
+        self.start_banner.setAlignment(Qt.AlignCenter)
+        self.start_banner.setMinimumWidth(200)
+        self.start_banner.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self.start_banner.hide()
+        v.addWidget(self.start_banner)
+
+        mode_banner=QWidget(); mode_row=QHBoxLayout(mode_banner); mode_row.setContentsMargins(0,0,0,0)
+        self.start_mode_icon=QLabel(); self.start_mode_icon.setFixedSize(58,58); self.start_mode_icon.setAlignment(Qt.AlignCenter)
+        self.start_mode_note=QLabel(); self.start_mode_note.setWordWrap(True)
+        mode_row.addWidget(self.start_mode_icon,0); mode_row.addWidget(self.start_mode_note,1)
+        v.addWidget(mode_banner)
+
+        # Vier direkt anklickbare Moduskacheln.
+        self.mode_cards={}
+        mode_cards_row=QHBoxLayout(); mode_cards_row.setSpacing(8)
+        mode_meta=(
+            ("pc","PC-User\nPC / TeamSpeak"),
+            ("gateway","Funk-Gateway\nFunk ↔ VoIP"),
+            ("radio_parrot","Funk-Papagei\nFunk aufnehmen / zurück"),
+            ("voip_parrot","VoIP-Papagei\nVoIP aufnehmen / zurück"),
+        )
+        for mode,label in mode_meta:
+            btn=QPushButton(self._mode_icon(mode),label)
+            btn.setObjectName(f"modeCard_{mode}")
+            btn.setIconSize(QSize(30,30)); btn.setMinimumHeight(64)
+            btn.clicked.connect(lambda _checked=False,m=mode:self._select_mode_from_card(m))
+            self.mode_cards[mode]=btn; mode_cards_row.addWidget(btn,1)
+        v.addLayout(mode_cards_row)
+
         self.funk_rx_big=QLabel("FUNK KANAL FREI")
         self.funk_rx_big.setAlignment(Qt.AlignCenter)
-        self.funk_rx_big.setMinimumHeight(74)
-        self.funk_rx_big.setStyleSheet("font-size: 28px; font-weight: bold; padding: 12px; border: 2px solid #555; border-radius: 8px;")
+        self.funk_rx_big.setMinimumHeight(54)
+        self.funk_rx_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 2px solid #555; border-radius: 10px;")
+        v.addWidget(self.funk_rx_big)
+
+        # Kompaktes Dashboard: der Betriebszustand ist jetzt eine normale
+        # Modulkachel statt einer zusätzlichen Vollbreitenkarte.
+        dash=QHBoxLayout(); dash.setSpacing(8)
         self.gateway_state_big=QLabel("GATEWAY AKTIV")
-        self.gateway_state_big.setAlignment(Qt.AlignCenter)
-        self.gateway_state_big.setMinimumHeight(54)
-        self.gateway_state_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 2px solid #555; border-radius: 8px;")
+        self.card_mode=self.gateway_state_big
+        self.card_rx=QLabel("RX\n—"); self.card_tx=QLabel("TX\n—")
+        self.card_voip=QLabel("VoIP\n—"); self.card_hw=QLabel("Audio-Port\n—")
+        for card in (self.card_mode,self.card_rx,self.card_tx,self.card_voip,self.card_hw):
+            card.setAlignment(Qt.AlignCenter); card.setWordWrap(True); card.setMinimumHeight(62)
+            dash.addWidget(card,1)
+        v.addLayout(dash)
+
+        # Funktypisches Analoginstrument. Es zeigt je nach Betriebsart den
+        # PC-Mikrofon-, Funk-RX- oder VoIP-RX-Pegel an.
+        self.s_meter=AnalogSMeter()
+        v.addWidget(self.s_meter)
+
         self.tx_lbl=QLabel("● PTT AUS"); self.cos_lbl=QLabel("● KANAL FREI")
-        self.meter=QProgressBar(); self.meter.setRange(0,100); self.meter.setFormat("Audio %p %")
-        v.addWidget(self.funk_rx_big); v.addWidget(self.gateway_state_big); v.addWidget(self.tx_lbl); v.addWidget(self.cos_lbl); v.addWidget(self.meter)
+        # Alte Fortschrittsanzeige bleibt intern als Signalziel bestehen, wird
+        # aber nicht mehr dargestellt. Dadurch bleiben ältere Bridge-Signale kompatibel.
+        self.meter=QProgressBar(); self.meter.setRange(0,100); self.meter.hide()
+        v.addWidget(self.tx_lbl); v.addWidget(self.cos_lbl)
         self.start_controls_note=QLabel("Die Hauptsteuerung wird passend zur gewählten Betriebsart angezeigt.")
-        self.start_controls_note.setWordWrap(True)
-        self.start_controls_note.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.start_controls_note.setWordWrap(True); self.start_controls_note.setStyleSheet("font-weight: bold; padding: 6px;")
         v.addWidget(self.start_controls_note)
 
         status_box=QGroupBox("Systemstatus")
@@ -405,18 +819,56 @@ class MainWindow(QMainWindow):
         self.status_ptt=QLabel("PTT: noch nicht geprüft")
         self.status_voip=QLabel("VoIP: noch nicht geprüft")
         self.status_config=QLabel("Konfiguration: noch nicht geprüft")
-        self.status_audio_caption=QLabel("Audio:")
-        self.status_ptt_caption=QLabel("PTT:")
-        self.status_voip_caption=QLabel("VoIP:")
-        self.status_config_caption=QLabel("Konfiguration:")
-        sf.addRow(self.status_audio_caption,self.status_audio)
-        sf.addRow(self.status_ptt_caption,self.status_ptt)
-        sf.addRow(self.status_voip_caption,self.status_voip)
-        sf.addRow(self.status_config_caption,self.status_config)
+        self.status_audio_caption=QLabel("Audio:"); self.status_ptt_caption=QLabel("PTT:")
+        self.status_voip_caption=QLabel("VoIP:"); self.status_config_caption=QLabel("Konfiguration:")
+        sf.addRow(self.status_audio_caption,self.status_audio); sf.addRow(self.status_ptt_caption,self.status_ptt)
+        sf.addRow(self.status_voip_caption,self.status_voip); sf.addRow(self.status_config_caption,self.status_config)
         v.addWidget(status_box)
-
         v.addStretch(1)
         self.tabs.addTab(w,"Start")
+
+    def build_appearance(self):
+        w=QWidget(); v=QVBoxLayout(w)
+        title=QLabel("<h2>Darstellung</h2><p>Farben, Hell-/Dunkelmodus und die visuelle Identität der vier Betriebsarten.</p>")
+        title.setWordWrap(True); v.addWidget(title)
+
+        box=QGroupBox("Theme und Farbschema"); f=QFormLayout(box)
+        self.theme_mode=QComboBox(); self.theme_mode.addItems(["System","Hell","Dunkel"])
+        self.color_scheme=QComboBox(); self.color_scheme.addItems(list(SCHEMES.keys()))
+        self.mode_colors=QCheckBox("Eigene Modusfarben verwenden")
+        self.mode_colors.setChecked(True)
+        self.mode_colors.setToolTip("PC-User blau, Funk-Gateway grün, Funk-Papagei orange und VoIP-Papagei violett hervorheben.")
+        f.addRow("Darstellung:",self.theme_mode)
+        f.addRow("Farbschema:",self.color_scheme)
+        f.addRow(self.mode_colors)
+        v.addWidget(box)
+
+        mode_box=QGroupBox("Modusfarben"); mh=QHBoxLayout(mode_box)
+        for mode,label in (("pc","PC-User"),("gateway","Funk-Gateway"),("radio_parrot","Funk-Papagei"),("voip_parrot","VoIP-Papagei")):
+            card=QLabel(label); card.setAlignment(Qt.AlignCenter); card.setMinimumHeight(48)
+            c=MODE_COLORS[mode]; card.setStyleSheet(f"background:{c}; color:{contrast_text(c)}; border-radius:8px; font-weight:bold; padding:8px;")
+            mh.addWidget(card)
+        v.addWidget(mode_box)
+
+        banner_box=QGroupBox("Startseiten-Banner")
+        bf=QFormLayout(banner_box)
+        self.banner_enabled=QCheckBox("Banner auf der Startseite anzeigen")
+        self.banner_path=QLineEdit(); self.banner_path.setReadOnly(True)
+        banner_buttons=QWidget(); bh=QHBoxLayout(banner_buttons); bh.setContentsMargins(0,0,0,0)
+        choose_banner=QPushButton("Bild auswählen …"); choose_banner.clicked.connect(self._choose_banner)
+        clear_banner=QPushButton("Banner entfernen"); clear_banner.clicked.connect(self._clear_banner)
+        bh.addWidget(choose_banner); bh.addWidget(clear_banner); bh.addStretch(1)
+        bf.addRow(self.banner_enabled); bf.addRow("Bilddatei:",self.banner_path); bf.addRow("",banner_buttons)
+        banner_note=QLabel("Das Banner skaliert automatisch proportional mit der Fensterbreite. Das Seitenverhältnis bleibt erhalten.")
+        banner_note.setWordWrap(True); bf.addRow("",banner_note)
+        v.addWidget(banner_box)
+
+        self.theme_preview=QLabel(); self.theme_preview.setAlignment(Qt.AlignCenter); self.theme_preview.setMinimumHeight(70)
+        self.theme_preview.setWordWrap(True); v.addWidget(self.theme_preview)
+        note=QLabel("Die Schriftfarbe auf Akzentflächen wird automatisch passend zum Hintergrund gewählt, damit die Oberfläche auch bei kräftigen Farben lesbar bleibt.")
+        note.setWordWrap(True); v.addWidget(note)
+        v.addStretch(1)
+        self.tabs.addTab(w,"Darstellung")
 
     def build_setup(self):
         """Build the dedicated first-run/setup and maintenance page."""
@@ -973,6 +1425,10 @@ class MainWindow(QMainWindow):
             source=self.pc_parrot_input.currentData() if hasattr(self,"pc_parrot_input") else None
             sink=self.pc_parrot_output.currentData() if hasattr(self,"pc_parrot_output") else None
             active_port=self._active_source_hardware_port(source) if source else ""
+            mic_proc=getattr(self,"pc_mic_monitor_proc",None)
+            if source and (mic_proc is None or mic_proc.poll() is not None
+                           or getattr(self,"pc_mic_monitor_source",None)!=source):
+                self._start_pc_mic_monitor()
             self.status_audio.setText(
                 ("bereit" + (f" – Port {active_port}" if active_port else ""))
                 if source and sink else "PC-Ein-/Ausgabe noch nicht vollständig gewählt"
@@ -992,11 +1448,28 @@ class MainWindow(QMainWindow):
                 ("aktiv – " if self.tx else "bereit – ") + ptt
             )
 
+        # Live-Status der VoIP-Integrationen verwenden. Ein aktiviertes Modul
+        # bedeutet nicht automatisch, dass der jeweilige Client verbunden ist.
         parts=[]
+        voip_connected=False
         if hasattr(self,"ts_enabled") and self.ts_enabled.isChecked():
-            parts.append("TeamSpeak aktiv")
+            ts_state=getattr(self,"ts_last_status",None)
+            if ts_state == "connected":
+                parts.append("TeamSpeak aktiv")
+                voip_connected=True
+            elif ts_state is None:
+                parts.append("TeamSpeak prüft …")
+            else:
+                parts.append("TeamSpeak getrennt")
         if hasattr(self,"mumble_enabled") and self.mumble_enabled.isChecked():
-            parts.append("Mumble aktiv")
+            mumble_state=str(getattr(self,"mumble_last_status","") or "")
+            if "Mumble verbunden" in mumble_state:
+                parts.append("Mumble aktiv")
+                voip_connected=True
+            elif not mumble_state:
+                parts.append("Mumble prüft …")
+            else:
+                parts.append("Mumble getrennt")
         if not parts:
             parts.append("keine optionale Integration aktiv")
         self.status_voip.setText(", ".join(parts))
@@ -1011,6 +1484,159 @@ class MainWindow(QMainWindow):
                 self.status_config.setText(
                     "Selbsttest mit Hinweis/Fehler: " + ", ".join(failures)
                 )
+
+        # 0.6.0 Dashboard: Inhalt UND Farbe folgen der Betriebsart.
+        if hasattr(self,"card_rx"):
+            rx_active=bool(getattr(self,"rx_was_active",False))
+            tx_active=bool(getattr(self,"tx",False))
+            voip_ok=bool(voip_connected)
+
+            if mode=="pc":
+                mic_ready=bool(source)
+                mic_active=bool(getattr(self,"pc_mic_active",False) or getattr(self,"ts_self_talking",False))
+                mic_proc=getattr(self,"pc_mic_monitor_proc",None)
+                mic_live=bool(mic_proc is not None and mic_proc.poll() is None)
+                pc_audio_ready=bool(source and sink)
+                mic_text="SPRICHT" if mic_active else ("RUHE" if mic_live else ("BEREIT" if mic_ready else "NICHT GEWÄHLT"))
+                self.card_rx.setText("Mikrofon\n" + mic_text)
+                self.card_tx.setText("PC-Audio\n" + ("BEREIT" if pc_audio_ready else "PRÜFEN"))
+                self.card_voip.setText("VoIP\n" + " / ".join(parts))
+                hw=active_port or "—"
+                self.card_hw.setText("Audio-Port\n" + self._pretty_hw_port(hw))
+                states=("active" if mic_active else "normal","normal","normal" if voip_ok else "warn","normal" if hw!="—" else "warn")
+
+            elif mode=="radio_parrot":
+                recording=bool(getattr(self,"parrot_recording",False))
+                buffering=bool(getattr(self,"parrot_guard_buffering",False))
+                playing=bool(getattr(self,"parrot_playing",False))
+                beacon_running=bool(getattr(self,"parrot_beacon_in_progress",False))
+                beacon_pending=bool(getattr(self,"parrot_pending_beacon",False))
+                self.card_rx.setText("Funk-RX\n" + ("AKTIV" if rx_active else "WARTET"))
+                rec_text="LÄUFT" if recording else ("PUFFERT" if buffering else "BEREIT")
+                self.card_tx.setText("Aufnahme\n" + rec_text)
+                self.card_voip.setText("Wiedergabe\n" + ("LÄUFT" if playing else "AUS"))
+                bake_text="LÄUFT" if beacon_running else ("FÄLLIG" if beacon_pending else "BEREIT")
+                self.card_hw.setText("Papageibake\n" + bake_text)
+                states=("normal","normal","normal","warn" if beacon_pending and not beacon_running else "normal")
+
+            elif mode=="voip_parrot":
+                running=bool(getattr(self,"voip_parrot_running",False))
+                phase=str(getattr(self,"voip_parrot_phase","idle") or "idle")
+                phase_rx={"listen":"LAUSCHT","record":"EMPFANG","delay":"WARTET","playback":"RÜCKGABE"}.get(phase,"BEREIT")
+                self.card_rx.setText("VoIP-RX\n" + (phase_rx if running else "BEREIT"))
+                self.card_tx.setText("Aufnahme\n" + ("LÄUFT" if phase=="record" else ("BEREIT" if running else "AUS")))
+                self.card_voip.setText("Wiedergabe\n" + ("LÄUFT" if phase=="playback" else ("WARTET" if phase=="delay" else "AUS")))
+                auto_route=bool(hasattr(self,"voip_parrot_auto_route") and self.voip_parrot_auto_route.isChecked())
+                self.card_hw.setText("Auto-Routing\n" + ("AKTIV" if auto_route else "AUS"))
+                states=("normal","normal","normal","normal" if auto_route else "warn")
+
+            else:  # Funk-Gateway
+                self.card_rx.setText("RX\n" + ("AKTIV" if rx_active else "FREI"))
+                self.card_tx.setText("TX / PTT\n" + ("SENDEN" if tx_active else "AUS"))
+                self.card_voip.setText("VoIP\n" + " / ".join(parts))
+                hw=self._active_source_hardware_port(source) if source else "—"
+                self.card_hw.setText("Audio-Port\n" + self._pretty_hw_port(hw))
+                states=("normal","normal","normal" if voip_ok else "warn","normal" if hw and hw!="—" else "warn")
+
+            # Betriebsart selbst ist eine normale, farblich passende Modulkachel.
+            mode_label={
+                "pc":"PC-USER\nAKTIV",
+                "gateway":"FUNK-GATEWAY\nAKTIV" if bool(self.bridge) else "FUNK-GATEWAY\nBEREIT",
+                "radio_parrot":"FUNK-PAPAGEI\n" + ("AKTIV" if self.parrot_enabled.isChecked() else "BEREIT"),
+                "voip_parrot":"VOIP-PAPAGEI\n" + ("AKTIV" if getattr(self,"voip_parrot_running",False) else "BEREIT"),
+            }.get(mode,"BETRIEBSART")
+            self.card_mode.setText(mode_label)
+            self.card_mode.setStyleSheet(self._dashboard_card_style(mode,"active"))
+            for card,state in zip((self.card_rx,self.card_tx,self.card_voip,self.card_hw),states):
+                card.setStyleSheet(self._dashboard_card_style(mode,state))
+
+            # Analoges S-Meter mit echten vorhandenen Livepegeln.
+            if hasattr(self,"s_meter"):
+                if mode=="pc":
+                    meter_db=float(getattr(self,"pc_mic_dbfs",-120.0))
+                    meter_caption="Mikrofonpegel"
+                elif mode=="voip_parrot":
+                    meter_db=float(getattr(self,"voip_parrot_dbfs",-120.0))
+                    meter_caption="VoIP-RX-Pegel"
+                else:
+                    meter_db=float(getattr(self,"rx_last_db",-120.0))
+                    meter_caption="Funk-RX-Pegel"
+                self.s_meter.setAccent(MODE_COLORS.get(mode,"#2F80ED"))
+                self.s_meter.setCaption(meter_caption)
+                self.s_meter.setLevel(meter_db)
+
+        # Globale Live-Statusleiste: ebenfalls nur modusspezifisch relevante
+        # Zustände anzeigen. So sieht PC-User nicht mehr nach Funk-Gateway aus.
+        if hasattr(self,"live_status_bar"):
+            mode_name=self._mode_title(mode)
+            guard="Bake-Schutz aktiv" if bool(getattr(self,"rf_exclusive_active",False)) else "Bake-Schutz bereit"
+            guard_color="#F2994A" if bool(getattr(self,"rf_exclusive_active",False)) else "#2F80ED"
+            mode_color=MODE_COLORS.get(mode,"#2F80ED")
+
+            if mode=="pc":
+                mic_ready=bool(source)
+                mic_active=bool(getattr(self,"pc_mic_active",False) or getattr(self,"ts_self_talking",False))
+                mic_proc=getattr(self,"pc_mic_monitor_proc",None)
+                mic_live=bool(mic_proc is not None and mic_proc.poll() is None)
+                audio_ready=bool(source and sink)
+                hw_label=self._pretty_hw_port(active_port or "—")
+                voip_short=", ".join(parts)
+                mic_status="Mikrofon spricht" if mic_active else ("Mikrofon Ruhe" if mic_live else ("Mikrofon bereit" if mic_ready else "Mikrofon prüfen"))
+                chunks=(
+                    ("#27AE60" if mic_active else mode_color,mic_status),
+                    (mode_color,"PC-Audio bereit" if audio_ready else "PC-Audio prüfen"),
+                    ("#2E9D57" if voip_ok else "#7F8C8D",voip_short),
+                    (mode_color,hw_label),
+                    (guard_color,guard),
+                )
+            elif mode=="radio_parrot":
+                recording=bool(getattr(self,"parrot_recording",False))
+                buffering=bool(getattr(self,"parrot_guard_buffering",False))
+                playing=bool(getattr(self,"parrot_playing",False))
+                beacon_running=bool(getattr(self,"parrot_beacon_in_progress",False))
+                beacon_pending=bool(getattr(self,"parrot_pending_beacon",False))
+                chunks=(
+                    (mode_color,"Funk-RX aktiv" if bool(getattr(self,"rx_was_active",False)) else "Funk-RX wartet"),
+                    (mode_color,"Aufnahme läuft" if recording else ("Aufnahme puffert" if buffering else "Aufnahme bereit")),
+                    (mode_color,"Wiedergabe läuft" if playing else "Wiedergabe aus"),
+                    ("#F2994A" if beacon_pending else mode_color,"Papageibake läuft" if beacon_running else ("Papageibake fällig" if beacon_pending else "Papageibake bereit")),
+                    (guard_color,guard),
+                )
+            elif mode=="voip_parrot":
+                running=bool(getattr(self,"voip_parrot_running",False))
+                phase=str(getattr(self,"voip_parrot_phase","idle") or "idle")
+                auto_route=bool(hasattr(self,"voip_parrot_auto_route") and self.voip_parrot_auto_route.isChecked())
+                rx_text={"listen":"VoIP-RX lauscht","record":"VoIP-RX empfängt","delay":"Rückgabe wartet","playback":"VoIP-Rückgabe"}.get(phase,"VoIP-RX bereit")
+                chunks=(
+                    (mode_color,rx_text if running else "VoIP-Papagei bereit"),
+                    (mode_color,"Aufnahme läuft" if phase=="record" else "Aufnahme bereit"),
+                    (mode_color,"Wiedergabe läuft" if phase=="playback" else "Wiedergabe aus"),
+                    (mode_color if auto_route else "#7F8C8D","Auto-Routing aktiv" if auto_route else "Auto-Routing aus"),
+                )
+            else:
+                rx_active=bool(getattr(self,"rx_was_active",False))
+                tx_active=bool(getattr(self,"tx",False))
+                rx_text="RX AKTIV" if rx_active else "RX frei"
+                tx_text="TX SENDEN" if tx_active else "TX aus"
+                voip_short=", ".join(parts)
+                try:
+                    hw_short=(self._active_source_hardware_port(source) if source else "") or "Audio-Port —"
+                except Exception:
+                    hw_short="Audio-Port —"
+                hw_label=self._pretty_hw_port(hw_short) if hw_short!="Audio-Port —" else hw_short
+                chunks=(
+                    ("#27AE60" if rx_active else mode_color,rx_text),
+                    ("#E53935" if tx_active else "#7F8C8D",tx_text),
+                    ("#2E9D57" if voip_ok else "#7F8C8D",voip_short),
+                    (mode_color,hw_label),
+                    (guard_color,guard),
+                )
+
+            detail="&nbsp;&nbsp;".join(
+                f"<span style='color:{color}'>●</span> {html.escape(str(label))}"
+                for color,label in chunks
+            )
+            self.live_status_bar.setText(f"<b>{html.escape(mode_name)}</b>&nbsp;&nbsp;{detail}")
 
     @staticmethod
     def _wizard_copy_combo(src, dst):
@@ -1074,7 +1700,7 @@ class MainWindow(QMainWindow):
     def _run_voip_parrot_setup_assistant(self):
         wiz=self._new_setup_wizard("FunkGateway – VoIP-Papagei-Einrichtung")
         p=QWizardPage(); p.setTitle("Willkommen")
-        l=QVBoxLayout(p); n=QLabel("Dieser Assistent richtet FunkGateway als plattformunabhängigen VoIP-Papagei ein. Im VoIP-Client wird FunkGateway_VoIP_Parrot_RX als Wiedergabe und FunkGateway_VoIP_Parrot_Input als Mikrofon verwendet.")
+        l=QVBoxLayout(p); n=QLabel("Dieser Assistent richtet FunkGateway als plattformunabhängigen VoIP-Papagei ein. Im VoIP-Client bleiben Wiedergabe und Mikrofon auf Standard/Default. FunkGateway routet die laufenden Streams automatisch auf die benötigten virtuellen Geräte und beim Moduswechsel wieder zurück.")
         n.setWordWrap(True); l.addWidget(n); l.addStretch(1); wiz.addPage(p)
         p=QWizardPage(); p.setTitle("Papagei")
         f=QFormLayout(p)
@@ -1447,10 +2073,12 @@ class MainWindow(QMainWindow):
         )
         self.rx_hw_port=QComboBox()
         self.rx_hw_port.setEnabled(False)
+        self.rx_hw_port.currentIndexChanged.connect(self._rx_hw_port_selection_changed)
         self.rx_hw_port_enable.toggled.connect(self._rx_hw_port_enabled_changed)
         self.rx_hw_port_restore=QCheckBox("Gewählten Hardware-Port beim Start und nach Audio-Neusuche wiederherstellen")
         self.rx_hw_port_restore.setChecked(True)
         self.rx_hw_port_restore.setEnabled(False)
+        self.rx_hw_port_restore.toggled.connect(self._rx_hw_port_option_changed)
         self.rx_hw_port_watchdog=QCheckBox("Hardware-Port im Betrieb überwachen und automatisch zurückstellen")
         self.rx_hw_port_watchdog.setChecked(True)
         self.rx_hw_port_watchdog.setToolTip(
@@ -1458,6 +2086,7 @@ class MainWindow(QMainWindow):
             "und stellt bei einem unerwünschten Wechsel automatisch den gewählten Port wieder her."
         )
         self.rx_hw_port_watchdog.setEnabled(False)
+        self.rx_hw_port_watchdog.toggled.connect(self._rx_hw_port_option_changed)
         self.rx_hw_port_apply=QPushButton("Hardware-Port jetzt anwenden")
         self.rx_hw_port_apply.setEnabled(False)
         self.rx_hw_port_apply.clicked.connect(lambda: self._apply_rx_hardware_port(log_result=True))
@@ -1516,8 +2145,9 @@ class MainWindow(QMainWindow):
         f.addRow("RX-Verstärkung Richtung Computer:",self.rx_gain)
         f.addRow("",self.rx_db_label)
         rx_note=QLabel(
-            "FunkGateway erzeugt automatisch die normale Aufnahmequelle FunkGateway_RX_Input. "
-            "Diese Quelle in TeamSpeak/Mumble/FRN als Mikrofon auswählen."
+            "FunkGateway erzeugt automatisch die Aufnahmequelle FunkGateway_RX_Input. "
+            "In TeamSpeak, Mumble, TeamTalk, Zello usw. Aufnahme und Wiedergabe auf Standard/Default lassen; "
+            "FunkGateway routet unterstützte VoIP-Clients je nach Betriebsart automatisch."
         )
         rx_note.setWordWrap(True)
         f.addRow("",rx_note)
@@ -1701,7 +2331,7 @@ class MainWindow(QMainWindow):
         self.pc_hw_port_status.setWordWrap(True)
         self.pc_hw_port_enable.toggled.connect(self._pc_hw_port_enabled_changed)
         self.pc_hw_port_apply.clicked.connect(lambda:self._apply_pc_hardware_port(log_result=True))
-        self.pc_parrot_input.currentIndexChanged.connect(self._refresh_pc_hardware_ports)
+        self.pc_parrot_input.currentIndexChanged.connect(self._pc_audio_input_changed)
 
         self.pc_parrot_start.clicked.connect(self.start_pc_parrot)
         self.pc_parrot_stop.clicked.connect(self.stop_pc_parrot)
@@ -1769,7 +2399,7 @@ class MainWindow(QMainWindow):
         self.voip_parrot_delay_ms=QSpinBox(); self.voip_parrot_delay_ms.setRange(0,10000); self.voip_parrot_delay_ms.setValue(750); self.voip_parrot_delay_ms.setSuffix(" ms")
         self.voip_parrot_max_seconds=QSpinBox(); self.voip_parrot_max_seconds.setRange(1,300); self.voip_parrot_max_seconds.setValue(30); self.voip_parrot_max_seconds.setSuffix(" s")
         self.voip_parrot_guard_ms=QSpinBox(); self.voip_parrot_guard_ms.setRange(0,10000); self.voip_parrot_guard_ms.setValue(1200); self.voip_parrot_guard_ms.setSuffix(" ms")
-        self.voip_parrot_auto_route=QCheckBox("VoIP-Client-Audio beim Start automatisch auf Papagei-RX umleiten")
+        self.voip_parrot_auto_route=QCheckBox("VoIP-Client automatisch auf Papagei-RX/TX routen (empfohlen)")
         self.voip_parrot_auto_route.setChecked(True)
         self.voip_parrot_commander=QCheckBox("Channel Commander während Papagei-Rückgabe setzen")
         self.voip_parrot_commander.setChecked(False)
@@ -1809,8 +2439,10 @@ class MainWindow(QMainWindow):
         f.addRow("Status:",self.voip_parrot_status)
 
         note=QLabel(
-            "<b>Einrichtung im VoIP-Programm:</b> Als Wiedergabegerät <b>FunkGateway_VoIP_Parrot_RX</b> "
-            "und als Mikrofon/Aufnahmegerät <b>FunkGateway_VoIP_Parrot_Input</b> auswählen. FunkGateway lauscht "
+            "<b>Empfohlene Einrichtung im VoIP-Programm:</b> Wiedergabe und Mikrofon auf <b>Standard/Default</b> lassen. "
+            "FunkGateway routet unterstützte Clients je nach Betriebsart automatisch. Im VoIP-Papagei gehen RX und TX "
+            "temporär über <b>FunkGateway_VoIP_Parrot_RX</b> und <b>FunkGateway_VoIP_Parrot_Input</b>; beim Wechsel auf "
+            "PC-User oder Funk-Gateway werden die laufenden Streams automatisch auf deren Sollgeräte umgelegt. FunkGateway lauscht "
             "standardmäßig fest auf dem Monitor des RX-Geräts. Nur mit „Expertenquelle verwenden“ kann für Sonderfälle eine andere Quelle gewählt werden. "
             "Der Vorlaufpuffer hängt Audio von unmittelbar vor der Spracherkennung an den Anfang "
             "des Durchgangs. Während der Rückgabe wird nicht neu aufgenommen; zusätzlich verhindert die "
@@ -1929,6 +2561,7 @@ class MainWindow(QMainWindow):
             "max_seconds":int(self.voip_parrot_max_seconds.value()),
             "guard_ms":int(self.voip_parrot_guard_ms.value()),
             "commander":bool(self.voip_parrot_commander.isChecked()),
+            "auto_route":bool(self.voip_parrot_auto_route.isChecked()),
         }
 
     def start_voip_parrot(self):
@@ -1953,7 +2586,8 @@ class MainWindow(QMainWindow):
         self.voip_parrot_status_text="Lauscht auf VoIP-Audio …"
         self.voip_parrot_start_btn.setEnabled(False)
         self.voip_parrot_stop_btn.setEnabled(True)
-        self._voip_saved_routes={}
+        self._voip_saved_sink_routes={}
+        self._voip_saved_source_routes={}
         if self.voip_parrot_auto_route.isChecked():
             self._route_voip_clients_to_parrot_rx()
             self.voip_parrot_route_timer=QTimer(self)
@@ -1990,6 +2624,11 @@ class MainWindow(QMainWindow):
             try: self.voip_parrot_route_timer.stop()
             except Exception: pass
         self._restore_voip_client_routes()
+        # A VoIP client can recreate its Pulse/PipeWire streams when its device
+        # changes. Re-check after the event loop had a chance to publish those
+        # streams, so PC-User/Gateway always wins over an old Papagei route.
+        QTimer.singleShot(250,lambda:self._route_voip_clients_for_mode(self._mode(),log_changes=False))
+        QTimer.singleShot(1000,lambda:self._route_voip_clients_for_mode(self._mode(),log_changes=False))
         self._set_parrot_channel_commander(False,"VoIP-Papagei")
         self._cleanup_voip_parrot_temp()
         self.voip_parrot_status_text="Gestoppt" if was_running else "Bereit"
@@ -2042,6 +2681,7 @@ class MainWindow(QMainWindow):
                     break
                 now=time.monotonic()
                 db=self._voip_dbfs(data)
+                self.voip_parrot_dbfs=db
                 loud=db>=threshold
 
                 if now < guard_until or self.voip_parrot_phase in ("delay","playback"):
@@ -2141,40 +2781,251 @@ class MainWindow(QMainWindow):
             self._cleanup_voip_parrot_temp()
             self.voip_parrot_running=False
             self.voip_parrot_phase="idle"
+            self.voip_parrot_dbfs=-120.0
 
+
+    @staticmethod
+    def _voip_stream_text(stream):
+        return " ".join(str(stream.get(k,"") or "") for k in (
+            "app","binary","media","role","node","target"
+        )).lower()
 
     def _is_supported_voip_stream(self, stream):
-        text=" ".join(str(stream.get(k,"") or "") for k in ("app","binary","media")).lower()
-        return any(x in text for x in ("teamspeak","ts3client","mumble","teamtalk","tt5","discord","zello"))
+        """Return True for known voice clients or generic phone-role streams.
+
+        Routing is intentionally based on PipeWire/Pulse stream properties, not
+        numeric IDs.  This covers native Linux clients and Wine/compatibility
+        clients as long as they expose a normal Pulse/PipeWire stream.
+        """
+        text=self._voip_stream_text(stream)
+        known=(
+            "teamspeak","ts3client","mumble","teamtalk","tt5","zello",
+            "discord","vesktop","webcord","revolt","linphone","jami",
+            "skype","zoom","element","signal-desktop","telegram",
+            "frn","freeradionetwork"
+        )
+        if any(x in text for x in known):
+            return True
+        role=str(stream.get("role","") or "").lower()
+        # Many voice clients expose media.role=phone even when their process
+        # name is wrapped by Wine/Electron.  Exclude FunkGateway's own helper
+        # streams so they can never route back into themselves.
+        own=("funkgateway","pacat","parec","paplay","easyeffects")
+        return role in ("phone","communication","communications") and not any(x in text for x in own)
+
+    def _read_source_outputs(self):
+        """Return active Pulse/PipeWire capture streams with routing metadata."""
+        try:
+            out=subprocess.check_output(["pactl","list","source-outputs"],text=True,stderr=subprocess.DEVNULL)
+        except Exception:
+            return []
+        streams=[]; current=None
+        for raw in out.splitlines():
+            line=raw.strip()
+            if line.startswith("Source Output #") or line.startswith("Quell-Ausgabe #"):
+                if current: streams.append(current)
+                current={"id":line.split("#",1)[1].strip(),"source":"","app":"","binary":"","media":"","role":"","node":"","target":"","mute":False}
+            elif current is not None:
+                low=line.lower()
+                if line.startswith("Source:") or line.startswith("Quelle:"):
+                    current["source"]=line.split(":",1)[1].strip()
+                elif 'application.name = ' in line:
+                    current["app"]=line.split("=",1)[1].strip().strip('"')
+                elif 'application.process.binary = ' in line:
+                    current["binary"]=line.split("=",1)[1].strip().strip('"')
+                elif 'media.name = ' in line:
+                    current["media"]=line.split("=",1)[1].strip().strip('"')
+                elif 'media.role = ' in line:
+                    current["role"]=line.split("=",1)[1].strip().strip('"')
+                elif 'node.name = ' in line:
+                    current["node"]=line.split("=",1)[1].strip().strip('"')
+                elif 'target.object = ' in line:
+                    current["target"]=line.split("=",1)[1].strip().strip('"')
+                elif line.startswith("Mute:") or line.startswith("Stumm:"):
+                    current["mute"]=line.split(":",1)[1].strip().lower() in ("yes","ja")
+        if current: streams.append(current)
+        return streams
+
+    def _sink_name_to_id(self, name):
+        if not name: return ""
+        for sink_name,_desc in self._pactl_list_short("sink"):
+            if sink_name==name:
+                try:
+                    out=subprocess.check_output(["pactl","list","short","sinks"],text=True,stderr=subprocess.DEVNULL)
+                    for line in out.splitlines():
+                        parts=line.split()
+                        if len(parts)>=2 and parts[1]==name: return parts[0]
+                except Exception: pass
+        return ""
+
+    def _source_name_to_id(self, name):
+        if not name: return ""
+        try:
+            out=subprocess.check_output(["pactl","list","short","sources"],text=True,stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                parts=line.split()
+                if len(parts)>=2 and parts[1]==name: return parts[0]
+        except Exception: pass
+        return ""
+
+
+    def _pactl_default_device(self, kind):
+        """Return the current Pulse/PipeWire default sink or source name."""
+        if shutil.which("pactl") is None:
+            return ""
+        cmd=["pactl",f"get-default-{kind}"]
+        try:
+            out=subprocess.check_output(cmd,text=True,stderr=subprocess.DEVNULL,timeout=1.5).strip()
+            if out:
+                return out
+        except Exception:
+            pass
+        try:
+            info=subprocess.check_output(["pactl","info"],text=True,stderr=subprocess.DEVNULL,timeout=1.5)
+            labels={"sink":("Default Sink:","Standard-Ziel:"),"source":("Default Source:","Standard-Quelle:")}
+            for line in info.splitlines():
+                for label in labels.get(kind,()):
+                    if line.strip().startswith(label):
+                        return line.split(":",1)[1].strip()
+        except Exception:
+            pass
+        return ""
+
+    def _mode_voip_targets(self, mode=None):
+        """Return desired playback/capture targets for supported VoIP apps.
+
+        PC-User and Funk-Papagei use the desktop defaults. In Funk-Papagei
+        supported VoIP playback is additionally hard-muted by the RF isolation
+        guard, so platform audio cannot be mixed into a Papagei/Beacon/ACK RF
+        transmission. Funk-Gateway uses the radio bridge devices. VoIP-Papagei
+        uses its isolated echo devices.
+        """
+        mode=mode or self._mode()
+        if mode=="gateway":
+            return "funkgateway_tx", "funkgateway_rx_source"
+        if mode=="voip_parrot":
+            return "funkgateway_voip_parrot_rx", "funkgateway_voip_parrot_source"
+        return self._pactl_default_device("sink"), self._pactl_default_device("source")
+
+    def _route_voip_clients_for_mode(self, mode=None, log_changes=True):
+        """Keep supported VoIP clients on the devices required by the mode.
+
+        Routing is property-based and therefore independent of numeric
+        PipeWire/Pulse IDs. Missing virtual devices are simply skipped until
+        they exist; the next watchdog tick or mode/start action retries them.
+        """
+        if shutil.which("pactl") is None:
+            return 0
+        mode=mode or self._mode()
+        target_sink,target_source=self._mode_voip_targets(mode)
+        sink_id=self._sink_name_to_id(target_sink) if target_sink else ""
+        source_id=self._source_name_to_id(target_source) if target_source else ""
+        changed=0
+
+        if sink_id:
+            for stream in self._read_sink_inputs():
+                if not self._is_supported_voip_stream(stream):
+                    continue
+                if str(stream.get("sink",""))==str(sink_id):
+                    continue
+                sid=str(stream.get("id","") or "")
+                if not sid:
+                    continue
+                try:
+                    subprocess.run(["pactl","move-sink-input",sid,target_sink],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.5)
+                    changed+=1
+                    if log_changes:
+                        name=stream.get("app") or stream.get("binary") or "VoIP-Client"
+                        self.log(f"Modus-Routing RX: {name} (Stream {sid}) -> {target_sink}")
+                except Exception as e:
+                    if log_changes:
+                        self.log(f"Modus-Routing RX fehlgeschlagen (Stream {sid}): {e}")
+
+        if source_id:
+            for stream in self._read_source_outputs():
+                if not self._is_supported_voip_stream(stream):
+                    continue
+                if str(stream.get("source",""))==str(source_id):
+                    continue
+                sid=str(stream.get("id","") or "")
+                if not sid:
+                    continue
+                try:
+                    subprocess.run(["pactl","move-source-output",sid,target_source],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.5)
+                    changed+=1
+                    if log_changes:
+                        name=stream.get("app") or stream.get("binary") or "VoIP-Client"
+                        self.log(f"Modus-Routing TX: {name} (Stream {sid}) -> {target_source}")
+                except Exception as e:
+                    if log_changes:
+                        self.log(f"Modus-Routing TX fehlgeschlagen (Stream {sid}): {e}")
+        return changed
 
     def _route_voip_clients_to_parrot_rx(self):
-        if not self.voip_parrot_auto_route.isChecked() or shutil.which("pactl") is None:
+        """Route supported clients both directions while VoIP-Papagei is active.
+
+        Playback streams are moved to FunkGateway_VoIP_Parrot_RX and capture
+        streams to FunkGateway_VoIP_Parrot_Input.  Test 16 deliberately does
+        *not* restore historical numeric stream IDs on stop: the central mode
+        router is authoritative and always routes the still-live VoIP streams
+        to the destination required by the newly active operating mode.  This
+        prevents a stale Papagei route from winning after a mode change.
+        """
+        if (not self._is_voip_parrot_mode() or not self.voip_parrot_auto_route.isChecked()
+                or shutil.which("pactl") is None):
             return
-        target_name="funkgateway_voip_parrot_rx"
-        target_id=""
-        for name,_ in self._pactl_list_short("sink"):
-            if name==target_name:
-                target_id=name; break
-        if not target_id: return
-        if not hasattr(self,"_voip_saved_routes"): self._voip_saved_routes={}
+        target_sink="funkgateway_voip_parrot_rx"
+        target_source="funkgateway_voip_parrot_source"
+        target_sink_id=self._sink_name_to_id(target_sink)
+        target_source_id=self._source_name_to_id(target_source)
+        if not target_sink_id or not target_source_id:
+            return
+        # RX: VoIP client playback -> dedicated parrot RX sink.
         for stream in self._read_sink_inputs():
             sid=str(stream.get("id","") or "")
-            if not sid or not self._is_supported_voip_stream(stream): continue
-            if stream.get("sink") in (target_name,): continue
-            if sid not in self._voip_saved_routes:
-                self._voip_saved_routes[sid]=stream.get("sink")
+            if not sid or not self._is_supported_voip_stream(stream):
+                continue
+            current=str(stream.get("sink","") or "")
+            if current==str(target_sink_id):
+                continue
             try:
-                subprocess.run(["pactl","move-sink-input",sid,target_name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.0)
-            except Exception: pass
+                subprocess.run(["pactl","move-sink-input",sid,target_sink],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.5)
+                name=stream.get("app") or stream.get("binary") or "VoIP-Client"
+                self.log(f"VoIP-Papagei Routing RX: {name} (Stream {sid}) -> {target_sink}")
+            except Exception as e:
+                self.log(f"VoIP-Papagei Routing RX fehlgeschlagen (Stream {sid}): {e}")
+
+        # TX: dedicated parrot virtual microphone -> VoIP client capture.
+        for stream in self._read_source_outputs():
+            sid=str(stream.get("id","") or "")
+            if not sid or not self._is_supported_voip_stream(stream):
+                continue
+            current=str(stream.get("source","") or "")
+            if current==str(target_source_id):
+                continue
+            try:
+                subprocess.run(["pactl","move-source-output",sid,target_source],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.5)
+                name=stream.get("app") or stream.get("binary") or "VoIP-Client"
+                self.log(f"VoIP-Papagei Routing TX: {name} (Stream {sid}) -> {target_source}")
+            except Exception as e:
+                self.log(f"VoIP-Papagei Routing TX fehlgeschlagen (Stream {sid}): {e}")
 
     def _restore_voip_client_routes(self):
-        saved=getattr(self,"_voip_saved_routes",{}) or {}
-        for sid,sink in list(saved.items()):
-            if not sink: continue
-            try:
-                subprocess.run(["pactl","move-sink-input",str(sid),str(sink)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=1.0)
+        """Compatibility hook: restore by *mode*, never by stale stream IDs.
+
+        Older test builds remembered the numeric sink/source IDs seen when the
+        VoIP-Papagei started.  That is fragile when TeamSpeak/Mumble reconnect
+        or the operating mode changes.  Test 16 makes the active operating mode
+        the single source of truth and resolves current default/virtual device
+        names afresh.
+        """
+        self._voip_saved_sink_routes={}
+        self._voip_saved_source_routes={}
+        try:
+            self._route_voip_clients_for_mode(self._mode(), log_changes=False)
+        except Exception as e:
+            try: self.log(f"Modus-Routing Wiederherstellung fehlgeschlagen: {e}")
             except Exception: pass
-        self._voip_saved_routes={}
 
     def _set_parrot_channel_commander(self, active, source="Papagei"):
         """Thread-safe request to toggle TeamSpeak Channel Commander for papagei playback."""
@@ -2341,6 +3192,22 @@ class MainWindow(QMainWindow):
 
     def _operating_mode_changed(self, *_args):
         mode=self._mode()
+        # Remember whether this is a live Funk-Papagei -> Gateway transition.
+        # The checkbox still contains the previous mode at this point because
+        # it is synchronised immediately below.
+        was_radio_parrot=bool(
+            hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked()
+            and mode!="radio_parrot"
+        )
+        radio_stack_was_running=bool(self.bridge or self.rx_detector)
+        # Betriebsart ist maßgeblich: Funk-Papagei-Haken folgt ihr immer.
+        if hasattr(self,"parrot_enabled"):
+            wanted=(mode=="radio_parrot")
+            if self.parrot_enabled.isChecked()!=wanted:
+                self.parrot_enabled.blockSignals(True)
+                self.parrot_enabled.setChecked(wanted)
+                self.parrot_enabled.blockSignals(False)
+                self._refresh_rx_forward_mute()
         if mode!="radio_parrot":
             self.parrot_pending_beacon=False
             self.parrot_beacon_free_since=None
@@ -2351,6 +3218,34 @@ class MainWindow(QMainWindow):
                 except Exception: pass
             self.parrot_beacon_proc=None
             self.parrot_beacon_in_progress=False
+        else:
+            # Test 17: operating_mode is authoritative even though the checkbox
+            # was synchronized with blocked Qt signals above.  Arm the Papagei
+            # runtime explicitly instead of relying on a later timer tick.
+            self._set_tx_forward_muted(False)
+            self._ensure_parrot_capture()
+            self._sync_parrot_voip_playback_mute()
+
+            # When switching from Funk-Gateway to Funk-Papagei an already
+            # running RxActivityDetector may still be in its old 'active'
+            # state.  In that case no new activity(True) edge would be emitted
+            # for the Papagei. Restart the same detector object; all Qt signal
+            # connections and configured thresholds stay intact.
+            if self.rx_detector is not None:
+                try:
+                    if (hasattr(self,"rx_hw_port_enable") and self.rx_hw_port_enable.isChecked()
+                            and hasattr(self,"rx_hw_port_restore") and self.rx_hw_port_restore.isChecked()):
+                        self._apply_rx_hardware_port(log_result=False)
+                    self._rx_rearm_in_progress=True
+                    self.rx_detector.stop()
+                    self.rx_was_active=False
+                    self.rx_active_since=None
+                    self.rx_detector.start()
+                    QTimer.singleShot(500,lambda:setattr(self,"_rx_rearm_in_progress",False))
+                    self._refresh_rx_forward_mute()
+                    self.log("Papagei: RX-Erkennung beim Moduswechsel neu bewaffnet.")
+                except Exception as e:
+                    self.log(f"Papagei: RX-Erkennung konnte beim Moduswechsel nicht neu bewaffnet werden: {e}")
         if mode!="voip_parrot" and getattr(self,"voip_parrot_running",False):
             self.stop_voip_parrot()
         if mode in ("pc","voip_parrot"):
@@ -2359,10 +3254,32 @@ class MainWindow(QMainWindow):
                 self.stop_gateway()
             # Defensive Trennung: auch verwaiste/alte PTT-Objekte sicher schließen.
             self._shutdown_ptt()
-        if mode=="radio_parrot" and hasattr(self,"parrot_enabled"):
-            self.parrot_enabled.setChecked(True)
+        # Route live VoIP clients immediately for the newly selected mode.
+        # A zero-delay retry catches virtual devices that are created by the
+        # mode/start action in the same event-loop turn.
+        self._route_voip_clients_for_mode(mode)
+        QTimer.singleShot(250,lambda m=mode:self._route_voip_clients_for_mode(m,log_changes=False))
+        # Test 18: a running Funk-Papagei and Funk-Gateway use different audio
+        # isolation states.  Rebuild the radio stack after a direct live switch
+        # so VoIP -> RF cannot remain keyed but silent.  The helper waits until
+        # any protected internal RF transmission has ended.
+        if mode=="gateway" and was_radio_parrot and radio_stack_was_running:
+            # DTMF *90# deliberately defers the expensive bridge rebuild until
+            # its execution announcement has fully finished.  A manual UI
+            # switch still rebuilds immediately.
+            if not getattr(self,"dtmf_defer_gateway_reinit",False):
+                QTimer.singleShot(0,self._restart_gateway_stack_after_parrot)
         self._apply_operating_mode_ui()
         self._apply_simple_widget_visibility()
+        if mode=="voip_parrot" and hasattr(self,"voip_parrot_auto_route"):
+            # 0.6.0: VoIP-Papagei is designed as a self-contained mode.  Enable
+            # routing on entry so legacy configs with auto-routing disabled do
+            # not silently leave TeamSpeak/Mumble/TeamTalk/Zello on old devices.
+            if not self.voip_parrot_auto_route.isChecked():
+                self.voip_parrot_auto_route.blockSignals(True)
+                self.voip_parrot_auto_route.setChecked(True)
+                self.voip_parrot_auto_route.blockSignals(False)
+                self.log("VoIP-Papagei: Auto-Routing für RX und TX aktiviert.")
         if mode=="voip_parrot" and hasattr(self,"voip_parrot_enabled") and self.voip_parrot_enabled.isChecked() and not self.voip_parrot_running:
             QTimer.singleShot(0,self.start_voip_parrot)
         try: self.save_cfg()
@@ -2491,29 +3408,66 @@ class MainWindow(QMainWindow):
         self.status_ptt_caption.setVisible(radio)
         self.status_ptt.setVisible(radio)
         if mode=="pc":
-            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>PC-User / TeamSpeak</p>")
+            self.start_title.setText(f"<div style='font-size:24px;font-weight:700'>FunkGateway {VERSION}</div><div>PC-User / TeamSpeak</div>")
             self.start_mode_note.setText("Normaler PC-Audiobetrieb. Funk-PTT, COS und Funk-RX sind in diesem Modus vollständig deaktiviert.")
-            self.gateway_state_big.setText("PC-USER AKTIV")
+            self.gateway_state_big.setText("PC-USER\nAKTIV")
             self.start_controls_note.setText("Audioquelle, Mikrofon-Hardware-Port und TeamSpeak werden im Reiter PC / TeamSpeak eingerichtet.")
             self.meter.setFormat("PC-Audio %p %")
         elif mode=="voip_parrot":
-            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>VoIP-Papagei</p>")
+            self.start_title.setText(f"<div style='font-size:24px;font-weight:700'>FunkGateway {VERSION}</div><div>VoIP-Papagei</div>")
             self.start_mode_note.setText("VoIP-Echo-Betrieb mit getrenntem RX- und TX-Pfad. Funkhardware und Funk-PTT bleiben deaktiviert.")
-            self.gateway_state_big.setText("VOIP-PAPAGEI" + (" AKTIV" if getattr(self,"voip_parrot_running",False) else " BEREIT"))
+            self.gateway_state_big.setText("VOIP-PAPAGEI\n" + ("AKTIV" if getattr(self,"voip_parrot_running",False) else "BEREIT"))
             self.start_controls_note.setText("Start/Stop und Papagei-Parameter befinden sich im Reiter VoIP-Papagei.")
             self.meter.setFormat("VoIP-Audio %p %")
         elif mode=="radio_parrot":
-            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>Funk-Papagei</p>")
+            self.start_title.setText(f"<div style='font-size:24px;font-weight:700'>FunkGateway {VERSION}</div><div>Funk-Papagei</div>")
             self.start_mode_note.setText("Funkdurchgänge werden aufgenommen und anschließend wieder über Funk ausgesendet.")
-            self.gateway_state_big.setText("FUNK-PAPAGEI BEREIT")
+            self.gateway_state_big.setText("FUNK-PAPAGEI\nBEREIT")
             self.start_controls_note.setText("Start, Stop und NOT-AUS bleiben oben erreichbar; Rufzeichen-Sofortsendung ist in diesem Modus ausgeblendet.")
             self.meter.setFormat("Funk-Audio %p %")
         else:
-            self.start_title.setText(f"<h1>FunkGateway {VERSION}</h1><p>Funk-Gateway</p>")
+            self.start_title.setText(f"<div style='font-size:24px;font-weight:700'>FunkGateway {VERSION}</div><div>Funk-Gateway</div>")
             self.start_mode_note.setText("Vollständiger Gateway-Betrieb zwischen Funk und den aktivierten VoIP-Integrationen.")
             self._set_gateway_protection_display()
             self.start_controls_note.setText("Start, Stop, NOT-AUS und Rufzeichen bleiben oben unabhängig vom gewählten Reiter erreichbar.")
             self.meter.setFormat("Audio %p %")
+
+    def _restart_gateway_stack_after_parrot(self):
+        """Rebuild the live RF bridge after Funk-Papagei -> Funk-Gateway."""
+        if self._mode()!="gateway":
+            return
+        busy=bool(
+            self.tx
+            or self.outgoing_audio_active
+            or getattr(self,"rf_exclusive_active",False)
+            or getattr(self,"protection_announcement_busy",False)
+            or getattr(self,"parrot_playing",False)
+            or getattr(self,"parrot_beacon_in_progress",False)
+        )
+        if busy:
+            QTimer.singleShot(150,self._restart_gateway_stack_after_parrot)
+            return
+        if not (self.bridge or self.rx_detector):
+            self._set_tx_forward_muted(False)
+            self._route_voip_clients_for_mode("gateway",log_changes=False)
+            return
+        self.log("Funk-Papagei → Funk-Gateway: Audio-Bridge wird sauber neu initialisiert.")
+        try:
+            # stop_gateway() intentionally tears down the running RX detector.
+            # Its parec worker can report EPIPE asynchronously for a brief
+            # moment.  Mark this restart window as expected so it is not logged
+            # as a real RX fault.
+            self._rx_rearm_in_progress=True
+            self.stop_gateway(preserve_dtmf=True)
+            self.start_gateway()
+            QTimer.singleShot(1200,lambda:setattr(self,"_rx_rearm_in_progress",False))
+            self._set_tx_forward_muted(False)
+            self._sync_parrot_voip_playback_mute()
+            self._route_voip_clients_for_mode("gateway",log_changes=False)
+            QTimer.singleShot(250,lambda:self._route_voip_clients_for_mode("gateway",log_changes=False))
+            self.log("Funk-Papagei → Funk-Gateway: VoIP→Funk-Audioweg wieder aktiv.")
+        except Exception as e:
+            self.log(f"Funk-Papagei → Funk-Gateway: Neuinitialisierung fehlgeschlagen: {e}")
 
     def _apply_operating_mode_ui(self):
         mode=self._mode()
@@ -2525,11 +3479,11 @@ class MainWindow(QMainWindow):
                 self._apply_pc_hardware_port(log_result=False)
         advanced=bool(hasattr(self,"advanced_ui") and self.advanced_ui.isChecked())
         mode_tabs={
-            "pc":{"Start","Einrichtung","PC / TeamSpeak","Moderation","Integrationen","Updates","Protokoll","Hilfe"},
-            "voip_parrot":{"Start","Einrichtung","VoIP-Papagei","Integrationen","Updates","Protokoll","Hilfe"},
-            "radio_parrot":{"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Papagei","Integrationen","Updates","Protokoll","Hilfe"},
+            "pc":{"Start","Einrichtung","PC / TeamSpeak","Moderation","Integrationen","Darstellung","Updates","Protokoll","Hilfe"},
+            "voip_parrot":{"Start","Einrichtung","VoIP-Papagei","Integrationen","Darstellung","Updates","Protokoll","Hilfe"},
+            "radio_parrot":{"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Papagei","Integrationen","Darstellung","Updates","Protokoll","Hilfe"},
         }
-        simple_gateway={"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Rufzeichen","Papagei","DTMF","Integrationen","Updates","Protokoll","Hilfe"}
+        simple_gateway={"Start","Einrichtung","Audio-Automatik","PTT / Modem","RX / Rogerbeep","Rufzeichen","Papagei","DTMF","Integrationen","Darstellung","Updates","Protokoll","Hilfe"}
         for i in range(self.tabs.count()):
             title=self.tabs.tabText(i)
             if mode in mode_tabs:
@@ -2566,6 +3520,11 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(250,self.refresh_pc_moderation)
         if mode!="pc" and hasattr(self,"pc_ts_commander_manual"):
             self.ts_commander_wanted=False; self.ts_commander_needs_sync=True
+        self._apply_mode_visual_identity()
+        if mode=="pc":
+            QTimer.singleShot(100,self._start_pc_mic_monitor)
+        else:
+            self._stop_pc_mic_monitor()
 
     def _pc_commander_toggled(self, checked):
         if not self._is_pc_mode():
@@ -2734,6 +3693,84 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return result
+
+    def _stop_pc_mic_monitor(self):
+        """Stop the lightweight PC microphone activity monitor."""
+        self.pc_mic_monitor_stop.set()
+        proc=getattr(self,"pc_mic_monitor_proc",None)
+        if proc is not None and proc.poll() is None:
+            try: proc.terminate()
+            except Exception: pass
+        self.pc_mic_monitor_proc=None
+        self.pc_mic_monitor_source=None
+        self.pc_mic_active=False
+        self.pc_mic_dbfs=-120.0
+
+    def _start_pc_mic_monitor(self):
+        """Monitor the selected PC microphone without taking exclusive control.
+
+        PulseAudio/PipeWire allows parec and TeamSpeak to read the same source.
+        The monitor is display-only: it never changes routing or volume.
+        """
+        if not self._is_pc_mode() or not hasattr(self,"pc_parrot_input"):
+            self._stop_pc_mic_monitor(); return
+        source=self.pc_parrot_input.currentData()
+        if not source or shutil.which("parec") is None:
+            self._stop_pc_mic_monitor(); return
+        if (getattr(self,"pc_mic_monitor_source",None)==source
+                and getattr(self,"pc_mic_monitor_proc",None) is not None
+                and self.pc_mic_monitor_proc.poll() is None):
+            return
+        self._stop_pc_mic_monitor()
+        self.pc_mic_monitor_stop=threading.Event()
+        try:
+            proc=subprocess.Popen([
+                "parec",f"--device={source}","--raw","--format=s16le",
+                "--rate=16000","--channels=1"
+            ],stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0)
+        except Exception as e:
+            self.log(f"PC-Mikrofon-Livestatus konnte nicht gestartet werden: {e}")
+            return
+        self.pc_mic_monitor_proc=proc
+        self.pc_mic_monitor_source=source
+        stop_event=self.pc_mic_monitor_stop
+
+        def worker():
+            import array as _array
+            while not stop_event.is_set() and proc.poll() is None:
+                try:
+                    data=proc.stdout.read(3200) if proc.stdout else b""
+                except Exception:
+                    break
+                if not data:
+                    break
+                samples=_array.array("h")
+                try: samples.frombytes(data)
+                except Exception: continue
+                if not samples:
+                    continue
+                rms=(sum(int(x)*int(x) for x in samples)/len(samples))**0.5
+                db=-120.0 if rms <= 0 else 20.0*math.log10(rms/32768.0)
+                self.pc_mic_dbfs=db
+                # Display threshold only. TeamSpeak self_talking is ORed in below.
+                self.pc_mic_active=db >= -32.0
+            if getattr(self,"pc_mic_monitor_proc",None) is proc:
+                self.pc_mic_monitor_proc=None
+                self.pc_mic_active=False
+                self.pc_mic_dbfs=-120.0
+        self.pc_mic_monitor_thread=threading.Thread(target=worker,daemon=True)
+        self.pc_mic_monitor_thread.start()
+
+    def _pc_audio_input_changed(self, *_args):
+        """Refresh PC input routing and restart the live meter for the new source."""
+        self._refresh_pc_hardware_ports()
+        if self._is_pc_mode():
+            self._stop_pc_mic_monitor()
+            QTimer.singleShot(80,self._start_pc_mic_monitor)
+        try:
+            self.save_cfg()
+        except Exception:
+            pass
 
     def refresh_pc_audio_devices(self):
         """Populate PC-Papagei devices from PulseAudio/PipeWire, not raw ALSA.
@@ -3116,6 +4153,16 @@ class MainWindow(QMainWindow):
         f.addRow(move_channel)
         f.addRow("",copy_status)
         f.addRow(QLabel("<b>TeamSpeak-Störungsraum</b>"))
+        ts_tx_note=QLabel(
+            "<b>TeamSpeak Audio:</b> Aufnahme/Wiedergabe können auf Standard/Default bleiben; "
+            "FunkGateway übernimmt das PipeWire/PulseAudio-Routing. "
+            "<b>Hinweis:</b> TS3-ClientQuery kann Mikrofon-Mute und Channel Commander steuern, "
+            "aber keinen echten Push-To-Talk-Tastendruck erzeugen. Eine automatische PTT-Betätigung "
+            "wird daher nicht vorgetäuscht."
+        )
+        ts_tx_note.setWordWrap(True)
+        f.addRow("",ts_tx_note)
+
         ts_room_note=QLabel(
             "Hier wird nur festgelegt, welcher TeamSpeak-Channel der Störungsraum ist "
             "und ob FunkGateway ihn bei Dauer-RX automatisch benutzt. WAV-Ansagen und "
@@ -3882,13 +4929,13 @@ class MainWindow(QMainWindow):
             field.setText(p); self.save_cfg()
 
     def _set_gateway_protection_display(self):
+        if not hasattr(self,"gateway_state_big"):
+            return
         if self.protection_muted:
             reason=self.protection_reason or "Schutz"
-            self.gateway_state_big.setText(f"GATEWAY GEMUTET – {reason}")
-            self.gateway_state_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 3px solid #9b1c1c; border-radius: 8px;")
+            self.gateway_state_big.setText(f"GATEWAY\nGEMUTET – {reason}")
         else:
-            self.gateway_state_big.setText("GATEWAY AKTIV")
-            self.gateway_state_big.setStyleSheet("font-size: 22px; font-weight: bold; padding: 8px; border: 2px solid #555; border-radius: 8px;")
+            self.gateway_state_big.setText("FUNK-GATEWAY\nAKTIV")
 
     def _refresh_rx_forward_mute(self):
         parrot_muted=bool(
@@ -3938,7 +4985,9 @@ class MainWindow(QMainWindow):
             self.protection_announcement_queue.append((str(p),str(label)))
             self.log(f"Schutzansage vorgemerkt: {label}")
             return
+        token=None
         try:
+            token=self._begin_rf_exclusive(f"Schutzansage: {label}")
             if not self.ptt: self.create_ptt()
             self.protection_announcement_busy=True
             self.active_tx_kind="protection"
@@ -3956,6 +5005,7 @@ class MainWindow(QMainWindow):
                 self.protection_announcement_proc=None
                 if not self.outgoing_audio_active or self.protection_muted:
                     self.set_ptt(False)
+                self._end_rf_exclusive(token)
                 self.log(f"Schutzansage beendet: {label}")
                 if self.protection_announcement_queue:
                     next_path,next_label=self.protection_announcement_queue.pop(0)
@@ -3967,14 +5017,75 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.protection_announcement_busy=False
             self.protection_announcement_proc=None
+            if token is not None:
+                self._end_rf_exclusive(token)
             self.log(f"Schutzansage fehlgeschlagen ({label}): {e}")
 
     def _activate_radio_parrot_from_dtmf(self):
         """DTMF Papagei EIN wechselt in die Betriebsart Funk-Papagei."""
+        # The command is decoded while its RF carrier is normally still up.
+        # Mark that carrier explicitly before the mode change restarts the RX
+        # detector.  Otherwise the expected stop/broken-pipe transition can
+        # swallow the final RX-false edge and the execution announcement waits
+        # forever on dtmf_control_rx_active.
+        self.dtmf_parrot_wait_rx_free=True
         idx=self.operating_mode.findData("radio_parrot")
         if idx>=0 and self.operating_mode.currentIndex()!=idx:
             self.operating_mode.setCurrentIndex(idx)
         self.parrot_enabled.setChecked(True)
+
+    def _activate_gateway_from_dtmf(self):
+        """DTMF Papagei AUS beendet den Funk-Papagei und kehrt zum Gateway zurück."""
+        # Never tear down Papagei in the middle of an internal RF transmission
+        # (replay, beacon or acknowledgement).  Queue the mode change until the
+        # protected transmission is completely finished.  This avoids the
+        # half-initialised Gateway state that produced keyed-but-silent RF.
+        token=getattr(self,"dtmf_gateway_transition_token",0)+1
+        self.dtmf_gateway_transition_token=token
+        self.log("DTMF: Wechsel zum Funk-Gateway vorgemerkt – warte auf freie interne Aussendung.")
+        QTimer.singleShot(0,lambda t=token:self._finish_gateway_transition_from_dtmf(t))
+
+    def _finish_gateway_transition_from_dtmf(self,token):
+        if token != getattr(self,"dtmf_gateway_transition_token",0):
+            return
+        busy=bool(
+            self.tx
+            or self.outgoing_audio_active
+            or getattr(self,"rf_exclusive_active",False)
+            or getattr(self,"protection_announcement_busy",False)
+            or getattr(self,"parrot_playing",False)
+            or getattr(self,"parrot_beacon_in_progress",False)
+            or getattr(self,"dtmf_session_active",False)
+            or getattr(self,"dtmf_control_rx_active",False)
+            or self.rx_active_since is not None
+        )
+        if busy:
+            QTimer.singleShot(150,lambda t=token:self._finish_gateway_transition_from_dtmf(t))
+            return
+        # IMPORTANT: switch the operating mode FIRST.  _operating_mode_changed()
+        # must still see parrot_enabled=True so it can recognise a live
+        # Funk-Papagei -> Funk-Gateway transition and rebuild the RF audio
+        # bridge exactly like a manual UI mode change.  Clearing the checkbox
+        # first hid that transition and left AudioBridge.output_muted=True,
+        # producing PTT with a silent carrier after *90#.
+        idx=self.operating_mode.findData("gateway")
+        if idx>=0 and self.operating_mode.currentIndex()!=idx:
+            # Do not rebuild twice: the DTMF execution announcement still needs
+            # exclusive RF ownership.  The final rebuild is performed only
+            # after that announcement has drained and RF exclusivity is gone.
+            self.dtmf_defer_gateway_reinit=True
+            self.operating_mode.setCurrentIndex(idx)
+        else:
+            # Defensive fallback if the UI already says Gateway: synchronise
+            # the flag and explicitly rebuild/unmute the bridge.
+            if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
+                self.parrot_enabled.blockSignals(True)
+                self.parrot_enabled.setChecked(False)
+                self.parrot_enabled.blockSignals(False)
+            self._sync_parrot_voip_playback_mute()
+            self._set_tx_forward_muted(False)
+            QTimer.singleShot(0,self._restart_gateway_stack_after_parrot)
+        self.log("DTMF: Funk-Papagei deaktiviert – Betriebsart Funk-Gateway aktiv.")
 
     @staticmethod
     def _clean_dtmf_code(value):
@@ -4406,7 +5517,7 @@ class MainWindow(QMainWindow):
     def _dtmf_fixed_actions(self):
         return [
             (self._clean_dtmf_code(self.dtmf_code_parrot_on.text()),"Papagei EIN",self._activate_radio_parrot_from_dtmf,"parrot"),
-            (self._clean_dtmf_code(self.dtmf_code_voip_on.text()),"VoIP-Betrieb",lambda:self.parrot_enabled.setChecked(False),"voip"),
+            (self._clean_dtmf_code(self.dtmf_code_voip_on.text()),"VoIP-Betrieb",self._activate_gateway_from_dtmf,"voip"),
             (self._clean_dtmf_code(self.dtmf_code_ts_mute.text()),"TeamSpeak MUTE",lambda:self._dtmf_ts_mute(True),"default"),
             (self._clean_dtmf_code(self.dtmf_code_ts_unmute.text()),"TeamSpeak UNMUTE",lambda:self._dtmf_ts_mute(False),"default"),
             (self._clean_dtmf_code(self.dtmf_code_ts_deaf.text()),"TeamSpeak DEAF",lambda:self._dtmf_ts_deaf(True),"default"),
@@ -4555,14 +5666,17 @@ class MainWindow(QMainWindow):
         if label in self.dtmf_ack_waiting_labels:
             self.dtmf_ack_waiting_labels.discard(label)
             self.log(f"DTMF-Vollzugsmeldung '{label}': Kanal frei – sende Bestätigung.")
+        protection_token=None
         try:
+            protection_token=self._begin_rf_exclusive(f"DTMF-Vollzugsmeldung: {label}")
             self.outgoing_audio_active=True
             if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
                 with self.parrot_capture_lock:
                     self.parrot_prebuffer.clear()
-                self.active_tx_kind="parrot"
-            else:
-                self.active_tx_kind="protection"
+            # DTMF acknowledgement is its own TX reason.  The return-guard
+            # selector maps it to the same checkbox that was used previously,
+            # so behavior stays unchanged while the log becomes accurate.
+            self.active_tx_kind="dtmf_ack"
             self.set_ptt(True)
             self.log(f"DTMF-Vollzugsmeldung: PTT EIN → {label}")
             lead=max(0,self.parrot_lead_ms.value() if hasattr(self,"parrot_lead_ms") else 500)
@@ -4582,7 +5696,20 @@ class MainWindow(QMainWindow):
                             self.parrot_prebuffer.clear()
                     if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
                         self.dtmf_mode_ack_pending=False
+                    if protection_token is not None:
+                        self._end_rf_exclusive(protection_token)
                     self.log(f"DTMF-Vollzugsmeldung beendet: {label}")
+                    # Test 19: the DTMF *90# mode change can rebuild the
+                    # Gateway stack before its execution announcement starts.
+                    # The announcement then temporarily takes exclusive RF
+                    # ownership and may leave the already-running VoIP->RF
+                    # bridge keyed but silent afterwards.  Rebuild once more
+                    # only after the VoIP-mode acknowledgement has completely
+                    # drained, PTT is off and RF exclusivity has been released.
+                    if kind == "voip" and self._mode() == "gateway":
+                        self.dtmf_defer_gateway_reinit=False
+                        self.log("DTMF VoIP-Betrieb: Vollzugsmeldung beendet – Gateway-Audioweg wird einmalig abschließend neu initialisiert.")
+                        QTimer.singleShot(0,self._restart_gateway_stack_after_parrot)
 
             def wait_for_audio_end():
                 proc=ack_proc["proc"]
@@ -4621,8 +5748,16 @@ class MainWindow(QMainWindow):
             self.outgoing_audio_active=False
             if self.tx:
                 self.set_ptt(False)
+            if protection_token is not None:
+                self._end_rf_exclusive(protection_token)
             if kind in ("parrot","voip") and generation == self.dtmf_mode_ack_generation:
                 self.dtmf_mode_ack_pending=False
+            if kind == "voip" and self._mode() == "gateway":
+                # Fail safe: even if the execution announcement itself cannot
+                # start, release the deferred DTMF transition and rebuild the
+                # normal VoIP->RF bridge once.
+                self.dtmf_defer_gateway_reinit=False
+                QTimer.singleShot(0,self._restart_gateway_stack_after_parrot)
             self.log(f"DTMF-Vollzugsmeldung '{label}' konnte nicht gestartet werden: {e}")
 
     def _dtmf_ts_mute(self,enabled):
@@ -5212,6 +6347,7 @@ class MainWindow(QMainWindow):
             self.ts_last_status=None
             self.ts_last_speakers=None
             self.ts_last_channel=None
+            self.ts_self_talking=False
             return
 
         try:
@@ -5242,6 +6378,7 @@ class MainWindow(QMainWindow):
             elif self._is_pc_mode():
                 auto=bool(self.pc_ts_commander_manual.isChecked())
                 talking=bool(self.ts_client.self_talking())
+                self.ts_self_talking=talking
                 wanted=bool(auto and talking)
                 self.ts_commander_wanted=wanted
                 if self.ts_commander_needs_sync or self.ts_commander_state != wanted:
@@ -5298,6 +6435,7 @@ class MainWindow(QMainWindow):
             self.ts_last_status=msg
             self.ts_last_speakers=None
             self.ts_last_channel=None
+            self.ts_self_talking=False
             self.ts_commander_state=False
             self.ts_commander_needs_sync=True
 
@@ -6141,6 +7279,9 @@ done"""
                     "app": "",
                     "binary": "",
                     "media": "",
+                    "role": "",
+                    "node": "",
+                    "target": "",
                     "mute": False,
                 }
             elif current is not None:
@@ -6154,6 +7295,12 @@ done"""
                     current["mute"] = line.split(":",1)[1].strip().lower() == "yes"
                 elif 'media.name = ' in line:
                     current["media"] = line.split("=", 1)[1].strip().strip('"')
+                elif 'media.role = ' in line:
+                    current["role"] = line.split("=", 1)[1].strip().strip('"')
+                elif 'node.name = ' in line:
+                    current["node"] = line.split("=", 1)[1].strip().strip('"')
+                elif 'target.object = ' in line:
+                    current["target"] = line.split("=", 1)[1].strip().strip('"')
         if current:
             streams.append(current)
         return streams
@@ -6288,6 +7435,25 @@ done"""
         )
         return any(token in haystack for token in known)
 
+    def _begin_rf_exclusive(self,label):
+        """Start an exclusive internal RF announcement/bake protection window."""
+        self.rf_exclusive_seq += 1
+        token=self.rf_exclusive_seq
+        self.rf_exclusive_tokens[token]=str(label)
+        first=not self.rf_exclusive_active
+        self.rf_exclusive_active=True
+        self._sync_parrot_voip_playback_mute()
+        if first:
+            self.log(f"HF-Schutz aktiv: VoIP → Funk gesperrt ({label}).")
+        return token
+
+    def _end_rf_exclusive(self,token):
+        label=self.rf_exclusive_tokens.pop(token,None)
+        self.rf_exclusive_active=bool(self.rf_exclusive_tokens)
+        self._sync_parrot_voip_playback_mute()
+        if label is not None and not self.rf_exclusive_active:
+            self.log(f"HF-Schutz beendet: VoIP → Funk wieder freigegeben ({label}).")
+
     def _sync_parrot_voip_playback_mute(self):
         """Physically mute VoIP playback streams while Papagei mode is active.
 
@@ -6296,12 +7462,13 @@ done"""
         FunkGateway_TX would be mixed into the RF audio.  Therefore known VoIP
         sink-inputs themselves are muted during Papagei mode.
         """
-        enabled=bool(
+        parrot_enabled=bool(
             hasattr(self,"parrot_enabled")
             and self.parrot_enabled.isChecked()
             and hasattr(self,"parrot_mute_voip")
             and self.parrot_mute_voip.isChecked()
         )
+        enabled=bool(parrot_enabled or getattr(self,"rf_exclusive_active",False))
 
         if not enabled:
             if not self.parrot_muted_voip_streams:
@@ -6319,14 +7486,18 @@ done"""
                         timeout=3,
                         check=True,
                     )
-                    self.log(f"Papagei: VoIP-Wiedergabestream {sid} wieder freigegeben.")
+                    self.log(f"HF-Schutz: VoIP-Wiedergabestream {sid} wieder freigegeben.")
                 except Exception as e:
-                    self.log(f"Papagei: VoIP-Wiedergabestream {sid} konnte nicht freigegeben werden: {e}")
+                    self.log(f"HF-Schutz: VoIP-Wiedergabestream {sid} konnte nicht freigegeben werden: {e}")
                 finally:
                     self.parrot_muted_voip_streams.discard(sid)
             return
 
         sink_id=self._funkgateway_sink_id()
+        if enabled and not sink_id:
+            # Ohne FunkGateway_TX existiert kein VoIP→HF-Mischweg. Vor allem
+            # niemals globale TeamSpeak-/Mumble-Wiedergabe auf dem Desktop muten.
+            return
         current_ids=set()
         for stream in self._read_sink_inputs():
             sid=str(stream.get("id",""))
@@ -6356,30 +7527,60 @@ done"""
                 )
                 self.parrot_muted_voip_streams.add(sid)
                 name=stream.get("app") or stream.get("binary") or "VoIP"
-                self.log(f"Papagei: {name}-Wiedergabe auf FunkGateway_TX stummgeschaltet (Stream {sid}).")
+                self.log(f"HF-Schutz: {name}-Wiedergabe vollständig stummgeschaltet (Stream {sid}).")
             except Exception as e:
-                self.log(f"Papagei: VoIP-Wiedergabestream {sid} konnte nicht stummgeschaltet werden: {e}")
+                self.log(f"HF-Schutz: VoIP-Wiedergabestream {sid} konnte nicht stummgeschaltet werden: {e}")
 
         # Forget IDs of streams that vanished while Papagei was active.
         self.parrot_muted_voip_streams.intersection_update(current_ids)
 
     def routing_watchdog_tick(self):
-        """Keep known voice applications routed correctly and enforce Papagei mute."""
-        if not self.bridge:
-            return
+        """Keep supported VoIP clients on the devices required by the active mode.
 
+        PC-User and Funk-Papagei continuously follow the current system default
+        input/output. Funk-Gateway and VoIP-Papagei use their dedicated virtual
+        devices while their respective auto-routing option is enabled. This is
+        intentionally independent of a running RF bridge so clients that start
+        or reconnect after a mode change are corrected as well.
+        """
         now=time.monotonic()
         if now-self.last_route_check < 1.5:
             return
         self.last_route_check=now
 
+        mode=self._mode()
+        route_enabled=True
+        if mode=="gateway":
+            route_enabled=(not hasattr(self,"auto_route") or self.auto_route.isChecked())
+        elif mode=="voip_parrot":
+            route_enabled=(not hasattr(self,"voip_parrot_auto_route") or self.voip_parrot_auto_route.isChecked())
+
+        # This is the central mode router. In PC-User it deliberately resolves
+        # pactl's *current* defaults on every watchdog pass instead of remembering
+        # EasyEffects or any other concrete device name.
+        if route_enabled:
+            self._route_voip_clients_for_mode(mode,log_changes=False)
+
+        # The remaining checks below are RF-specific and only make sense while
+        # the radio bridge exists.
+        if not self.bridge:
+            return
+
         # This must run even when automatic routing is disabled: a newly
         # created TeamSpeak/Mumble playback stream must not leak into RF while
-        # the Papagei is transmitting.
+        # the Papagei or an internal protected announcement is transmitting.
         self._sync_parrot_voip_playback_mute()
 
+        # Legacy Gateway routing below is intentionally restricted to Gateway
+        # mode. Otherwise Funk-Papagei could incorrectly pull VoIP audio back
+        # onto FunkGateway_TX after the central router returned it to Desktop.
+        if mode!="gateway":
+            return
         if not hasattr(self, "auto_route") or not self.auto_route.isChecked():
             return
+
+        # Enforce playback and capture destinations for Gateway mode.
+        self._route_voip_clients_for_mode("gateway",log_changes=False)
 
         sink_id=self._funkgateway_sink_id()
         if not sink_id:
@@ -6589,7 +7790,9 @@ done"""
         if not hasattr(self,"rx_hw_port"):
             return
         source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
-        wanted=getattr(self,"_wanted_rx_hw_port",None) or self.rx_hw_port.currentData()
+        wanted=(getattr(self,"rx_hw_port_target",None)
+                or getattr(self,"_wanted_rx_hw_port",None)
+                or self.rx_hw_port.currentData())
         self.rx_hw_port.blockSignals(True)
         self.rx_hw_port.clear()
         ports=self._source_hardware_ports(source)
@@ -6613,6 +7816,8 @@ done"""
             if i>=0:
                 self.rx_hw_port.setCurrentIndex(i)
         self.rx_hw_port.blockSignals(False)
+        if wanted and self.rx_hw_port.findData(wanted)>=0:
+            self.rx_hw_port_target=str(wanted)
         self._wanted_rx_hw_port=None
         has_multiple=len(ports)>1
         enabled=self.rx_hw_port_enable.isChecked()
@@ -6632,8 +7837,31 @@ done"""
                 f"Nur ein Hardware-Port erkannt ({ports[0][1]}). Eine feste Auswahl ist normalerweise nicht nötig."
             )
 
+    def _rx_hw_port_selection_changed(self, *_args):
+        """Persist a deliberate RX hardware-port choice immediately.
+
+        The combo is signal-blocked while it is rebuilt, so this only runs for
+        an actual user selection (or another explicit, unblocked change).  The
+        watchdog therefore has a stable saved target across program restarts.
+        """
+        if not hasattr(self,"rx_hw_port"):
+            return
+        port=self.rx_hw_port.currentData()
+        if not port:
+            return
+        self.rx_hw_port_target=str(port)
+        self._wanted_rx_hw_port=str(port)
+        self.save_cfg()
+        if hasattr(self,"rx_hw_port_enable") and self.rx_hw_port_enable.isChecked():
+            self._apply_rx_hardware_port(log_result=False)
+
+    def _rx_hw_port_option_changed(self, *_args):
+        """Save restore/watchdog options as soon as the user changes them."""
+        self.save_cfg()
+
     def _rx_hw_port_enabled_changed(self, checked):
         self._refresh_rx_hardware_ports()
+        self.save_cfg()
         if checked and self.rx_hw_port_restore.isChecked():
             self._apply_rx_hardware_port(log_result=False)
 
@@ -6641,7 +7869,8 @@ done"""
         if not hasattr(self,"rx_hw_port_enable") or not self.rx_hw_port_enable.isChecked():
             return False
         source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
-        port=self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None
+        port=(getattr(self,"rx_hw_port_target",None)
+              or (self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None))
         if not source or not port:
             if log_result:
                 self.log("RX-Hardware-Port: Quelle oder Port fehlt.")
@@ -6674,7 +7903,9 @@ done"""
         if hasattr(self,"rx_hw_port_watchdog") and not self.rx_hw_port_watchdog.isChecked():
             return
         source=self.rx_source.currentData() if hasattr(self,"rx_source") else None
-        wanted=self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None
+        wanted=(getattr(self,"rx_hw_port_target",None)
+                or getattr(self,"_wanted_rx_hw_port",None)
+                or (self.rx_hw_port.currentData() if hasattr(self,"rx_hw_port") else None))
         if not source or not wanted:
             return
         active=self._active_source_hardware_port(source)
@@ -6839,7 +8070,16 @@ done"""
             "manual":self.return_after_manual,
             "parrot":self.parrot_return_guard if hasattr(self,"parrot_return_guard") else None,
         }
-        box=mapping.get(kind)
+        if kind == "dtmf_ack":
+            # Keep the same protection behavior as before, but identify the
+            # actual cause correctly in the log.  While Funk-Papagei is active
+            # its return-guard setting applies; otherwise use the generic
+            # protection/announcement guard.
+            box=(self.parrot_return_guard if (hasattr(self,"parrot_enabled")
+                 and self.parrot_enabled.isChecked() and hasattr(self,"parrot_return_guard"))
+                 else self.return_after_protection)
+        else:
+            box=mapping.get(kind)
         return bool(box and box.isChecked())
 
     def _start_return_guard(self,kind):
@@ -7177,8 +8417,20 @@ done"""
         return bool(self.rx_was_active or self._parrot_busy() or self.protection_muted or self.protection_announcement_busy or self.roger_busy or self.return_guard_muted)
 
     def _parrot_mode_toggled(self,enabled):
-        # Harte Modustrennung: alte Konfigurationen dürfen außerhalb der
-        # Betriebsart Funk-Papagei keinen RX-Capture oder Bake-Timer starten.
+        # Checkbox und Betriebsart bleiben immer synchron – unabhängig davon,
+        # ob der Papagei manuell, per DTMF oder aus einem Assistenten geschaltet wird.
+        # EIN -> Funk-Papagei, AUS -> Funk-Gateway.
+        if enabled and not self._is_radio_parrot_mode():
+            idx=self.operating_mode.findData("radio_parrot")
+            if idx>=0 and self.operating_mode.currentIndex()!=idx:
+                self.operating_mode.setCurrentIndex(idx)
+        elif (not enabled) and self._is_radio_parrot_mode():
+            idx=self.operating_mode.findData("gateway")
+            if idx>=0 and self.operating_mode.currentIndex()!=idx:
+                self.operating_mode.setCurrentIndex(idx)
+
+        # Harte Modustrennung: außerhalb der Betriebsart Funk-Papagei dürfen
+        # weder RX-Capture noch Papageibake weiterlaufen.
         if not self._is_radio_parrot_mode():
             self._stop_parrot_capture()
             self.parrot_pending_beacon=False
@@ -7697,6 +8949,7 @@ done"""
             self._queue_parrot_beacon()
             return
 
+        protection_token=self._begin_rf_exclusive("Papageibake")
         self.parrot_beacon_in_progress=True
         self.parrot_pending_beacon=False
         self.parrot_beacon_free_since=None
@@ -7711,6 +8964,7 @@ done"""
             self.log(f"Papageibake: PTT EIN – Vorlauf {lead} ms.")
         except Exception as e:
             self.parrot_beacon_in_progress=False
+            self._end_rf_exclusive(protection_token)
             self.log(f"Papageibake: PTT konnte nicht eingeschaltet werden: {e}")
             return
 
@@ -7719,6 +8973,7 @@ done"""
                 self.parrot_beacon_in_progress=False
                 try: self.set_ptt(False)
                 except Exception: pass
+                self._end_rf_exclusive(protection_token)
                 return
             try:
                 proc=self.play_to_virtual(p,"beacon")
@@ -7731,6 +8986,7 @@ done"""
                 self.log(f"Papageibake fehlgeschlagen: {e} – neuer Versuch frühestens in 60 s.")
                 try: self.set_ptt(False)
                 except Exception: pass
+                self._end_rf_exclusive(protection_token)
                 return
 
             def poll():
@@ -7748,6 +9004,7 @@ done"""
                         self.log(f"Papageibake: PTT AUS fehlgeschlagen: {e}")
                     self.parrot_beacon_in_progress=False
                     self.parrot_last_beacon=time.monotonic()
+                    self._end_rf_exclusive(protection_token)
                     self.log(f"Papageibake beendet – Intervall neu gestartet: {self.parrot_beacon_interval.value()} Minuten.")
                 tail=max(0,self.parrot_beacon_tail_ms.value())
                 self.log(f"Papageibake: Audio vollständig beendet – PTT-Nachlauf {tail} ms.")
@@ -7873,6 +9130,8 @@ done"""
                     self.rx_was_active=False
                     self.rx_active_since=None
                     self.ts_commander_wanted=False
+                    if not getattr(self,"dtmf_session_active",False):
+                        self.dtmf_control_rx_active=False
                     self.rx_status.setText("● PAPAGEI WARTET AUF BESTÄTIGUNG")
                     self._set_big_rx_status(False)
                 return
@@ -8159,6 +9418,13 @@ done"""
         except Exception as e:
             self.show_copyable_error("Rogerbeep-Test",str(e))
 
+    def _on_rx_detector_error(self,error):
+        text=str(error)
+        if getattr(self,"_rx_rearm_in_progress",False) and ("broken pipe" in text.lower() or "errno 32" in text.lower()):
+            self.log("RX-Erkennung: erwarteter Pipe-Abbruch beim kontrollierten Neuarmieren ignoriert.")
+            return
+        self.log(f"RX-Erkennungsfehler: {text}")
+
     def start_gateway(self):
 
         self.ensure_gateway_sink()
@@ -8192,13 +9458,23 @@ done"""
                 self.rx_detector.signals.db_level.connect(self.on_rx_db_level)
                 self.rx_detector.signals.activity.connect(self.on_rx_activity)
                 self.rx_detector.signals.dtmf.connect(self._on_dtmf_digit)
-                self.rx_detector.signals.error.connect(lambda e:self.log(f"RX-Erkennungsfehler: {e}"))
+                self.rx_detector.signals.error.connect(self._on_rx_detector_error)
                 self._apply_dtmf_detector_settings()
                 self.rx_detector.start()
                 self._refresh_rx_forward_mute()
                 self.log(f"Funk-RX aktiv: {rx_source} -> FunkGateway_RX_Input, RX-Gain: {self.rx_gain.value()} dB")
                 if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
                     self._ensure_parrot_capture()
+            # The RX virtual microphone now exists; enforce both VoIP directions
+            # for the ACTUAL operating mode.  In Funk-Papagei this deliberately
+            # keeps VoIP away from FunkGateway_TX and the RF isolation below
+            # mutes supported platform playback completely.
+            active_mode=self._mode()
+            self._route_voip_clients_for_mode(active_mode)
+            if active_mode=="radio_parrot":
+                self._set_tx_forward_muted(False)
+                self._sync_parrot_voip_playback_mute()
+                self._ensure_parrot_capture()
             self.save_cfg()
             if hasattr(self,"auto_route") and self.auto_route.isChecked():
                 self.auto_route_known_apps()
@@ -8206,7 +9482,7 @@ done"""
             self.log(f"Gateway gestartet. Audio-Automatik und Routing-Wächter aktiv. TX-Gain: {self.tx_gain.value()} dB")
         except Exception as e: self.show_copyable_error("Start fehlgeschlagen",str(e))
 
-    def stop_gateway(self):
+    def stop_gateway(self,preserve_dtmf=False):
         self._stop_parrot_capture()
         self.ts_commander_wanted=False
         self._set_big_rx_status(False)
@@ -8217,11 +9493,12 @@ done"""
             except Exception: pass
             self.roger_proc=None
         self.roger_busy=False; self.outgoing_audio_active=False
-        self.dtmf_session_active=False; self.dtmf_session_muted=False; self.dtmf_buffer=""
-        self.dtmf_control_rx_active=False
-        self.dtmf_ack_waiting_labels.clear()
-        self.dtmf_mode_ack_generation += 1
-        self.dtmf_mode_ack_pending=False
+        if not preserve_dtmf:
+            self.dtmf_session_active=False; self.dtmf_session_muted=False; self.dtmf_buffer=""
+            self.dtmf_control_rx_active=False
+            self.dtmf_ack_waiting_labels.clear()
+            self.dtmf_mode_ack_generation += 1
+            self.dtmf_mode_ack_pending=False
         if self.ptt: self.set_ptt(False)
         self._shutdown_ptt()
         self.log("Gateway gestoppt.")
@@ -8419,25 +9696,34 @@ done"""
         if self.id_wait_free.isChecked() and self._id_channel_busy():
             self._queue_id("manuell")
             return
+        protection_token=None
         try:
+            protection_token=self._begin_rf_exclusive("Rufzeichenbake")
             self.id_in_progress=True
             self.pending_id=False
             self.id_channel_free_since=None
             proc=self.play_to_virtual(p,"beacon")
             self.id_proc=proc
-            self.log(f"Rufzeichenbake gestartet: {Path(p).name}")
+            self.log(f"Rufzeichenbake gestartet: {Path(p).name} – VoIP→HF geschützt.")
             def poll_id():
                 if proc.poll() is None:
                     QTimer.singleShot(100,poll_id)
                     return
-                self.id_in_progress=False
                 self.id_proc=None
-                self.last_id=time.monotonic()
-                self.log(f"Rufzeichenbake beendet – Intervall neu gestartet: {self.id_interval.value()} Minuten.")
+                tail=max(300,self.hang.value()+150)
+                self.log(f"Rufzeichenbake Audio beendet – HF-Schutz noch {tail} ms aktiv.")
+                def finish_id():
+                    self.id_in_progress=False
+                    self.last_id=time.monotonic()
+                    self._end_rf_exclusive(protection_token)
+                    self.log(f"Rufzeichenbake beendet – Intervall neu gestartet: {self.id_interval.value()} Minuten.")
+                QTimer.singleShot(tail,finish_id)
             QTimer.singleShot(100,poll_id)
         except Exception as e:
             self.id_in_progress=False
             self.id_proc=None
+            if protection_token is not None:
+                self._end_rf_exclusive(protection_token)
             self.show_copyable_error("Rufzeichen",str(e))
 
     def _try_send_pending_id(self,now):
@@ -8463,6 +9749,8 @@ done"""
     def tick(self):
         self.update_cos_label()
         self.routing_watchdog_tick()
+        if getattr(self,"rf_exclusive_active",False):
+            self._sync_parrot_voip_playback_mute()
         now=time.monotonic()
         self._protection_tick(now)
         if self.rx_status.text() == "● FUNK RX SPERRZEIT" and now >= self.rx_ignore_until:
@@ -8490,6 +9778,8 @@ done"""
 
     def save_cfg(self):
         ensure_cfg(); data={"operating_mode":self.operating_mode.currentData(),
+        "theme_mode":self.theme_mode.currentText(),"color_scheme":self.color_scheme.currentText(),"mode_colors":self.mode_colors.isChecked(),
+        "banner_enabled":self.banner_enabled.isChecked(),"banner_path":self.banner_path.text(),
         "advanced_ui":self.advanced_ui.isChecked(),
         "pc_ts_commander_manual":self.pc_ts_commander_manual.isChecked(),
         "pc_parrot_input":self.pc_parrot_input.currentData(),"pc_parrot_output":self.pc_parrot_output.currentData(),
@@ -8512,7 +9802,7 @@ done"""
         "cm_dev":self.cm_dev.text(),"gpio_chip":self.gpio_chip.text(),"gpio_line":self.gpio_line.value(),"invert":self.invert.isChecked(),
         "lead":self.lead.value(),"tot":self.tot.value(),"target_sink":self.target_sink.currentData(),"threshold":self.threshold.value(),
         "hang":self.hang.value(),"tx_gain_db":self.tx_gain.value(),"rx_source":self.rx_source.currentData(),
-        "rx_hw_port_enable":self.rx_hw_port_enable.isChecked(),"rx_hw_port":self.rx_hw_port.currentData(),
+        "rx_hw_port_enable":self.rx_hw_port_enable.isChecked(),"rx_hw_port":(getattr(self,"rx_hw_port_target",None) or self.rx_hw_port.currentData()),
         "rx_hw_port_restore":self.rx_hw_port_restore.isChecked(),
         "rx_hw_port_watchdog":self.rx_hw_port_watchdog.isChecked(),
         "rx_threshold":self.rx_threshold.value(),"rx_hang":self.rx_hang.value(),"rx_gain_db":self.rx_gain.value(),
@@ -8616,7 +9906,23 @@ done"""
             mode=str(d.get("operating_mode","gateway") or "gateway")
             mi=self.operating_mode.findData(mode)
             if mi>=0:
+                self.operating_mode.blockSignals(True)
                 self.operating_mode.setCurrentIndex(mi)
+                self.operating_mode.blockSignals(False)
+            ti=self.theme_mode.findText(str(d.get("theme_mode","System") or "System"))
+            if ti>=0: self.theme_mode.setCurrentIndex(ti)
+            si=self.color_scheme.findText(str(d.get("color_scheme","Funk Blau") or "Funk Blau"))
+            if si>=0: self.color_scheme.setCurrentIndex(si)
+            self.mode_colors.setChecked(bool(d.get("mode_colors",True)))
+            self.banner_path.setText(str(d.get("banner_path","") or ""))
+            self.banner_enabled.blockSignals(True)
+            self.banner_enabled.setChecked(bool(d.get("banner_enabled",False)))
+            self.banner_enabled.blockSignals(False)
+            self._load_banner_pixmap(self.banner_path.text())
+            if hasattr(self,"start_banner"):
+                self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))
+                if self.banner_enabled.isChecked():
+                    QTimer.singleShot(0,self._update_banner_pixmap)
             self.advanced_ui.setChecked(bool(d.get("advanced_ui",False)))
             self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
             self.pc_parrot_seconds.setValue(int(d.get("pc_parrot_seconds",5) or 5))
@@ -8651,11 +9957,16 @@ done"""
             self.tx_gain.setValue(int(d.get("tx_gain_db",0) or 0))
             self._wanted_rx_source=d.get("rx_source")
             self._wanted_rx_hw_port=d.get("rx_hw_port")
+            self.rx_hw_port_target=d.get("rx_hw_port")
             self.rx_hw_port_enable.blockSignals(True)
             self.rx_hw_port_enable.setChecked(bool(d.get("rx_hw_port_enable",False)))
             self.rx_hw_port_enable.blockSignals(False)
+            self.rx_hw_port_restore.blockSignals(True)
             self.rx_hw_port_restore.setChecked(bool(d.get("rx_hw_port_restore",True)))
+            self.rx_hw_port_restore.blockSignals(False)
+            self.rx_hw_port_watchdog.blockSignals(True)
             self.rx_hw_port_watchdog.setChecked(bool(d.get("rx_hw_port_watchdog",True)))
+            self.rx_hw_port_watchdog.blockSignals(False)
             self.rx_threshold.setValue(d.get("rx_threshold",-45)); self.rx_hang.setValue(d.get("rx_hang",550))
             self.rx_gain.setValue(int(d.get("rx_gain_db",0) or 0))
             self.rx_hysteresis.setValue(int(d.get("rx_hysteresis_db",3) or 0))
@@ -8785,7 +10096,10 @@ done"""
             self.update_auto_install.setChecked(bool(d.get("update_auto_install",True)))
             self.update_desktop_shortcut.setChecked(bool(d.get("update_desktop_shortcut",True)))
             self.update_desktop_shortcut.setEnabled(self.update_auto_install.isChecked())
-            self.parrot_enabled.setChecked(bool(d.get("parrot_enabled",False)))
+            # Alte parrot_enabled-Werte dürfen den gespeicherten Modus nicht überschreiben.
+            self.parrot_enabled.blockSignals(True)
+            self.parrot_enabled.setChecked(mode=="radio_parrot")
+            self.parrot_enabled.blockSignals(False)
             self.parrot_max_seconds.setValue(int(d.get("parrot_max_seconds",30) or 30))
             self.parrot_rx_prebuffer_ms.setValue(int(d.get("parrot_rx_prebuffer_ms",1500) or 1500))
             self.parrot_delay_ms.setValue(int(d.get("parrot_delay_ms",1000) or 1000))
@@ -8873,6 +10187,7 @@ done"""
 
 
     def closeEvent(self,ev):
+        self._stop_pc_mic_monitor()
         if getattr(self,"voip_parrot_running",False):
             self.stop_voip_parrot()
         if getattr(self,"pc_parrot_running",False):

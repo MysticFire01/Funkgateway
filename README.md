@@ -1,21 +1,28 @@
-# FunkGateway UI 0.5.9.44
+# FunkGateway UI 0.5.9.28
+
+
+## Neu in 0.6.0: Themes und geschützte Baken
+
+FunkGateway UI 0.6.0 führt Hell-/Dunkel-/Systemdarstellung, sechs abgestimmte Farbschemata und farbige Icons für die vier Betriebsarten ein. Die Textfarbe auf Akzentflächen wird automatisch kontrastreich gewählt.
+
+Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, Papageibake sowie internen DTMF-/Schutzansagen wird der VoIP→HF-Weg gesperrt. TeamSpeak/Mumble selbst bleiben dabei lokal hörbar; nach der Ansage wird der Funkweg wieder freigegeben.
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktueller stabiler Feldtest-Stand: 0.5.9.44**
+**Aktueller stabiler Feldtest-Stand: 0.5.9.28**
 
 ## Betriebsarten
 
-FunkGateway bietet vier dauerhaft auswählbare Betriebsarten:
+Ab **0.5.9.28** kann FunkGateway zwischen zwei Oberflächen umschalten:
 
-- **PC-User** – Betrieb auf einem normalen Linux-PC ohne Funk-PTT; mit TeamSpeak/PC-Funktionen, PC-Papagei und eigener Hardware-Port-Wahl für Mikrofon/Line-In.
-- **Funk-Gateway** – vollständiger Funk↔VoIP-Betrieb mit RX, PTT, Rogerbeep, Rufzeichen, DTMF und Schutzfunktionen.
-- **Funk-Papagei** – Funk-RX wird aufgenommen und anschließend wieder über Funk ausgesendet.
-- **VoIP-Papagei** – eingehendes VoIP-Audio wird aufgenommen und über eine getrennte virtuelle VoIP-Audiokette zurückgespielt.
+- **Funk-Gateway** – vollständiger Betrieb mit Audio-Routing, RX, PTT, Rogerbeep, Rufzeichen, Papagei, DTMF und Schutzfunktionen.
+- **PC / TeamSpeak** – vereinfachte Oberfläche für einen normalen Linux-PC ohne Funkgerät. HF-/PTT-Funktionen werden ausgeblendet und nicht initialisiert. Enthalten sind unter anderem ein sprechabhängiger TeamSpeak Channel Commander und ein rückkopplungssicherer lokaler PC-Papagei/Mikrofontest.
 
-Hardware-Port-Wächter können bei Shared-Mic/Line-In-Soundkarten den gewünschten Port automatisch wiederherstellen. PC-User und Funk-RX besitzen getrennte Portkonfigurationen.
+Beim PC-Papagei wird zuerst aufgenommen und erst danach wiedergegeben. So entsteht innerhalb von FunkGateway keine Aufnahme-Wiedergabe-Endlosschleife.
 
-Die Startseite passt ihre Anzeigen an die gewählte Betriebsart an. Nicht relevante Funk-PTT-Anzeigen werden in PC-User und VoIP-Papagei ausgeblendet.
+## TeamSpeak-Moderation im PC-Modus
+
+Ab **0.5.9.28** bietet der PC-/TeamSpeak-Modus manuelle Moderationsfunktionen: Poke, Verschieben, Channel-Kick und Server-Kick. Die Funktionen arbeiten ausschließlich mit den Rechten des angemeldeten TeamSpeak-Clients. Kritische Aktionen benötigen eine Bestätigung.
 
 ## Einfache und erweiterte Gateway-Ansicht
 

@@ -1,3 +1,149 @@
+# FunkGateway UI 0.6.0
+
+## Release 0.6.0
+
+- Neues 0.6-Design mit System-/Hell-/Dunkelmodus, sechs Farbschemata, modusabhängigen Icons, Live-Statuskarten und analogem S-Meter.
+- Vier klar getrennte Betriebsarten: PC-User, Funk-Gateway, Funk-Papagei und VoIP-Papagei.
+- Unterstützte VoIP-Programme sollen Ein- und Ausgabe auf **Standard/Default** lassen. FunkGateway routet TeamSpeak, Mumble, TeamTalk, Zello und weitere erkannte Sprachstreams automatisch passend zur Betriebsart.
+- PC-User verwendet die aktuellen System-Defaults; Funk-Gateway routet auf `funkgateway_tx` / `funkgateway_rx_source`; VoIP-Papagei auf seine getrennten RX-/TX-Pfade.
+- Funk-Papagei mit Vorlaufpuffer, Rückgabeverzögerung, PTT-Vorlauf, Maximaldauer, optionalem Rogerbeep und Papageibake.
+- VoIP-Papagei mit getrenntem RX-/TX-Routing, Aufnahme/Rückgabe, Rückkopplungssperre und automatischem Routing-Wächter.
+- Allgemeiner HF-Exklusivschutz: Papagei, Rufzeichenbake, Papageibake, DTMF-Vollzugsmeldungen und interne Ansagen sperren VoIP→Funk bis zum vollständigen Ende der Aussendung.
+- DTMF `*91#` aktiviert den Funk-Papagei mit hörbarer Vollzugsmeldung; `*90#` wechselt zuverlässig zurück in den Funk-Gateway-Betrieb und initialisiert den VoIP→Funk-Audioweg nach der Bestätigung einmalig neu.
+- Erwartete Pipe-Abbrüche bei kontrollierten Audio-Neustarts werden nicht mehr als echte RX-Fehler geloggt.
+- Hardware-Port-Watchdog für Mic/Line-In sowie getrennte PC-Portwahl und Wiederherstellung.
+- Shell-Skripte werden in Release-ZIPs mit ausführbaren Unix-Rechten (755) ausgeliefert.
+
+## Entwicklungsverlauf 0.6.0
+
+### 0.6.0 Test 21
+- DTMF-Vollzugsmeldungen starten den Selbstrücklaufschutz weiterhin unverändert, werden im Log aber jetzt korrekt als `dtmf_ack` statt fälschlich als `parrot` bezeichnet.
+- Erwarteter `Broken pipe` beim kontrollierten Gateway-Reinit nach Funk-Papagei → Funk-Gateway wird als normaler Prozesswechsel unterdrückt und nicht mehr als RX-Fehler geloggt.
+
+### 0.6.0 Test 20
+- DTMF `*90#`: Betriebsart wird jetzt vor dem Papagei-Haken umgeschaltet. Dadurch erkennt derselbe zentrale Moduswechsel wie bei der UI den Live-Wechsel Funk-Papagei → Funk-Gateway und baut die Audio-Bridge vollständig neu auf; stummer PTT-Träger trotz korrekt geroutetem `funkgateway_tx` wird behoben.
+- Defensiver Fallback hebt Papagei-/HF-Mutes auf und stößt den Gateway-Reinit an, falls die UI bereits Funk-Gateway anzeigt.
+- Hilfe, Einrichtungsassistent und RX-Hinweise angepasst: VoIP-Programme sollen Ein- und Ausgabe auf **Standard/Default** lassen; FunkGateway routet TeamSpeak/Mumble/TeamTalk/Zello und weitere unterstützte Clients automatisch je Betriebsart.
+- Dokumentation zum Audio-Routing entsprechend aktualisiert.
+
+
+### 0.6.0 Test 19
+- DTMF `*90#`: Nach der Vollzugsmeldung „VoIP-Betrieb“ wird der Funk-Gateway-Audioweg nochmals sauber neu initialisiert. Dadurch bleibt VoIP→Funk nach einem DTMF-gesteuerten Wechsel aus dem Funk-Papagei nicht mehr stumm, während PTT weiterhin anspricht.
+- HF-Schutz bleibt bis zum vollständigen Ende der Vollzugsmeldung aktiv; der Gateway-Reinit erfolgt erst danach.
+### 0.6.0 Test 18
+
+- Funk-Papagei → Funk-Gateway baut den laufenden RF-Audioweg automatisch neu auf; kein manuelles Stop/Start mehr bei stummer PTT.
+- `*90#` wartet mit dem Betriebsartwechsel bis laufende Papagei-/Bake-/Schutzaussendungen vollständig beendet sind.
+- `*91#` markiert den DTMF-Steuerträger vor dem RX-Neuarmieren; die Vollzugsmeldung kann nach echtem Funkende zuverlässig senden.
+- Erwarteter `Broken pipe` beim kontrollierten RX-Neuarmieren wird nicht mehr als echter RX-Fehler behandelt.
+- HF-Schutz bleibt erhalten: Papagei, Baken und DTMF-Vollzugsmeldungen sperren VoIP→Funk bis zum vollständigen Aussendungsende.
+- DTMF-Modusbestätigungen bleiben bei der internen Gateway-Neuinitialisierung erhalten.
+
+### 0.6.0 Test 17
+- Funk-Papagei wird beim Betriebsartwechsel jetzt sofort vollständig initialisiert, obwohl der synchronisierte Papagei-Haken mit blockierten Qt-Signalen gesetzt wird.
+- Ein bereits laufender RX-Detektor wird beim Wechsel Funk-Gateway → Funk-Papagei neu bewaffnet, damit ein alter Aktivzustand die erste Papagei-RX-Flanke nicht verschluckt.
+- `start_gateway()` routet VoIP nicht mehr hart als `gateway`, sondern immer nach der tatsächlich aktiven Betriebsart.
+- Funk-Papagei hält VoIP-Clients auf Desktop-Default und schaltet deren Wiedergabestreams zusätzlich hart stumm; TeamSpeak/Mumble/TeamTalk/Zello usw. können dadurch nicht in Papagei-, Rufzeichenbake-, DTMF-ACK- oder andere geschützte HF-Aussendungen hineinmischen.
+- Bestehender RF-Exclusive/Bake-Schutz bleibt aktiv; interne Papagei-/Bake-/ACK-WAVs umgehen den gemischten FunkGateway-TX-Monitor und gehen direkt zum gewählten Funkgeräte-Ausgang.
+- Shell-Skripte bleiben mit 755-Rechten verpackt.
+
+### 0.6.0 Test 16
+- Modus-Routing ist jetzt die einzige Autorität: alte Papagei-Stream-IDs werden beim Stoppen nicht mehr restauriert.
+- PC-User routet unterstützte VoIP-Clients auf die jeweils aktuellen System-Defaults; Funk-Gateway auf FunkGateway_TX/RX_Input; VoIP-Papagei auf seine isolierten RX/TX-Geräte.
+- Zusätzliche Routing-Nachprüfungen nach dem Verlassen des VoIP-Papageis fangen neu erzeugte TeamSpeak/Mumble/TeamTalk/Zello-Streams ab.
+- VoIP-Programme können im Regelfall dauerhaft auf Standard/Default Input und Output bleiben.
+- Verpackung korrigiert: Shell-Skripte werden mit ausführbaren Unix-Rechten (755) ausgeliefert.
+- TeamSpeak-Hinweis präzisiert: ClientQuery kann Mute/Channel Commander steuern, aber keinen echten PTT-Tastendruck synthetisieren; deshalb wird keine scheinbare Auto-PTT-Funktion ausgeliefert.
+
+### 0.6.0 Test 15
+
+- Modus-Routing ist jetzt ein globaler Watchdog und nicht mehr an einen laufenden Funk-Bridge-Prozess gebunden.
+- PC-User routet unterstützte VoIP-Clients dauerhaft auf das jeweils aktuelle **System-Default Input/Output** zurück; EasyEffects oder andere konkrete Geräte werden nicht fest verdrahtet.
+- Funk-Gateway routet VoIP-Wiedergabe auf `funkgateway_tx` und VoIP-Aufnahme auf `funkgateway_rx_source`.
+- VoIP-Papagei routet Wiedergabe auf `funkgateway_voip_parrot_rx` und Aufnahme auf `funkgateway_voip_parrot_source`.
+- Neu gestartete oder nach einem Reconnect neu erzeugte TeamSpeak-/Mumble-/TeamTalk-/Zello-Streams werden nach spätestens etwa 1,5 Sekunden wieder dem aktuellen Modus entsprechend zugeordnet.
+- Funk-Papagei wird nicht mehr durch den alten Gateway-Watchdog versehentlich wieder auf `funkgateway_tx` gezogen.
+- Empfehlung: VoIP-Programme selbst auf **Standard/Default** für Ein- und Ausgabe lassen; FunkGateway übernimmt nur die temporäre Modus-Umschaltung.
+
+### 0.6.0
+
+- Test 13: plattformübergreifendes VoIP-Papagei-Routing für RX und TX. Unterstützte Pulse/PipeWire-Sprachclients (u. a. TeamSpeak, Mumble, TeamTalk, Zello; zusätzlich generische `media.role=phone`-Streams) werden im VoIP-Papagei automatisch auf die dedizierten RX-/TX-Pfade verschoben und beim Verlassen des Modus auf ihre ursprünglichen Geräte zurückgesetzt. Numerische Stream-/Geräte-IDs werden nicht fest verdrahtet.
+ Test 11
+- Aktiver Reiter übernimmt jetzt die Farbe der aktuellen Betriebsart (PC blau, Gateway grün, Funk-Papagei orange, VoIP-Papagei violett).
+- Moduskachel-QSS weiter vereinfacht, um verbleibende QPushButton-Stylesheet-Parserwarnungen zu beseitigen.
+- Betriebsart ist die maßgebliche Papagei-Einstellung; der Funk-Papagei-Haken wird beim Moduswechsel sicher synchronisiert.
+- PC-Mikrofon-Livemonitor wird automatisch wiederhergestellt und bei Quellenwechsel neu gestartet; S-Meter sowie RUHE/SPRICHT-Anzeige sind live.
+- Moduskachel-QPushButton-Styles auf Qt-kompatible Vollrahmen umgestellt, um Stylesheet-Parserwarnungen zu vermeiden.
+
+
+### 0.6.0 Test 10
+- Start-Dashboard kompakter: Betriebsart als normale Modulkachel statt Vollbreitenkarte.
+- Analoges Funk-S-Meter mit Livepegel: PC-Mikrofon, Funk-RX oder VoIP-RX je nach Modus.
+- Dashboard-Zustände werden weiterhin alle 500 ms live aktualisiert.
+- VoIP-Papagei liefert nun ebenfalls einen Live-Eingangspegel an das Dashboard.
+
+
+### 0.6.0 Testbuild 9
+- Dashboard und Live-Statusleiste verwenden jetzt den echten TeamSpeak-/Mumble-Verbindungsstatus statt nur den Modul-Haken.
+- Geschlossener oder nicht erreichbarer TeamSpeak-Client wird automatisch als „TeamSpeak getrennt“ angezeigt.
+- VoIP-Statuskarte wechselt entsprechend aus dem Aktiv-Zustand.
+
+## 0.6.0 Testbuild 6
+
+### Testbuild 8 – modusabhängiges Dashboard
+- Dashboard-Karten folgen jetzt der Modusfarbe: PC-User blau, Funk-Gateway grün, Funk-Papagei orange, VoIP-Papagei violett.
+- PC-User zeigt Mikrofon, PC-Audio, VoIP und Audio-Port statt Funk-RX/PTT.
+- Funk-Papagei zeigt Funk-RX, Aufnahme, Wiedergabe und Papageibake.
+- VoIP-Papagei zeigt VoIP-RX, Aufnahme, Wiedergabe und Auto-Routing.
+- Live-Statusleiste zeigt je Betriebsart nur die dafür relevanten Zustände.
+- Große Modusstatuskarte übernimmt ebenfalls die jeweilige Modusfarbe.
+
+### Dashboard-Feinschliff (Test 7)
+- Startseiten-Banner nutzt die verfügbare Fensterbreite stärker und skaliert weiterhin proportional.
+- Statuskarten verwenden ruhige Theme-Flächen mit farbigen Status-Akzentleisten statt Vollflächenfarben.
+- Aktive Moduskachel wird mit einer farbigen Seitenleiste hervorgehoben.
+- Live-Statusleiste zeigt kleine farbige Statuspunkte.
+- Pulse/PipeWire-Portnamen werden auf dem Dashboard lesbarer dargestellt (z. B. Line In, Rear Mic).
+- Startseitenüberschrift und Modushinweis wurden kompakter gestaltet.
+- Live-Statusleiste in allen Reitern.
+- Direkt anklickbare Moduskacheln auf der Startseite.
+- Dashboard-Karten für RX, TX/PTT, VoIP und Audio-Port.
+- Optionales allgemeines Startseiten-Banner; proportional mit der Fenstergröße skalierend.
+- Bannerpfad und Sichtbarkeit werden gespeichert.
+- Status-Badges und modernisierte Startseitenoptik.
+
+- Funk-Papagei-Checkbox und Betriebsart sind nun bidirektional synchron: manuell EIN wechselt zu Funk-Papagei, manuell AUS zurück zu Funk-Gateway.
+# FunkGateway UI 0.6.0
+
+## 0.6.0 Test 5
+- RX-Hardware-Port (Mic/Line-In) wird bei manueller Auswahl sofort gespeichert.
+- Wiederherstellen- und Watchdog-Optionen werden sofort gespeichert.
+- Der RX-Port-Watchdog bevorzugt den gespeicherten Soll-Port und stellt ihn nach Neustart wieder her.
+
+## Design / Themes
+- neues Theme-System mit **System**, **Hell** und **Dunkel**
+- sechs vordefinierte Farbschemata: Funk Blau, Radio Grün, Graphit, Nachtfunk, Bernstein und Kontrast
+- automatische kontrastreiche Schriftfarbe auf Akzentflächen
+- farbige Modusidentität mit eigenen Icons für PC-User, Funk-Gateway, Funk-Papagei und VoIP-Papagei
+- neuer Reiter **Darstellung** mit Live-Vorschau
+
+## HF-/Bake-Schutz
+- allgemeiner HF-Exklusivschutz für automatische interne Funkansagen
+- Rufzeichenbake sperrt während der Wiedergabe gezielt den VoIP→HF-Weg
+- Papageibake, DTMF-Vollzugsmeldungen und Schutzansagen verwenden denselben Schutzmechanismus
+- TeamSpeak/Mumble bleiben lokal benutzbar; nur Streams auf FunkGateway_TX werden temporär stummgeschaltet
+- neue VoIP-Streams werden während einer geschützten Ansage nachgefasst
+- nach Ende und Nachlauf der Ansage wird der VoIP→HF-Weg automatisch wieder freigegeben
+
+## 0.5.9.45
+
+- Kritischer Modus-Fix: Funk-Papagei und Papageibake laufen ausschließlich in der Betriebsart Funk-Papagei.
+- PC-User, Funk-Gateway und VoIP-Papagei starten keinen Funk-Papagei-RX-Capture mehr aufgrund alter gespeicherter Flags.
+- Beim Verlassen des Funk-Papagei-Modus werden wartende/laufende Papageibaken und der RX-Capture beendet.
+- Alte absolute Pfade auf mitgelieferte `default_wavs` aus früheren Versionsordnern werden automatisch auf den aktuellen Programmordner migriert.
+- Fehlende Papageibaken-WAVs verursachen keinen Sekunden-Logspam mehr; neuer Versuch frühestens nach 60 Sekunden.
+- DTMF `Papagei EIN` wechselt explizit in die Betriebsart Funk-Papagei, damit die harte Modustrennung die Fernsteuerung nicht bricht.
+
 ## 0.5.9.45
 
 - Kritischer Modus-Fix: Funk-Papagei und Papageibake laufen ausschließlich in der Betriebsart Funk-Papagei.
@@ -15,9 +161,7 @@
 - Startseite passt Titel, Statusfelder und Hinweise an PC-User, Funk-Gateway, Funk-Papagei und VoIP-Papagei an.
 - PTT-Status wird in Nicht-Funk-Modi nicht mehr als relevante Startseiteninformation angezeigt.
 
-## 0.5.9.43
-
-### Layout/Scroll-Fix
+# FunkGateway UI 0.5.9.44 – Layout/Scroll-Fix
 
 - Einstellungsseiten sind horizontal und vertikal bei Bedarf scrollbar.
 - Mehr Innenabstand verhindert abgeschnittene Beschriftungen an Fensterrändern.
@@ -158,6 +302,8 @@
 - Wenn kein unterstütztes Terminal gefunden wird, erhält der Benutzer einen klaren manuellen Installationshinweis.
 
 # Changelog
+
+- Test 14: modusabhängiges VoIP-Audio-Routing ergänzt. Unterstützte Sprachclients werden jetzt beim Wechsel automatisch auf die passenden RX/TX-Geräte gesetzt: PC-User auf die aktuellen Desktop-Standardgeräte, Funk-Gateway auf `FunkGateway_TX`/`FunkGateway_RX_Input`, VoIP-Papagei auf die dedizierten Papagei-RX/TX-Geräte. Dadurch bleiben keine Papagei-Routen mehr im Gateway hängen; numerische IDs werden weiterhin nicht fest verdrahtet.
 
 ## 0.5.9.28 – Kompaktes und ausführliches Protokoll
 - Neue Checkbox **„Ausführliches Log“** im Reiter **Protokoll**.

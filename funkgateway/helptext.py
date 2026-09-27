@@ -9,15 +9,15 @@ HELP_HTML = r"""
 <li>Unter <b>PTT / Modem</b> zuerst den Testmodus benutzen.</li>
 <li>Unter <b>Audio-Automatik</b> den echten Ausgang zum Funkgerät wählen.</li>
 <li>Unter <b>RX / Rogerbeep</b> die Funk-Empfangsquelle wählen.</li>
-<li>In TeamSpeak, Mumble oder FRN <b>FunkGateway_TX</b> als Lautsprecher-Ausgang wählen.</li>
-<li>Für Funk → Computer <b>FunkGateway_RX_Input</b> als Mikrofon-/Aufnahmequelle wählen.</li>
+<li>In TeamSpeak, Mumble, TeamTalk, Zello und ähnlichen Programmen <b>Wiedergabe und Mikrofon auf Standard/Default lassen</b>.</li>
+<li>FunkGateway verschiebt unterstützte VoIP-Streams automatisch auf die passenden virtuellen Geräte der gewählten Betriebsart und beim Wechsel wieder zurück.</li>
 <li>Gateway starten und Pegel/Status beobachten.</li>
 </ol>
 
 <h3>2. Audio-Automatik</h3>
-<p><b>FunkGateway_TX</b> ist der virtuelle Ausgang für TeamSpeak, Mumble, FRN und ähnliche Programme. Alles, was dort abgespielt wird, kann zum Funkgerät weitergegeben werden.</p>
+<p><b>FunkGateway_TX</b> und <b>FunkGateway_RX_Input</b> sind interne virtuelle Geräte für den Gateway-Betrieb. Du musst sie in TeamSpeak, Mumble, TeamTalk, Zello usw. normalerweise <b>nicht selbst auswählen</b>.</p>
+<p>Lasse Ein- und Ausgabe im VoIP-Programm auf <b>Standard/Default</b>. FunkGateway routet unterstützte laufende Streams automatisch: PC-User auf die System-Defaults, Funk-Gateway auf TX/RX und VoIP-Papagei auf seine getrennten Papagei-Geräte.</p>
 <p><b>TX-Verstärkung</b> macht Computer-Audio in Richtung Funk lauter oder leiser. Wenn die Clipping-Anzeige anschlägt, ist der Pegel zu hoch.</p>
-<p><b>FunkGateway_RX_Input</b> ist die virtuelle Aufnahmequelle für den Rückweg Funk → Computer. Sie wird automatisch angelegt.</p>
 
 <h3>3. RX / Rogerbeep</h3>
 <p><b>RX-Erkennungsschwelle</b>: Ab diesem Pegel gilt ein Funksignal als empfangen.</p>
