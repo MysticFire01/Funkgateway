@@ -3558,7 +3558,7 @@ class MainWindow(QMainWindow):
         manual=(mode=="pc")
         self.frn_ptt_btn.setVisible(manual)
         if panel is not None:
-            panel.set_gateway_mode(mode=="gateway")
+            panel.set_gateway_mode(mode in ("gateway","radio_parrot"))
             self.frn_ptt_btn.setEnabled(manual and panel.connected and panel.audio_enabled.isChecked())
             self.frn_ptt_btn.setChecked(bool(panel.ptt_active))
             self.frn_ptt_btn.setText("FRN TX AKTIV" if panel.ptt_active else "FRN PTT")
@@ -9161,6 +9161,12 @@ done"""
     def on_rx_activity(self,active):
         now=time.monotonic()
 
+        # FRN 0.6.2: Funk-RX/VOX steuert FRN-TX in beiden Funkmodi.
+        if self._mode() in ("gateway","radio_parrot"):
+            panel=getattr(self,"frn_panel",None)
+            if panel is not None and panel.connected and panel.audio_enabled.isChecked():
+                panel.ptt(bool(active),force=True)
+
         if hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked():
             # *91# may enable Papagei while the same RF carrier is still up.
             # IMPORTANT: this release gate must run before the pending-ACK gate.
@@ -9570,6 +9576,9 @@ done"""
             self.dtmf_mode_ack_generation += 1
             self.dtmf_mode_ack_pending=False
         if self.ptt: self.set_ptt(False)
+        panel=getattr(self,"frn_panel",None)
+        if panel is not None and panel.connected:
+            panel.ptt(False,force=True)
         self._shutdown_ptt()
         self.log("Gateway gestoppt.")
 
@@ -9586,7 +9595,11 @@ done"""
         try:
             if self.ptt: self.ptt.key(False)
         except Exception: pass
-        self.tx=False; self.tx_since=None; self.tx_lbl.setText("● PTT AUS"); self.log("NOT-AUS ausgelöst: PTT AUS.")
+        self.tx=False; self.tx_since=None; self.tx_lbl.setText("● PTT AUS")
+        panel=getattr(self,"frn_panel",None)
+        if panel is not None and panel.connected:
+            panel.ptt(False,force=True)
+        self.log("NOT-AUS ausgelöst: PTT AUS.")
 
     def test_ptt(self):
         try:

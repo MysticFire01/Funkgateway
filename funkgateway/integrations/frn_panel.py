@@ -16,7 +16,7 @@ class FrnPanel(QWidget):
 
     def __init__(self,parent=None):
         super().__init__(parent); self.client=None; self.rows=[]; self.filtered_rows=[]; self.direct_rooms=[]; self.talker_name=''; self.connected=False
-        self.tx_db=-120.0; self.rx_db=-120.0; self.ptt_active=False; self._pending_room=None; self._room_switch_active=False; self._room_switch_reconnect_scheduled=False; self.selected_server_row=None; self._last_auto_client_type=None; self._active_room_count=None
+        self.tx_db=-120.0; self.rx_db=-120.0; self.ptt_active=False; self._pending_room=None; self._room_switch_active=False; self._room_switch_reconnect_scheduled=False; self.selected_server_row=None; self._last_auto_client_type=None; self._active_room_count=None; self._radio_auto_mode=False
         self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._log)
         self._build(); self.refresh_audio_devices(); self._update_status()
         self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(20000); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
@@ -79,12 +79,15 @@ class FrnPanel(QWidget):
         if not self.server.text().strip(): raise ValueError('Bitte FRN-Server auswählen oder eintragen.')
         if not self.room.text().strip(): raise ValueError('Bitte zuerst einen Raum auswählen. FRN benötigt für die Anmeldung einen Raum.')
         selected=self.client_type.currentData()
+        parent_mode=(self.parent()._mode() if self.parent() is not None and hasattr(self.parent(),'_mode') else 'pc')
+        radio_auto=parent_mode in ('gateway','radio_parrot')
         if selected=='auto':
-            client_type=1 if (self.parent() is not None and hasattr(self.parent(),'_mode') and self.parent()._mode()=='gateway') else 2
+            client_type=1 if radio_auto else 2
         else:
             client_type=int(selected)
-        vx=self.protocol_version.text().strip() or '2014000'
-        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,self.band.text().strip(),self.description.text().strip(),self.country.text().strip(),self.city.text().strip(),self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked())
+        vx=self.protocol_version.text().strip() or '20261016'
+        pulse_input='funkgateway_rx_source' if radio_auto else None
+        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,self.band.text().strip(),self.description.text().strip(),self.country.text().strip(),self.city.text().strip(),self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input)
 
     def connect_frn(self):
         try: cfg=self._cfg()
@@ -169,10 +172,14 @@ class FrnPanel(QWidget):
     def toggle_ptt(self): self.ptt(not self.ptt_active)
     def ptt_settings(self): return self.ptt_mode.currentData(),self.ptt_limit_enabled.isChecked(),self.ptt_limit.value()
     def set_gateway_mode(self,is_gateway):
-        self.ptt_mode.setEnabled(not is_gateway); self.ptt_limit_enabled.setEnabled(not is_gateway); self.ptt_limit.setEnabled(not is_gateway); self.ptt_hint.setText('Gatewaymodus: keine manuelle PTT oder Verriegelung. Die Gateway-Logik steuert RX/TX automatisch.' if is_gateway else 'Die globale FRN-PTT befindet sich oben in FunkGateway und bleibt in jedem Reiter erreichbar.')
-        if is_gateway and self.ptt_active:self.ptt(False,force=True)
+        radio_auto=bool(is_gateway)
+        was_radio_auto=self._radio_auto_mode
+        self._radio_auto_mode=radio_auto
+        self.ptt_mode.setEnabled(not radio_auto); self.ptt_limit_enabled.setEnabled(not radio_auto); self.ptt_limit.setEnabled(not radio_auto); self.ptt_hint.setText('Funkmodus: keine manuelle FRN-PTT. Funk-RX/VOX steuert FRN TX automatisch; bei Funkende geht FRN sicher auf RX0.' if radio_auto else 'Die globale FRN-PTT befindet sich oben in FunkGateway und bleibt in jedem Reiter erreichbar.')
+        if radio_auto and not was_radio_auto and self.ptt_active:
+            self.ptt(False,force=True)
         if self.client_type.currentData()=='auto':
-            desired=1 if is_gateway else 2
+            desired=1 if radio_auto else 2
             if self._last_auto_client_type != desired:
                 self._last_auto_client_type=desired
                 self._log('FRN Client-Typ automatisch: '+('Gateway (CL=1)' if desired==1 else 'PC only (CL=2)'))

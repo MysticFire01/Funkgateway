@@ -1,4 +1,14 @@
-# FunkGateway UI 0.6.1
+# FunkGateway UI 0.6.2
+
+## Release 0.6.2
+
+- Funk → FRN korrigiert: Funk-RX/VOX steuert FRN-TX in Funk-Gateway und Funk-Papagei automatisch.
+- FRN-TX liest in Funkmodi direkt aus `funkgateway_rx_source` / `FunkGateway_RX_Input`; PC-User behält den gewählten Mikrofoneingang.
+- Nach Funkende wird FRN zuverlässig mit `RX0` auf Empfang zurückgeschaltet.
+- Endet der Funkträger noch während `TX_WAITING`, wird die Anforderung sauber abgebrochen; verspätete TX-Freigaben können FRN nicht mehr in TX festhalten.
+- Funk-Papagei wird für FRN jetzt als automatischer Funkmodus behandelt; keine manuelle/latchende FRN-PTT.
+- Gateway-Stop und NOT-AUS lösen einen eventuell aktiven FRN-TX-Zustand zusätzlich sicher.
+- FRN → Funk bleibt über den bestehenden FunkGateway-TX/VOX-Pfad unverändert erhalten.
 
 ## Release 0.6.1
 

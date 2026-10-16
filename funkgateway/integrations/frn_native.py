@@ -386,6 +386,7 @@ class FrnConfig:
     audio_input: Optional[int]
     audio_output: Optional[int]
     audio_enabled: bool
+    pulse_audio_input: Optional[str] = None
 
 
 class FrnNativeClient:
@@ -410,6 +411,7 @@ class FrnNativeClient:
         self.play_thread = None
         self.output_stream = None
         self.input_stream = None
+        self.input_proc = None
 
         self.want_tx = threading.Event()
         self.tx_granted_evt = threading.Event()
@@ -451,6 +453,12 @@ class FrnNativeClient:
         self.stop_evt.set()
         self.want_tx.clear()
         self.tx_granted_evt.clear()
+        if self.input_proc:
+            try:
+                self.input_proc.terminate()
+            except Exception:
+                pass
+            self.input_proc = None
         self._close_audio()
         s = self.sock
         self.sock = None
@@ -483,6 +491,14 @@ class FrnNativeClient:
                 self.signals.error.emit(str(exc))
         else:
             self.want_tx.clear()
+            if self.state == "TX_WAITING":
+                try:
+                    self._send_line("RX0")
+                except Exception:
+                    pass
+                self.tx_granted_evt.clear()
+                self.signals.tx_granted.emit(False)
+                self._set_state("IDLE")
 
     def _start_audio(self):
         if not self.cfg.audio_enabled:
@@ -545,31 +561,57 @@ class FrnNativeClient:
 
     def _tx_audio_loop(self):
         try:
-            if sd is None or self.codec is None:
+            if self.codec is None:
                 raise RuntimeError("Audio/Codec ist nicht initialisiert.")
-            self.input_stream = sd.RawInputStream(
-                samplerate=FRN_SAMPLE_RATE,
-                blocksize=FRN_AUDIO_SAMPLES,
-                channels=1,
-                dtype="int16",
-                device=self.cfg.audio_input,
-                latency="low",
-            )
-            self.input_stream.start()
-            self.signals.log.emit("FRN TX-Audio gestartet.")
-            while (
-                not self.stop_evt.is_set()
-                and self.want_tx.is_set()
-                and self.tx_granted_evt.is_set()
-            ):
-                pcm, overflow = self.input_stream.read(FRN_AUDIO_SAMPLES)
-                pcm = bytes(pcm)
-                self.signals.audio_level.emit(rms_dbfs(pcm))
-                if overflow:
-                    self.signals.log.emit("WARN: Audio-Eingang hatte einen Overflow.")
-                packet = self.codec.encode_packet(pcm)
-                # FRN protocol: TX1 line immediately followed by 325 encoded bytes.
-                self._send(b"TX1\r\n" + packet)
+            if self.cfg.pulse_audio_input:
+                self.input_proc = subprocess.Popen([
+                    "parec", f"--device={self.cfg.pulse_audio_input}",
+                    "--format=s16le", f"--rate={FRN_SAMPLE_RATE}", "--channels=1",
+                ], stdout=subprocess.PIPE)
+                self.signals.log.emit(
+                    f"FRN TX-Audio: Funk-RX über {self.cfg.pulse_audio_input}."
+                )
+                pending = bytearray()
+                while (
+                    not self.stop_evt.is_set()
+                    and self.want_tx.is_set()
+                    and self.tx_granted_evt.is_set()
+                ):
+                    need = FRN_AUDIO_SAMPLES * 2 - len(pending)
+                    chunk = self.input_proc.stdout.read(need)
+                    if not chunk:
+                        raise RuntimeError("Funk-RX-Audiopfad wurde beendet.")
+                    pending.extend(chunk)
+                    if len(pending) < FRN_AUDIO_SAMPLES * 2:
+                        continue
+                    pcm = bytes(pending[:FRN_AUDIO_SAMPLES * 2])
+                    del pending[:FRN_AUDIO_SAMPLES * 2]
+                    self.signals.audio_level.emit(rms_dbfs(pcm))
+                    self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
+            else:
+                if sd is None:
+                    raise RuntimeError("sounddevice ist nicht initialisiert.")
+                self.input_stream = sd.RawInputStream(
+                    samplerate=FRN_SAMPLE_RATE,
+                    blocksize=FRN_AUDIO_SAMPLES,
+                    channels=1,
+                    dtype="int16",
+                    device=self.cfg.audio_input,
+                    latency="low",
+                )
+                self.input_stream.start()
+                self.signals.log.emit("FRN TX-Audio gestartet.")
+                while (
+                    not self.stop_evt.is_set()
+                    and self.want_tx.is_set()
+                    and self.tx_granted_evt.is_set()
+                ):
+                    pcm, overflow = self.input_stream.read(FRN_AUDIO_SAMPLES)
+                    pcm = bytes(pcm)
+                    self.signals.audio_level.emit(rms_dbfs(pcm))
+                    if overflow:
+                        self.signals.log.emit("WARN: Audio-Eingang hatte einen Overflow.")
+                    self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
             if self.sock and not self.stop_evt.is_set():
                 self._send_line("RX0")
                 self._set_state("IDLE")
@@ -584,6 +626,12 @@ class FrnNativeClient:
                 except Exception:
                     pass
                 self.input_stream = None
+            if self.input_proc:
+                try:
+                    self.input_proc.terminate()
+                except Exception:
+                    pass
+                self.input_proc = None
             self.tx_granted_evt.clear()
             self.signals.tx_granted.emit(False)
             self.signals.log.emit("FRN TX-Audio beendet.")
@@ -735,6 +783,11 @@ class FrnNativeClient:
                 self.signals.tx_granted.emit(True)
                 if self.want_tx.is_set():
                     self._start_tx_thread()
+                else:
+                    self.tx_granted_evt.clear()
+                    self.signals.tx_granted.emit(False)
+                    self._send_line("RX0")
+                    self._set_state("IDLE")
                 continue
 
             if self.state == "RX_CLIENT_LIST_HEADER":
