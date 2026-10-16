@@ -1,4 +1,5 @@
-name: Release FunkGateway UI 0.6.1\n# retry-build-1
+name: Release FunkGateway UI 0.6.1
+# retry-build-2
 
 on:
   push:

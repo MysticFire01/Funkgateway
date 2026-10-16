@@ -996,7 +996,8 @@ class MainWindow(QMainWindow):
 
         mf.addRow(selftest_btn)
         mf.addRow("Konfiguration:",backup_row)
-        mf.addRow("Profil:",self.profile_combo)\n        mf.addRow("",profile_actions)
+        mf.addRow("Profil:",self.profile_combo)
+        mf.addRow("",profile_actions)
         mf.addRow(diag_btn)
 
         maintenance_note=QLabel(
