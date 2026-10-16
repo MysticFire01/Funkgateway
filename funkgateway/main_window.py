@@ -6994,7 +6994,8 @@ done"""
             self.log(f"Mumble-Audio: Wiedergabestream konnte nicht ermittelt werden: {e}")
         return sorted(set(ids))
 
-    def _set_mumble_playback_muted(self, muted):        """Mute only Mumble playback, never the entire radio/virtual sink."""
+    def _set_mumble_playback_muted(self, muted):
+        """Mute only Mumble playback, never the entire radio/virtual sink."""
         if muted:
             ids=self._mumble_sink_inputs()
             self.mumble_muted_sink_inputs=ids
