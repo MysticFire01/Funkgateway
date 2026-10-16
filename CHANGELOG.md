@@ -1,5 +1,19 @@
 # FunkGateway UI 0.6.0
 
+## V6 FRN Native Alpha 9
+
+- Native FRN-Unterstützung direkt in FunkGateway UI unter **Integrationen → FRN · Alpha** integriert; TeamSpeak und Mumble bleiben parallel verfügbar.
+- FRN-SystemManager für DE Alternativ, DE Original und Russland, Serversuche, Server-/Raumtrennung, manuelle Raumeingabe und direkte `NET_NAMES`-Raumliste.
+- Raumwechsel bereinigt: interner Disconnect behält den Zielraum; ein echtes Trennen setzt nur Sitzungsdaten zurück.
+- Bereits aktive Räume werden bei Auswahl-/Refresh-Ereignissen still erkannt; keine doppelten `Dieser Raum ist bereits verbunden`-Meldungen mehr.
+- FRN-Kompatibilität erweitert: Default-VX `20261016`; Login-Stufe 1 akzeptiert klassische Antworten sowie ein exaktes Echo der konfigurierten VX-Kennung. Erfolgreich mit unterschiedlichen EuroGate-/Bayernfunk-Servervarianten getestet.
+- Client-Klasse automatisch nach FunkGateway-Modus: PC-User `CL=2`, Funk-Gateway `CL=1`; manuelle Auswahl bleibt für legitime FRN-Kompatibilität möglich.
+- Teilnehmerliste mit Funkstatus: **grün = idle**, **rot = anderer Sprecher**, **orange = FunkGateway selbst sendet**.
+- Die Belegung des aktiven Raums wird sofort aus der aktuellen Teilnehmerliste übernommen. Die anderen Raumbelegungen werden alle **20 Sekunden** schonend vom SystemManager aktualisiert; Auswahl und laufende Sitzung bleiben erhalten.
+- Getrennte FRN-RX-/TX-Pegel und GSM 06.10 WAV49 Audio über `libgsm`.
+- Globale FRN-PTT im PC-User-Modus mit Halten oder Verriegelung und optionaler TX-Zeitbegrenzung. Im Funk-Gateway-Modus keine manuelle PTT; TX folgt dem Gatewaybetrieb.
+- Debian-Installation ergänzt `libgsm1`.
+
 ## Release 0.6.0
 
 - Neues 0.6-Design mit System-/Hell-/Dunkelmodus, sechs Farbschemata, modusabhängigen Icons, Live-Statuskarten und analogem S-Meter.

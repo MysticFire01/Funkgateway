@@ -1,6 +1,18 @@
 # FunkGateway UI 0.6.0
 
 
+## Neu: Native FRN-Unterstützung (Alpha)
+
+FunkGateway UI 0.6.0 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
+
+Der aktuelle Alpha-Stand umfasst Server- und Raumlisten über die FRN-SystemManager, direkte Server-Raumlisten über `NET_NAMES`, Teilnehmerliste, RX/TX-Pegel, Raumwechsel und FRN-Audio mit GSM 06.10 WAV49. Die Client-Klasse wird passend zur FunkGateway-Betriebsart gewählt: **PC-User = PC Only (CL=2)**, **Funk-Gateway = Gateway (CL=1)**. Die VX-Kennung bleibt sichtbar und editierbar; der aktuelle Default ist `20261016`.
+
+Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**, **rot = anderer FRN-Teilnehmer spricht**, **orange = FunkGateway selbst sendet** (manuelle PTT oder Gateway-TX). Die Teilnehmerzahl des aktiven Raums wird unmittelbar aus der FRN-Clientliste aktualisiert; die übrigen Raumbelegungen werden schonend etwa alle **20 Sekunden** über den SystemManager nachgeführt.
+
+Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
+
+Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
 ## Neu in 0.6.0: Themes und geschützte Baken
 
 FunkGateway UI 0.6.0 führt Hell-/Dunkel-/Systemdarstellung, sechs abgestimmte Farbschemata und farbige Icons für die vier Betriebsarten ein. Die Textfarbe auf Akzentflächen wird automatisch kontrastreich gewählt.
@@ -78,6 +90,7 @@ Diagnosepakete entfernen bekannte Zugangsdaten und Authentifizierungsgeheimnisse
 - harte Audio-Isolation zwischen Papagei und VoIP
 - TeamSpeak 3 ClientQuery inkl. Channel Commander, Mute/Deaf und Raumwechsel
 - Mumble lokal per DBus sowie optionale Bridge-/Ice-/SSH-Adminmodi
+- Native FRN-Integration (Alpha) mit Server-/Raumlisten, Teilnehmerstatus, Audio, PTT und Gateway-TX
 - DTMF-Fernsteuerung direkt über echten Funk-RX
 - optionale PIN-AUTH oder TOTP-AUTH
 - lokaler TOTP-QR-Code ohne externen Webdienst

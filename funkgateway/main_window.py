@@ -39,6 +39,7 @@ from .tones import make_cw, make_dtmf, make_roger_tone
 from .helptext import HELP_HTML
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
+from .integrations.frn_panel import FrnPanel
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
 
@@ -336,7 +337,15 @@ class MainWindow(QMainWindow):
         self.ident_main_btn=self.big("Rufzeichen jetzt senden")
         self.ident_main_btn.clicked.connect(self.send_id)
 
-        for b in (self.start_main_btn,self.stop_main_btn,self.emergency_main_btn,self.ident_main_btn):
+        # Native FRN Alpha: manuelle PTT bleibt außerhalb aller Tabs erreichbar.
+        # Im Gatewaymodus wird sie bewusst vollständig ausgeblendet.
+        self.frn_ptt_btn=self.big("FRN PTT")
+        self.frn_ptt_btn.pressed.connect(self._frn_ptt_pressed)
+        self.frn_ptt_btn.released.connect(self._frn_ptt_released)
+        self.frn_ptt_btn.setToolTip("FRN-PTT. Halten oder Verriegeln wird unter Integration → FRN → Audio / PTT gewählt.")
+        self.frn_ptt_timer=QTimer(self); self.frn_ptt_timer.setSingleShot(True); self.frn_ptt_timer.timeout.connect(self._frn_ptt_timeout)
+
+        for b in (self.start_main_btn,self.stop_main_btn,self.emergency_main_btn,self.ident_main_btn,self.frn_ptt_btn):
             b.setMinimumHeight(48)
             controls_layout.addWidget(b)
 
@@ -987,8 +996,7 @@ class MainWindow(QMainWindow):
 
         mf.addRow(selftest_btn)
         mf.addRow("Konfiguration:",backup_row)
-        mf.addRow("Profil:",self.profile_combo)
-        mf.addRow("",profile_actions)
+        mf.addRow("Profil:",self.profile_combo)        mf.addRow("",profile_actions)
         mf.addRow(diag_btn)
 
         maintenance_note=QLabel(
@@ -1470,6 +1478,9 @@ class MainWindow(QMainWindow):
                 parts.append("Mumble prüft …")
             else:
                 parts.append("Mumble getrennt")
+        if hasattr(self,"frn_panel"):
+            parts.append("FRN aktiv" if self.frn_panel.connected else "FRN Alpha getrennt")
+            if self.frn_panel.connected: voip_connected=True
         if not parts:
             parts.append("keine optionale Integration aktiv")
         self.status_voip.setText(", ".join(parts))
@@ -1636,6 +1647,13 @@ class MainWindow(QMainWindow):
                 f"<span style='color:{color}'>●</span> {html.escape(str(label))}"
                 for color,label in chunks
             )
+            if hasattr(self,"frn_panel"):
+                frn=self.frn_panel
+                frn_color="#27AE60" if frn.connected else "#7F8C8D"
+                frn_label=(f"FRN {frn.room.text().strip() or 'verbunden'}" if frn.connected else "FRN getrennt")
+                if frn.talker_name: frn_label += f" · RX {frn.talker_name}"
+                if frn.ptt_active: frn_label += " · TX"
+                detail += f"&nbsp;&nbsp;<span style='color:{frn_color}'>●</span> {html.escape(frn_label)}"
             self.live_status_bar.setText(f"<b>{html.escape(mode_name)}</b>&nbsp;&nbsp;{detail}")
 
     @staticmethod
@@ -1978,7 +1996,6 @@ class MainWindow(QMainWindow):
         self.hang.setRange(0,5000)
         self.hang.setValue(550)
         self.hang.setSuffix(" ms")
-
         self.tx_gain=QSpinBox()
         self.tx_gain.setRange(-12,24)
         self.tx_gain.setValue(0)
@@ -2977,8 +2994,7 @@ class MainWindow(QMainWindow):
         target_sink="funkgateway_voip_parrot_rx"
         target_source="funkgateway_voip_parrot_source"
         target_sink_id=self._sink_name_to_id(target_sink)
-        target_source_id=self._source_name_to_id(target_source)
-        if not target_sink_id or not target_source_id:
+        target_source_id=self._source_name_to_id(target_source)        if not target_sink_id or not target_source_id:
             return
         # RX: VoIP client playback -> dedicated parrot RX sink.
         for stream in self._read_sink_inputs():
@@ -3525,6 +3541,53 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(100,self._start_pc_mic_monitor)
         else:
             self._stop_pc_mic_monitor()
+        self._sync_frn_global_ui()
+
+    def _frn_status_changed(self, text):
+        self._sync_frn_global_ui()
+        self.update_start_status()
+
+    def _sync_frn_global_ui(self):
+        if not hasattr(self,"frn_ptt_btn"):
+            return
+        mode=self._mode() if hasattr(self,"operating_mode") else "gateway"
+        panel=getattr(self,"frn_panel",None)
+        # Keine manuelle FRN-PTT im Gatewaybetrieb.
+        manual=(mode=="pc")
+        self.frn_ptt_btn.setVisible(manual)
+        if panel is not None:
+            panel.set_gateway_mode(mode=="gateway")
+            self.frn_ptt_btn.setEnabled(manual and panel.connected and panel.audio_enabled.isChecked())
+            self.frn_ptt_btn.setChecked(bool(panel.ptt_active))
+            self.frn_ptt_btn.setText("FRN TX AKTIV" if panel.ptt_active else "FRN PTT")
+            self.frn_ptt_btn.setStyleSheet("font-weight:bold;" + ("background:#D32F2F;color:white;" if panel.ptt_active else ""))
+
+    def _frn_ptt_pressed(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is None or self._mode()!="pc": return
+        mode,limit_on,seconds=panel.ptt_settings()
+        if mode=="hold": panel.ptt(True)
+        else: panel.toggle_ptt()
+        if panel.ptt_active and limit_on:
+            self.frn_ptt_timer.start(max(1,int(seconds))*1000)
+        elif not panel.ptt_active:
+            self.frn_ptt_timer.stop()
+        self._sync_frn_global_ui()
+
+    def _frn_ptt_released(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is None or self._mode()!="pc": return
+        mode,_,_=panel.ptt_settings()
+        if mode=="hold":
+            panel.ptt(False); self.frn_ptt_timer.stop(); self._sync_frn_global_ui()
+
+    def _frn_ptt_timeout(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is not None and panel.ptt_active:
+            panel.ptt(False,force=True)
+            try: self.log("FRN PTT: maximale Sendedauer erreicht – automatisch auf RX geschaltet.")
+            except Exception: pass
+        self._sync_frn_global_ui()
 
     def _pc_commander_toggled(self, checked):
         if not self._is_pc_mode():
@@ -3930,8 +3993,7 @@ class MainWindow(QMainWindow):
             if self.pc_parrot_file.stat().st_size < 128:
                 self.pc_parrot_status.setText("Aufnahme war leer.")
                 self.log("PC-Papagei: Aufnahme war leer.")
-                self._reset_pc_parrot_ui()
-                return
+                self._reset_pc_parrot_ui()                return
         except Exception:
             pass
 
@@ -4067,6 +4129,14 @@ class MainWindow(QMainWindow):
         of.addRow("Mumble:",mumble_hint)
         of.addRow("",general_hint)
         integration_tabs.addTab(overview,"Übersicht")
+
+        # --- FRN Native Alpha ----------------------------------------------
+        self.frn_panel=FrnPanel(self)
+        self.frn_panel.statusChanged.connect(self._frn_status_changed)
+        self.frn_panel.connectedChanged.connect(lambda _yes:self._sync_frn_global_ui())
+        self.frn_panel.talkerChanged.connect(lambda _name:self._sync_frn_global_ui())
+        self.frn_panel.pttStateChanged.connect(lambda _yes:self._sync_frn_global_ui())
+        integration_tabs.addTab(self.frn_panel,"FRN · Alpha")
 
         # --- TeamSpeak -----------------------------------------------------
         ts_page=QWidget(); f=QFormLayout(ts_page)
@@ -4922,7 +4992,6 @@ class MainWindow(QMainWindow):
                 )
         except Exception as e:
             self.show_copyable_error("Update vorbereiten",str(e))
-
     def choose_protection_wav(self, field):
         p,_=QFileDialog.getOpenFileName(self,"Ansage-WAV wählen","","WAV (*.wav)")
         if p:
@@ -5922,8 +5991,7 @@ class MainWindow(QMainWindow):
         end=html.escape((self.dtmf_end_char.text().strip() or "#")[:1])
         generated=datetime.now().strftime("%d.%m.%Y %H:%M")
 
-        rows_html=[]
-        for group,action,code,target in self._dtmf_print_rows():
+        rows_html=[]        for group,action,code,target in self._dtmf_print_rows():
             cleaned=self._clean_dtmf_code(code)
             shown=html.escape(cleaned) if cleaned else "<i>nicht belegt</i>"
             target_html=html.escape(str(target)) if target else ""
@@ -6922,8 +6990,7 @@ done"""
             self.log(f"Mumble-Audio: Wiedergabestream konnte nicht ermittelt werden: {e}")
         return sorted(set(ids))
 
-    def _set_mumble_playback_muted(self, muted):
-        """Mute only Mumble playback, never the entire radio/virtual sink."""
+    def _set_mumble_playback_muted(self, muted):        """Mute only Mumble playback, never the entire radio/virtual sink."""
         if muted:
             ids=self._mumble_sink_inputs()
             self.mumble_muted_sink_inputs=ids
@@ -7922,8 +7989,7 @@ done"""
                 self.log(f"RX-Hardware-Port-Watchdog: {active} -> {wanted}")
             else:
                 self.rx_hw_port_status.setText(
-                    f"Hardware-Port-Watchdog: aktiv {now_active or 'unbekannt'}, gewünscht {wanted}"
-                )
+                    f"Hardware-Port-Watchdog: aktiv {now_active or 'unbekannt'}, gewünscht {wanted}"                )
         except Exception as e:
             self.rx_hw_port_status.setText(f"Hardware-Port-Watchdog konnte Port nicht setzen: {e}")
 
@@ -8923,7 +8989,6 @@ done"""
             self.parrot_pending_beacon=True
             self.parrot_beacon_free_since=None
             self.log("Papageibake fällig – wartet auf freien Funkkanal.")
-
     def _parrot_send_beacon(self):
         if not self._is_radio_parrot_mode():
             self.parrot_pending_beacon=False
@@ -9894,6 +9959,8 @@ done"""
         "parrot_beacon_enabled":self.parrot_beacon_enabled.isChecked(),"parrot_beacon_file":self.parrot_beacon_file.text(),
         "parrot_beacon_interval":self.parrot_beacon_interval.value(),"parrot_beacon_free_wait_ms":self.parrot_beacon_free_wait_ms.value(),
         "parrot_beacon_lead_ms":self.parrot_beacon_lead_ms.value(),"parrot_beacon_tail_ms":self.parrot_beacon_tail_ms.value()}
+        if hasattr(self,"frn_panel"):
+            data["frn"]=self.frn_panel.to_config()
         CFG_FILE.write_text(json.dumps(data,indent=2),encoding="utf-8")
         try: CFG_FILE.chmod(0o600)
         except Exception: pass
@@ -9920,8 +9987,7 @@ done"""
             self.banner_enabled.blockSignals(False)
             self._load_banner_pixmap(self.banner_path.text())
             if hasattr(self,"start_banner"):
-                self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))
-                if self.banner_enabled.isChecked():
+                self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))                if self.banner_enabled.isChecked():
                     QTimer.singleShot(0,self._update_banner_pixmap)
             self.advanced_ui.setChecked(bool(d.get("advanced_ui",False)))
             self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
@@ -10115,6 +10181,8 @@ done"""
             self.parrot_beacon_tail_ms.setValue(int(d.get("parrot_beacon_tail_ms",800) or 800))
             rooms=d.get("protection_ts_rooms",{})
             self.protection_ts_rooms=rooms if isinstance(rooms,dict) else {}
+            if hasattr(self,"frn_panel"):
+                self.frn_panel.load_config(d.get("frn",{}))
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")
 
 
@@ -10187,6 +10255,9 @@ done"""
 
 
     def closeEvent(self,ev):
+        if hasattr(self,"frn_panel"):
+            try: self.frn_panel.disconnect_frn()
+            except Exception: pass
         self._stop_pc_mic_monitor()
         if getattr(self,"voip_parrot_running",False):
             self.stop_voip_parrot()
