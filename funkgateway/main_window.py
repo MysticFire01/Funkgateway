@@ -2995,7 +2995,8 @@ class MainWindow(QMainWindow):
         target_sink="funkgateway_voip_parrot_rx"
         target_source="funkgateway_voip_parrot_source"
         target_sink_id=self._sink_name_to_id(target_sink)
-        target_source_id=self._source_name_to_id(target_source)        if not target_sink_id or not target_source_id:
+        target_source_id=self._source_name_to_id(target_source)
+        if not target_sink_id or not target_source_id:
             return
         # RX: VoIP client playback -> dedicated parrot RX sink.
         for stream in self._read_sink_inputs():
@@ -3994,7 +3995,8 @@ class MainWindow(QMainWindow):
             if self.pc_parrot_file.stat().st_size < 128:
                 self.pc_parrot_status.setText("Aufnahme war leer.")
                 self.log("PC-Papagei: Aufnahme war leer.")
-                self._reset_pc_parrot_ui()                return
+                self._reset_pc_parrot_ui()
+                return
         except Exception:
             pass
 
@@ -9988,7 +9990,8 @@ done"""
             self.banner_enabled.blockSignals(False)
             self._load_banner_pixmap(self.banner_path.text())
             if hasattr(self,"start_banner"):
-                self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))                if self.banner_enabled.isChecked():
+                self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))
+                if self.banner_enabled.isChecked():
                     QTimer.singleShot(0,self._update_banner_pixmap)
             self.advanced_ui.setChecked(bool(d.get("advanced_ui",False)))
             self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
