@@ -1,9 +1,9 @@
-# FunkGateway UI 0.6.0
+# FunkGateway UI 0.6.1
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
 
-FunkGateway UI 0.6.0 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
+FunkGateway UI 0.6.1 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
 
 Der aktuelle Alpha-Stand umfasst Server- und Raumlisten über die FRN-SystemManager, direkte Server-Raumlisten über `NET_NAMES`, Teilnehmerliste, RX/TX-Pegel, Raumwechsel und FRN-Audio mit GSM 06.10 WAV49. Die Client-Klasse wird passend zur FunkGateway-Betriebsart gewählt: **PC-User = PC Only (CL=2)**, **Funk-Gateway = Gateway (CL=1)**. Die VX-Kennung bleibt sichtbar und editierbar; der aktuelle Default ist `20261016`.
 
@@ -21,11 +21,11 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktuelle stabile Version: 0.6.0**
+**Aktuelle stabile Version: 0.6.1**
 
 ## Screenshots
 
-Die vier Betriebsarten von FunkGateway UI 0.6.0:
+Die vier Betriebsarten von FunkGateway UI 0.6.1:
 
 | PC-User | Funk-Gateway |
 |---|---|
@@ -39,7 +39,7 @@ Die vier Betriebsarten von FunkGateway UI 0.6.0:
 
 ## Betriebsarten
 
-FunkGateway UI **0.6.0** besitzt vier klar getrennte Betriebsarten:
+FunkGateway UI **0.6.1** besitzt vier klar getrennte Betriebsarten:
 
 - **PC-User / TeamSpeak** – normaler PC-/VoIP-Betrieb ohne Funkhardware. Funk-PTT, COS und Funk-RX bleiben vollständig deaktiviert. Die VoIP-Software verwendet ihre normalen **Standard/Default**-Audio-Geräte.
 - **Funk-Gateway** – vollständiger Funk ↔ VoIP-Betrieb mit Audio-Routing, RX-Erkennung, PTT, Rogerbeep, Rufzeichenbake, DTMF und Schutzfunktionen.

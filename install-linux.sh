@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP_VERSION="0.6.0"
+APP_VERSION="0.6.1"
 
 PM=""
 if command -v apt-get >/dev/null 2>&1; then PM="apt"
@@ -14,7 +14,7 @@ case "$PM" in
  apt)
    sudo apt-get update
    sudo apt-get install -y python3 python3-venv python3-pip python3-serial \
-     pulseaudio-utils libportaudio2 libsndfile1 libgl1 libegl1 \
+     pulseaudio-utils libportaudio2 libsndfile1 libgsm1 libgl1 libegl1 \
      libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
      libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
      libxcb-xinerama0 qrencode
@@ -30,7 +30,7 @@ case "$PM" in
    sudo zypper --non-interactive install python3 python3-pip python3-pyserial libpulse0 libportaudio2 libsndfile1 qrencode || true
    ;;
  *)
-   echo "Systempakete bitte manuell installieren: Python3/venv/pip, pyserial, pactl/parec/pacat/paplay, PortAudio, libsndfile, Qt/XCB und qrencode."
+   echo "Systempakete bitte manuell installieren: Python3/venv/pip, pyserial, pactl/parec/pacat/paplay, PortAudio, libsndfile, libgsm, Qt/XCB und qrencode."
    ;;
 esac
 

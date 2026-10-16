@@ -1,4 +1,15 @@
-# FunkGateway UI 0.6.0
+# FunkGateway UI 0.6.1
+
+## Release 0.6.1
+
+- Native FRN-Unterstützung als Alpha direkt in FunkGateway UI.
+- FRN-Login-Kompatibilität für unterschiedliche Servervarianten verbessert; Standard-VX ist `20261016`.
+- Server-/Raumlisten, direkte `NET_NAMES`-Raumliste, Teilnehmerstatus, FRN-Audio und Raumwechsel integriert.
+- Teilnehmerstatus: grün = idle, rot = anderer Sprecher, orange = FunkGateway sendet selbst.
+- Aktiver Raum wird sofort aus der Teilnehmerliste gezählt; andere Raumbelegungen werden etwa alle 20 Sekunden über den SystemManager aktualisiert.
+- PC-User erhält globale FRN-PTT; im Funk-Gateway-Modus folgt FRN-TX automatisch dem Gateway.
+- Debian/apt-Installation ergänzt `libgsm1`.
+- Der eingebaute Updater erkennt `v0.6.1` als neuere Version gegenüber 0.6.0.
 
 ## V6 FRN Native Alpha 9
 
