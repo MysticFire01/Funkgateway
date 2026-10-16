@@ -5994,7 +5994,8 @@ class MainWindow(QMainWindow):
         end=html.escape((self.dtmf_end_char.text().strip() or "#")[:1])
         generated=datetime.now().strftime("%d.%m.%Y %H:%M")
 
-        rows_html=[]        for group,action,code,target in self._dtmf_print_rows():
+        rows_html=[]
+        for group,action,code,target in self._dtmf_print_rows():
             cleaned=self._clean_dtmf_code(code)
             shown=html.escape(cleaned) if cleaned else "<i>nicht belegt</i>"
             target_html=html.escape(str(target)) if target else ""
