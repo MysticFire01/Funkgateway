@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP_VERSION="0.6.10"
+APP_VERSION="0.6.17"
 
 PM=""
 if command -v apt-get >/dev/null 2>&1; then PM="apt"
@@ -39,7 +39,7 @@ if [[ ! -d .venv ]]; then
   python3 -m venv --system-site-packages .venv
 fi
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
-.venv/bin/python -m pip install "PySide6>=6.5,<6.9" "sounddevice>=0.4,<0.6" "soundfile>=0.12,<0.14" "pyserial>=3.5,<4"
+.venv/bin/python -m pip install "PySide6>=6.5,<6.9" "sounddevice>=0.4,<0.6" "soundfile>=0.12,<0.14" "pyserial>=3.5,<4" "pynput>=1.7,<2"
 
 for cmd in pactl parec pacat paplay; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "FEHLER: $cmd fehlt"; exit 1; }
