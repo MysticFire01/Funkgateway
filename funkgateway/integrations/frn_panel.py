@@ -154,8 +154,10 @@ class FrnPanel(QWidget):
         self.ptt_hotkey_scope.addItem('Systemweit – auch in Mumble/anderen Fenstern','global')
         self.ptt_hotkey_scope.setCurrentIndex(0)
         self.ptt_hotkey_scope.currentIndexChanged.connect(lambda *_:self.pttHotkeyChanged.emit(self.ptt_hotkey_text()))
-        self.ptt_hint=QLabel('Standard ist „Nur in FunkGateway“. So löst eine Taste, die du in anderen Programmen benutzt, dort keine FRN-PTT aus. „Systemweit“ bitte nur bewusst wählen und möglichst eine selten genutzte Taste/Kombination verwenden.'); self.ptt_hint.setWordWrap(True)
-        f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('Hotkey-Bereich:',self.ptt_hotkey_scope); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
+        self.ptt_hotkey_status=QLabel('Hotkey-Status: lokal bereit')
+        self.ptt_hotkey_status.setWordWrap(True)
+        self.ptt_hint=QLabel('Standard ist „Nur in FunkGateway“. So löst eine Taste, die du in anderen Programmen benutzt, dort keine FRN-PTT aus. Bei „Systemweit“ zeigt der Status direkt an, ob der Linux-Backend-Listener wirklich läuft.'); self.ptt_hint.setWordWrap(True)
+        f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('Hotkey-Bereich:',self.ptt_hotkey_scope); f.addRow('',self.ptt_hotkey_status); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
         # diag
         w=QWidget(); vv=QVBoxLayout(w); self.log=QPlainTextEdit(); self.log.setReadOnly(True); vv.addWidget(self.log); tabs.addTab(w,'Diagnose')
 
@@ -272,6 +274,9 @@ class FrnPanel(QWidget):
     def ptt_settings(self): return self.ptt_mode.currentData(),self.ptt_limit_enabled.isChecked(),self.ptt_limit.value()
     def ptt_hotkey_text(self): return self.ptt_hotkey.hotkey()
     def ptt_hotkey_scope_value(self): return self.ptt_hotkey_scope.currentData() or 'local'
+    def set_ptt_hotkey_status(self,text):
+        if hasattr(self,'ptt_hotkey_status'):
+            self.ptt_hotkey_status.setText('Hotkey-Status: '+str(text))
     def set_gateway_mode(self,is_gateway):
         radio_auto=bool(is_gateway)
         was_radio_auto=self._radio_auto_mode
