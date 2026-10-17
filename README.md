@@ -295,3 +295,10 @@ Der PC-Papagei verwendet PulseAudio/PipeWire statt eines direkten ALSA-Hardwarez
 ### Eigener Moderations-Reiter
 
 Ab **0.5.9.28** liegt die TeamSpeak-Moderation in einem eigenen Reiter. Die Seite nutzt eine zweispaltige Anordnung, damit Benutzerwahl, Poke, Verschieben und Kick ohne langes Scrollen erreichbar sind.
+
+
+## FRN-Kompatibilität 0.6.22
+
+Die unter Windows getesteten FRN-Protokollkorrekturen sind auch in Linux enthalten:
+PC-Clients senden bei leerer Stadt `CT=- -`, vorhandene Städtenamen unverändert,
+`BC` wird passend zu `CL` erzeugt und `ST:0` wird nach erfolgreichem Login gesendet.
