@@ -24,7 +24,7 @@ echo "Erstelle .venv mit --system-site-packages ..."
 
 echo "Installiere FunkGateway-Pythonpakete ..."
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
-.venv/bin/python -m pip install     "PySide6>=6.5,<6.9"     "sounddevice>=0.4,<0.6"     "soundfile>=0.12,<0.14"     "pyserial>=3.5,<4"     "pynput>=1.7,<2"
+.venv/bin/python -m pip install     "PySide6>=6.5,<6.9"     "sounddevice>=0.4,<0.6"     "soundfile>=0.12,<0.14"     "pyserial>=3.5,<4"     "pynput>=1.7,<2"     "opuslib==3.0.1"     "protobuf==3.20.3"     "cryptography>=43,<46"     "git+https://github.com/azlux/pymumble.git@8755c7d41b8f1f91402a6218c413121b64bdce33"
 
 if ! .venv/bin/python -c 'import Ice; print(Ice.stringVersion())' >/dev/null 2>&1; then
     if .venv/bin/python -m pip show numpy >/dev/null 2>&1; then
@@ -35,9 +35,9 @@ fi
 
 .venv/bin/python - <<'PY'
 from PySide6.QtWidgets import QApplication
-import serial, sounddevice, soundfile, pynput
+import serial, sounddevice, soundfile, pynput, opuslib, pymumble_py3, cryptography
 import Ice
-print("GUI + Audio + pyserial + pynput: OK")
+print("GUI + Audio + pyserial + pynput + native Mumble: OK")
 print("Python-Ice:", Ice.stringVersion())
 print("Ice-Modul:", Ice.__file__)
 PY
