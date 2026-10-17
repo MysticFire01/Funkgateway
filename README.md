@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.17
+# FunkGateway UI 0.6.18
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -26,6 +26,12 @@ Beim normalen Trennen bleibt der zuletzt verwendete FRN-Raum jetzt im Feld **Rau
 ### ALT GR als FRN-PTT-Hotkey in 0.6.14
 
 ALT GR wird bei der Hotkey-Aufnahme jetzt als eigene Taste erkannt, verständlich als **ALT GR** angezeigt und im Hold-Modus über Qt GroupSwitchModifier ausgewertet. Damit gilt auch für ALT GR: drücken = TX, loslassen = RX. Im Latch-Modus schaltet jeder Tastendruck den TX-Zustand um.
+
+### FRN-Hotkey Hold und Systemweit-Diagnose in 0.6.18
+
+Lokale FRN-Hotkeys arbeiten jetzt mit echten Press-/Release-Ereignissen innerhalb FunkGateway. Damit gilt auch für F9 und andere normale Tasten im Modus **Halten zum Senden**: drücken = TX, loslassen = RX. Der alte QShortcut-Toggle-Effekt entfällt.
+
+Für **Systemweit** zeigt FunkGateway jetzt einen sichtbaren Hotkey-Status. Wenn der globale Linux-Listener nicht verfügbar ist oder nicht gestartet werden kann, wird das ausdrücklich angezeigt und der Hotkey fällt sicher auf lokal zurück, statt einfach ohne Reaktion zu bleiben. Unter Wayland wird die Einschränkung klar gemeldet; der aktuelle globale Listener benötigt X11.
 
 ### Komfortablere Gateway- und Hotkey-Auswahl in 0.6.13
 
