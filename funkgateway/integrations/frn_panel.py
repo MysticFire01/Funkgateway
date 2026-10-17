@@ -30,7 +30,7 @@ class HotkeyCaptureButton(QPushButton):
         if emit:self.hotkeyChanged.emit(self._hotkey)
 
     def _refresh_text(self):
-        names={'Ctrl':'STRG','Alt':'ALT','Shift':'SHIFT','Meta':'Windows / Super','':'Aus'}
+        names={'Ctrl':'STRG','Alt':'ALT','AltGr':'ALT GR','Shift':'SHIFT','Meta':'Windows / Super','':'Aus'}
         shown=names.get(self._hotkey,self._hotkey or 'Aus')
         self.setText(f'Hotkey: {shown}  –  ändern')
 
@@ -56,6 +56,7 @@ class HotkeyCaptureButton(QPushButton):
             special={
                 Qt.Key.Key_Control:'Ctrl',
                 Qt.Key.Key_Alt:'Alt',
+                Qt.Key.Key_AltGr:'AltGr',
                 Qt.Key.Key_Shift:'Shift',
                 Qt.Key.Key_Meta:'Meta',
                 Qt.Key.Key_Super_L:'Meta',
@@ -146,7 +147,7 @@ class FrnPanel(QWidget):
         self.ptt_limit_enabled=QCheckBox('Automatische TX-Abschaltung'); self.ptt_limit_enabled.setChecked(True)
         self.ptt_limit=QSpinBox(); self.ptt_limit.setRange(1,1800); self.ptt_limit.setValue(180); self.ptt_limit.setSuffix(' s')
         self.ptt_hotkey=HotkeyCaptureButton()
-        self.ptt_hotkey.setToolTip('Klicken und danach einfach die gewünschte Taste drücken. STRG, ALT, SHIFT und Windows/Super funktionieren auch allein. Entf/Backspace deaktiviert den Hotkey, Esc bricht ab.')
+        self.ptt_hotkey.setToolTip('Klicken und danach einfach die gewünschte Taste drücken. STRG, ALT, ALT GR, SHIFT und Windows/Super funktionieren auch allein. Entf/Backspace deaktiviert den Hotkey, Esc bricht ab.')
         self.ptt_hotkey.hotkeyChanged.connect(self.pttHotkeyChanged.emit)
         self.ptt_hint=QLabel('Die globale FRN-PTT befindet sich oben in FunkGateway. Der Hotkey schaltet TX ein/aus und ist nur im PC-User-Modus aktiv. Im Gatewaymodus gibt es keine manuelle FRN-PTT.'); self.ptt_hint.setWordWrap(True)
         f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
