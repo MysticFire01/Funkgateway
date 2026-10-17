@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QGroupBox,QApplication,QCheckBox,QComboBox,QFileDialog,
     QFormLayout,QHBoxLayout,QLabel,QLineEdit,QMainWindow,QMessageBox,QPushButton,
-    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,
+    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,QListWidget,
     QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage,QSizePolicy)
 from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal, QSize
 from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap, QIcon
@@ -4342,6 +4342,17 @@ class MainWindow(QMainWindow):
         self.mumble_channel_combo=QComboBox(); self.mumble_channel_combo.addItem("Ice-Channel-Liste noch nicht geladen",None)
         load_ice_channels=QPushButton("Mumble-Channels über Ice laden"); load_ice_channels.clicked.connect(self.refresh_mumble_ice_channels)
         move_mumble=QPushButton("Gateway in ausgewählten Mumble-Channel verschieben"); move_mumble.clicked.connect(self.move_mumble_gateway_manual)
+
+        self.mumble_user_list=QListWidget()
+        self.mumble_user_list.setMinimumHeight(120)
+        self.mumble_user_list.setToolTip("Aktuell über Murmur/Ice verbundene Benutzer. Die Session-ID gilt nur für die laufende Verbindung.")
+        load_ice_users=QPushButton("Verbundene Mumble-Benutzer über Ice laden")
+        load_ice_users.clicked.connect(self.refresh_mumble_ice_users)
+        move_selected_user=QPushButton("Ausgewählten Benutzer in Ziel-Channel verschieben")
+        move_selected_user.clicked.connect(self.move_selected_mumble_user_manual)
+        self.mumble_user_status=QLabel("Benutzerliste: noch nicht geladen")
+        self.mumble_user_status.setWordWrap(True)
+
         self.mumble_disturbance_combo=QComboBox(); self.mumble_disturbance_combo.addItem("Störungsraum noch nicht gewählt",None)
         set_mumble_room=QPushButton("Ausgewählten Channel als Mumble-Störungsraum setzen"); set_mumble_room.clicked.connect(self.set_mumble_disturbance_room)
         self.mumble_disturbance_status=QLabel("Mumble-Störungsraum: nicht eingerichtet")
@@ -4367,6 +4378,17 @@ class MainWindow(QMainWindow):
         tunnel_buttons=QHBoxLayout(); tunnel_buttons.addWidget(start_tunnel); tunnel_buttons.addWidget(stop_tunnel)
         mf.addRow(tunnel_buttons); mf.addRow(detect_ice); mf.addRow(test_ice); mf.addRow("",self.mumble_ice_status)
         mf.addRow("Ziel-Channel:",self.mumble_channel_combo); mf.addRow(load_ice_channels); mf.addRow(move_mumble)
+        mf.addRow(QLabel("<b>Verbundene Mumble-Benutzer</b>"))
+        user_help=QLabel(
+            "Zeigt die aktuell über Ice verbundenen Benutzer. Benutzer auswählen, oben den Ziel-Channel wählen "
+            "und anschließend verschieben. Das Verschieben benötigt das Ice Write-Secret."
+        )
+        user_help.setWordWrap(True)
+        mf.addRow("",user_help)
+        mf.addRow(self.mumble_user_list)
+        mf.addRow(load_ice_users)
+        mf.addRow(move_selected_user)
+        mf.addRow("",self.mumble_user_status)
         mf.addRow(QLabel("<b>Mumble-Störungsraum</b>"))
         mumble_room_note=QLabel(
             "Hier wird nur der Mumble-Störungsraum und der automatische Wechsel festgelegt. "
@@ -6973,6 +6995,82 @@ done"""
             self.log(f"Mumble Ice: {len(channels)} Channels geladen.")
         except Exception as e:
             self.show_copyable_error("Mumble Channels",str(e))
+
+    def refresh_mumble_ice_users(self):
+        if self.mumble_ice_mode.currentData() == "bridge":
+            QMessageBox.information(
+                self,"Mumble Bridge",
+                "Die freie Benutzerverwaltung ist im Bridge-Modus absichtlich nicht verfügbar."
+            )
+            return
+        try:
+            if self.mumble_ice_mode.currentData()=="ssh":
+                self.start_mumble_ssh_tunnel()
+            host,port=self._mumble_ice_endpoint()
+            read=self.mumble_read_secret.text()
+            if not read:
+                raise RuntimeError("Bitte das Ice Read-Secret eingeben.")
+            users=self.mumble_ice.users(
+                host,port,self.mumble_slice.text(),read,self.mumble_ice_server_id.value()
+            )
+            self.mumble_user_list.clear()
+            for row in users:
+                item_text=(
+                    f"{row['name']}  |  {row['channel_name']} "
+                    f"(CID {row['channel']}, Session {row['session']})"
+                )
+                self.mumble_user_list.addItem(item_text)
+                item=self.mumble_user_list.item(self.mumble_user_list.count()-1)
+                item.setData(Qt.ItemDataRole.UserRole,row)
+            self.mumble_user_status.setText(f"Benutzerliste: {len(users)} Benutzer verbunden")
+            self.log(f"Mumble Ice: {len(users)} verbundene Benutzer geladen.")
+        except Exception as e:
+            self.mumble_user_status.setText(f"Benutzerliste: Fehler ({e})")
+            self.show_copyable_error("Mumble Benutzerliste",str(e))
+
+    def move_selected_mumble_user_manual(self):
+        if self.mumble_ice_mode.currentData() == "bridge":
+            QMessageBox.information(
+                self,"Mumble Bridge",
+                "Beliebige Benutzer dürfen im Bridge-Modus absichtlich nicht verschoben werden."
+            )
+            return
+        item=self.mumble_user_list.currentItem()
+        if item is None:
+            QMessageBox.information(self,"Mumble Benutzer","Bitte zuerst einen verbundenen Benutzer auswählen.")
+            return
+        cid=self.mumble_channel_combo.currentData()
+        if cid is None:
+            QMessageBox.information(self,"Mumble Benutzer","Bitte zuerst einen Ziel-Channel auswählen.")
+            return
+        try:
+            data=item.data(Qt.ItemDataRole.UserRole) or {}
+            session=int(data.get("session"))
+            name=str(data.get("name") or f"Session {session}")
+            read=self.mumble_read_secret.text()
+            write=self.mumble_write_secret.text()
+            if not read:
+                raise RuntimeError("Bitte das Ice Read-Secret eingeben.")
+            if not write:
+                raise RuntimeError("Bitte das Ice Write-Secret eingeben. Es wird nicht gespeichert.")
+            if self.mumble_ice_mode.currentData()=="ssh":
+                self.start_mumble_ssh_tunnel()
+            host,port=self._mumble_ice_endpoint()
+            result=self.mumble_ice.move_user(
+                host,port,self.mumble_slice.text(),read,write,session,int(cid),
+                self.mumble_ice_server_id.value()
+            )
+            self.log(
+                f"Mumble Benutzer verschoben: {name} (Session {session}) "
+                f"CID {result['old_channel']} -> CID {result['new_channel']}."
+            )
+            self.refresh_mumble_ice_users()
+            QMessageBox.information(
+                self,"Mumble Benutzer",
+                f"{name} wurde von CID {result['old_channel']} nach CID {result['new_channel']} verschoben."
+            )
+        except Exception as e:
+            self.show_copyable_error("Mumble Benutzer verschieben",str(e))
 
     def _mumble_gateway_name_value(self):
         name=self.mumble_gateway_name.text().strip()

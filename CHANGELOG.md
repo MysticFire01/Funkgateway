@@ -1,4 +1,12 @@
-# FunkGateway UI 0.6.8
+# FunkGateway UI 0.6.9
+
+## Release 0.6.9
+
+- Aktuell verbundene Mumble-Benutzer können im direkten Ice-/SSH-Adminmodus geladen werden.
+- Anzeige von Benutzername, aktuellem Channel, CID und Live-Session-ID.
+- Ausgewählte Benutzer können mit dem Ice Write-Secret in den gewählten Ziel-Channel verschoben werden.
+- Benutzerliste wird nach erfolgreichem Verschieben automatisch aktualisiert.
+- Bridge-Modus bleibt absichtlich auf freigegebene Gateway-Funktionen beschränkt.
 
 ## Release 0.6.8
 

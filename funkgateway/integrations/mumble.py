@@ -334,6 +334,46 @@ class MumbleIceBackend:
         finally:
             comm.destroy()
 
+    def users(self, host: str, port: int, slice_file: str, read_secret: str, server_id: int=1):
+        """Return currently connected users with their session and channel."""
+        comm,server,ctx=self._connect(host,port,slice_file,read_secret,server_id)
+        try:
+            channels=server.getChannels(ctx)
+            channel_names={int(cid):ch.name for cid,ch in channels.items()}
+            rows=[]
+            for session,user in server.getUsers(ctx).items():
+                cid=int(user.channel)
+                rows.append({
+                    "session":int(session),
+                    "name":user.name,
+                    "channel":cid,
+                    "channel_name":channel_names.get(cid,f"CID {cid}"),
+                })
+            return sorted(rows,key=lambda row:(row["name"].casefold(),row["session"]))
+        finally:
+            comm.destroy()
+
+    def move_user(self, host: str, port: int, slice_file: str, read_secret: str, write_secret: str,
+                  session: int, target_channel: int, server_id: int=1):
+        """Move one currently connected user, identified by its live session id."""
+        comm,server,read_ctx=self._connect(host,port,slice_file,read_secret,server_id)
+        try:
+            users=server.getUsers(read_ctx)
+            wanted=int(session)
+            state=None
+            for live_session,user in users.items():
+                if int(live_session)==wanted:
+                    state=user
+                    break
+            if state is None:
+                raise RuntimeError(f"Mumble-Session {wanted} ist nicht mehr verbunden.")
+            old=int(state.channel)
+            state.channel=int(target_channel)
+            server.setState(state,{"secret":write_secret})
+            return {"session":wanted,"name":state.name,"old_channel":old,"new_channel":int(target_channel)}
+        finally:
+            comm.destroy()
+
     def move_gateway(self, host: str, port: int, slice_file: str, read_secret: str, write_secret: str,
                      gateway_name: str, target_channel: int, server_id: int=1):
         comm,server,read_ctx=self._connect(host,port,slice_file,read_secret,server_id)
