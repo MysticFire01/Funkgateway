@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.12
+# FunkGateway UI 0.6.13
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -12,6 +12,12 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### Komfortablere Gateway- und Hotkey-Auswahl in 0.6.13
+
+Im Mumble-Adminbereich wird der aktuell gesetzte Gateway-Benutzer jetzt direkt angezeigt. Ein markierter verbundener Benutzer kann mit **„Markierten Benutzer als Gateway setzen“** übernommen werden; der aktive Gateway-Benutzer wird in der Liste mit **★** hervorgehoben.
+
+Für FRN PTT muss kein technischer Hotkey-Text mehr eingetippt werden. Über **„Hotkey aufnehmen“** wird die gewünschte Taste direkt gedrückt und übernommen – auch STRG, ALT, SHIFT oder Windows/Super allein.
 
 ### FRN-PTT-Hotkeys mit echtem Hold in 0.6.12
 
