@@ -1,4 +1,13 @@
-# FunkGateway UI 0.6.5
+# FunkGateway UI 0.6.6
+
+## Release 0.6.6
+
+- Diagnosemeldungen unterscheiden jetzt klar zwischen SystemManager, FRN-Sprachserver und Protokollfehlern.
+- `SYSTEMMANAGER:` kennzeichnet Fehler bei Serverlisten und dynamischem Passwort.
+- `FRN-SERVER:` kennzeichnet Verbindungs- und Loginfehler zum eigentlichen FRN-Server.
+- `FRN-SERVER BLOCK:` kennzeichnet echte `<AL>BLOCK</AL>`-Ablehnungen.
+- `FRN-PROTOKOLL:` kennzeichnet unerwartete/abweichende Protokollantworten.
+- Unklassifizierte Fehler aus dem FRN-Verbindungsclient werden als `FRN-SERVER:` gekennzeichnet.
 
 ## Release 0.6.5
 

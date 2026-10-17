@@ -210,7 +210,10 @@ class FrnPanel(QWidget):
         self.populate_rooms()
 
     def _explorer_error(self,text):
-        self._log(str(text))
+        msg=str(text)
+        if not msg.startswith('SYSTEMMANAGER:'):
+            msg='SYSTEMMANAGER: '+msg
+        self._log(msg)
         kind=self._sm_request_kind
         self._sm_request_kind=None
 

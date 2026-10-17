@@ -869,7 +869,7 @@ class FrnNativeClient:
             except Exception as exc:
                 dyn = self.cfg.main_password
                 self.signals.log.emit(
-                    f"WARN: Dynamisches Passwort nicht verfügbar ({exc}); "
+                    f"SYSTEMMANAGER: Dynamisches Passwort nicht verfügbar ({exc}); "
                     "FRN-Hauptpasswort wird für den Server-Login verwendet."
                 )
 
@@ -907,7 +907,7 @@ class FrnNativeClient:
             # bekannten klassischen Formen ODER exakt unsere eigene VX-Kennung.
             if not (len(line1) == 7 or line1 == "0" or line1 == str(self.cfg.protocol_version)):
                 raise RuntimeError(
-                    "Unerwartete FRN-Protokollantwort: "
+                    "FRN-PROTOKOLL: Unerwartete FRN-Protokollantwort: "
                     + repr(line1_raw)
                     + (f" (bereinigt: {line1!r})" if line1 != line1_raw else "")
                 )
@@ -917,10 +917,10 @@ class FrnNativeClient:
             safe = line2.replace(dyn, "***").replace(self.cfg.main_password, "***")
             self.signals.log.emit("RX Login 2: " + safe)
             if "<AL>WRONG</AL>" in line2:
-                raise RuntimeError("FRN-Anmeldung abgelehnt: Zugangsdaten falsch/unbekannt.")
+                raise RuntimeError("FRN-SERVER: Anmeldung abgelehnt – Zugangsdaten falsch/unbekannt.")
             if "<AL>BLOCK</AL>" in line2:
                 raise RuntimeError(
-                    "FRN-Anmeldung abgelehnt: Server hat den Zugriff blockiert. "
+                    "FRN-SERVER BLOCK: Server hat den Zugriff blockiert. "
                     f"Aktuelle Identität: CL={self.cfg.client_type}, "
                     f"VX={self.cfg.protocol_version}. "
                     "Zum Testen kann ein anderer legitimer FRN-Client-Typ gewählt werden; "
