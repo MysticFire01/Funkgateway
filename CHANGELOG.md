@@ -497,6 +497,26 @@
 
 # Changelog
 
+## Release 0.6.23
+
+- erster nativer Mumble-Client direkt in FunkGateway Linux
+- neuer Mumble-Untertab „Native Client“
+- FunkGateway kann sich selbst mit einem Mumble-Server verbinden; Desktop-Mumble ist dafür nicht erforderlich
+- Server, Port, Nickname, Passwort und optionaler Start-Channel
+- direkte Mumble-Wiedergabe auf auswählbarem Linux-Audioausgang
+- PC-User-Mikrofon-PTT direkt aus FunkGateway
+- Channel-Liste mit Nutzerzahlen und direktem Wechsel
+- Teilnehmerliste mit farbigem Mundstatus:
+  - grün = schweigt
+  - orange = eigener TX
+  - rot = anderer Sprecher
+  - blau = Whisper
+- aktiver Channel und aktive Sprecher werden live angezeigt
+- Linux-Mumble-Zertifikate können direkt erzeugt und für die native Verbindung verwendet werden
+- bisherige lokale D-Bus-, Ice-/SSH- und Bridge-Adminfunktionen bleiben vollständig erhalten
+- Installer ergänzt libopus/opuslib, pymumble_py3, protobuf und cryptography
+- venv-Reparatur installiert die neuen nativen Mumble-Abhängigkeiten ebenfalls
+
 ## 0.6.22 – FRN-Kompatibilität aus Windows zurückportiert
 
 - FRN-Stadtfix auch unter Linux: leeres PC-Stadtfeld sendet exakt `CT=- -`
