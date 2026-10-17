@@ -3569,7 +3569,13 @@ class MainWindow(QMainWindow):
     def _configure_frn_ptt_shortcut(self, sequence=None):
         if not hasattr(self,"frn_ptt_shortcut"): return
         text=str(sequence if sequence is not None else self.frn_panel.ptt_hotkey_text()).strip()
-        self.frn_ptt_shortcut.setKey(QKeySequence(text) if text else QKeySequence())
+        special={
+            "Ctrl":Qt.Key.Key_Control,
+            "Alt":Qt.Key.Key_Alt,
+            "Shift":Qt.Key.Key_Shift,
+            "Meta":Qt.Key.Key_Meta,
+        }
+        self.frn_ptt_shortcut.setKey(QKeySequence(special[text]) if text in special else (QKeySequence(text) if text else QKeySequence()))
         self.frn_ptt_shortcut.setEnabled(bool(text))
 
     def _frn_ptt_hotkey_triggered(self):
