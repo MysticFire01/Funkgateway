@@ -1,9 +1,9 @@
-# FunkGateway UI 0.6.2
+# FunkGateway UI 0.6.3
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
 
-FunkGateway UI 0.6.2 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
+FunkGateway UI 0.6.3 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
 
 Der aktuelle Alpha-Stand umfasst Server- und Raumlisten über die FRN-SystemManager, direkte Server-Raumlisten über `NET_NAMES`, Teilnehmerliste, RX/TX-Pegel, Raumwechsel und FRN-Audio mit GSM 06.10 WAV49. Die Client-Klasse wird passend zur FunkGateway-Betriebsart gewählt: **PC-User = PC Only (CL=2)**, **Funk-Gateway = Gateway (CL=1)**. Die VX-Kennung bleibt sichtbar und editierbar; der aktuelle Default ist `20261016`.
 
@@ -12,6 +12,10 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### SystemManager-Schonung in 0.6.3
+
+Die automatische FRN-Server-/Raumbelegungsaktualisierung wurde deutlich defensiver gemacht. Der aktuell verbundene Raum bleibt weiterhin sofort aus der echten Teilnehmerliste aktuell. Für andere Räume fragt FunkGateway im Hintergrund nur noch **einen passenden SystemManager** und standardmäßig nur etwa **alle 3 Minuten** ab. Bei Verbindungsabbruch, Reset oder abgelehntem Verbindungsaufbau greift ein Backoff von **1, 2, 5 und 10 Minuten**, statt sofort erneut anzufragen. Die Auswahl **Alle** wird im Hintergrund nicht mehr als Dreifach-Abfrage verwendet; manuelles Laden bleibt möglich.
 
 ### FRN Funk → Netzwerk in 0.6.2
 
@@ -27,11 +31,11 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktuelle stabile Version: 0.6.2**
+**Aktuelle stabile Version: 0.6.3**
 
 ## Screenshots
 
-Die vier Betriebsarten von FunkGateway UI 0.6.2:
+Die vier Betriebsarten von FunkGateway UI 0.6.3:
 
 | PC-User | Funk-Gateway |
 |---|---|
@@ -45,7 +49,7 @@ Die vier Betriebsarten von FunkGateway UI 0.6.2:
 
 ## Betriebsarten
 
-FunkGateway UI **0.6.2** besitzt vier klar getrennte Betriebsarten:
+FunkGateway UI **0.6.3** besitzt vier klar getrennte Betriebsarten:
 
 - **PC-User / TeamSpeak** – normaler PC-/VoIP-Betrieb ohne Funkhardware. Funk-PTT, COS und Funk-RX bleiben vollständig deaktiviert. Die VoIP-Software verwendet ihre normalen **Standard/Default**-Audio-Geräte.
 - **Funk-Gateway** – vollständiger Funk ↔ VoIP-Betrieb mit Audio-Routing, RX-Erkennung, PTT, Rogerbeep, Rufzeichenbake, DTMF und Schutzfunktionen.

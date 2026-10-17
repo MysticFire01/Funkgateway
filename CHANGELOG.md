@@ -1,4 +1,13 @@
-# FunkGateway UI 0.6.2
+# FunkGateway UI 0.6.3
+
+## Release 0.6.3
+
+- FRN-SystemManager-Hintergrundabfragen von 20 Sekunden auf ca. 3 Minuten reduziert.
+- Automatische Aktualisierung fragt nur noch den zum ausgewählten/verbundenen Server passenden SystemManager ab; `Alle` löst im Hintergrund keine Abfrage aller drei Systeme mehr aus.
+- Aktiver Raum bleibt ohne SystemManager-Polling sofort über die echte FRN-Teilnehmerliste aktuell.
+- Bei Reset, Verbindungsabbruch oder `connection refused` greift ein Backoff von 1, 2, 5 und 10 Minuten.
+- Nach einer erfolgreichen SystemManager-Abfrage wird das normale 3-Minuten-Intervall wiederhergestellt.
+- Manuelles Laden der Serverliste bleibt unverändert verfügbar.
 
 ## Release 0.6.2
 

@@ -17,9 +17,12 @@ class FrnPanel(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent); self.client=None; self.rows=[]; self.filtered_rows=[]; self.direct_rooms=[]; self.talker_name=''; self.connected=False
         self.tx_db=-120.0; self.rx_db=-120.0; self.ptt_active=False; self._pending_room=None; self._room_switch_active=False; self._room_switch_reconnect_scheduled=False; self.selected_server_row=None; self._last_auto_client_type=None; self._active_room_count=None; self._radio_auto_mode=False
-        self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._log)
+        self._sm_auto_interval_ms=180000
+        self._sm_backoff_steps_ms=(60000,120000,300000,600000)
+        self._sm_backoff_index=0
+        self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._explorer_error)
         self._build(); self.refresh_audio_devices(); self._update_status()
-        self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(20000); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
+        self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(self._sm_auto_interval_ms); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
 
     @staticmethod
     def _radio_icon(color):
@@ -188,19 +191,38 @@ class FrnPanel(QWidget):
 
     def _explorer_result(self,rows):
         self.rows=list(rows or [])
+        self._sm_backoff_index=0
+        if hasattr(self,'_room_refresh_timer'):
+            self._room_refresh_timer.setInterval(self._sm_auto_interval_ms)
         self.filter_servers()
         self.populate_rooms()
 
+    def _explorer_error(self,text):
+        self._log(str(text))
+        delay=self._sm_backoff_steps_ms[min(self._sm_backoff_index,len(self._sm_backoff_steps_ms)-1)]
+        self._sm_backoff_index=min(self._sm_backoff_index+1,len(self._sm_backoff_steps_ms)-1)
+        if hasattr(self,'_room_refresh_timer'):
+            self._room_refresh_timer.setInterval(delay)
+        self._log(f'FRN SystemManager: automatische Aktualisierung pausiert für {delay//60000} Minute(n).')
+
+    def _auto_manager_key(self):
+        """Choose one manager for background refresh; never poll all managers automatically."""
+        if self.selected_server_row:
+            key=str(self.selected_server_row.get('manager','') or '')
+            if key in MANAGERS:
+                return key
+        key=self.manager.currentData() if hasattr(self,'manager') else None
+        return key if key in MANAGERS else None
+
     def _refresh_room_counts(self):
-        """Refresh SystemManager occupancy without disturbing the current FRN session."""
-        if not hasattr(self,'explorer_manager'):
+        """Polite background refresh of non-active room occupancy."""
+        key=self._auto_manager_key()
+        if not key:
             return
-        # 20 s is deliberately conservative: current room count is updated
-        # immediately from the FRN participant list, other rooms from SM.
         try:
-            self.explorer.refresh(self.explorer_manager.currentData())
+            self.explorer.refresh(key)
         except Exception as exc:
-            self._log('FRN Raumbelegung: Aktualisierung fehlgeschlagen: '+str(exc))
+            self._explorer_error('FRN Raumbelegung: Aktualisierung fehlgeschlagen: '+str(exc))
 
     def filter_servers(self):
         query=(self.server_search.text() if hasattr(self,'server_search') else '').strip().casefold()
