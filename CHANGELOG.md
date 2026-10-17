@@ -1,4 +1,13 @@
-# FunkGateway UI 0.6.17
+# FunkGateway UI 0.6.18
+
+## Release 0.6.18
+
+- Lokale FRN-Hotkeys verwenden echte Press-/Release-Ereignisse statt QShortcut-Toggle.
+- F9 und andere normale Tasten respektieren „Halten zum Senden“ jetzt korrekt.
+- Globaler Hotkey zeigt seinen Backend-Status direkt im FRN-Audio/PTT-Bereich.
+- Fehler beim Start des systemweiten Listeners werden sichtbar statt lautlos ignoriert.
+- Bei nicht verfügbarem globalen Backend fällt der Hotkey sicher auf lokal zurück.
+- Wayland wird als Einschränkung erkannt; aktueller globaler Listener benötigt X11.
 
 ## Release 0.6.17
 
