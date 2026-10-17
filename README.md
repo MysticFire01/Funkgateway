@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.9
+# FunkGateway UI 0.6.10
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -12,6 +12,12 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### Ergonomisches Mumble-Adminpanel und FRN-PTT-Hotkey in 0.6.10
+
+Der Mumble-Bereich ist jetzt in **Status**, **Benutzer & Räume**, **Ice / SSH** und **Schutz & Bridge** gegliedert. Benutzer und Räume stehen im Adminpanel direkt nebeneinander; ein gemeinsamer Button aktualisiert beide Listen und der Benutzer→Raum-Workflow ist ohne Dropdown-Suche möglich.
+
+Für die native FRN-PTT gibt es unter **FRN → Audio / PTT** einen frei wählbaren Hotkey (Standard F9, leer = aus). Er gilt innerhalb FunkGateway, schaltet FRN TX ein/aus, ist nur im PC-User-Modus aktiv und respektiert die automatische maximale Sendedauer.
 
 ### Mumble-Benutzerverwaltung über Ice in 0.6.9
 
@@ -57,7 +63,7 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktuelle stabile Version: 0.6.9**
+**Aktuelle stabile Version: 0.6.10**
 
 ## Screenshots
 

@@ -1,4 +1,11 @@
-# FunkGateway UI 0.6.9
+# FunkGateway UI 0.6.10
+
+## Release 0.6.10
+
+- Mumble-Adminpanel in Status, Benutzer & Räume, Ice / SSH und Schutz & Bridge gegliedert.
+- Benutzer und Räume direkt nebeneinander, gemeinsamer Refresh und direkter Benutzer→Raum-Workflow.
+- Frei wählbarer FRN-PTT-Hotkey, Standard F9, leer = deaktiviert.
+- Hotkey nur im PC-User-Modus; maximale Sendedauer bleibt wirksam.
 
 ## Release 0.6.9
 

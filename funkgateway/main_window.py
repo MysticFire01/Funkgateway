@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,QListWidget,
     QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage,QSizePolicy)
 from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal, QSize
-from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap, QIcon
+from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap, QIcon, QShortcut, QKeySequence
 from PySide6.QtPrintSupport import QPrinter
 
 try:
@@ -3566,6 +3566,21 @@ class MainWindow(QMainWindow):
             self.frn_ptt_btn.setText("FRN TX AKTIV" if panel.ptt_active else "FRN PTT")
             self.frn_ptt_btn.setStyleSheet("font-weight:bold;" + ("background:#D32F2F;color:white;" if panel.ptt_active else ""))
 
+    def _configure_frn_ptt_shortcut(self, sequence=None):
+        if not hasattr(self,"frn_ptt_shortcut"): return
+        text=str(sequence if sequence is not None else self.frn_panel.ptt_hotkey_text()).strip()
+        self.frn_ptt_shortcut.setKey(QKeySequence(text) if text else QKeySequence())
+        self.frn_ptt_shortcut.setEnabled(bool(text))
+
+    def _frn_ptt_hotkey_triggered(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is None or self._mode()!="pc" or not panel.connected or not panel.audio_enabled.isChecked(): return
+        panel.toggle_ptt()
+        _mode,limit_on,seconds=panel.ptt_settings()
+        if panel.ptt_active and limit_on: self.frn_ptt_timer.start(max(1,int(seconds))*1000)
+        elif not panel.ptt_active: self.frn_ptt_timer.stop()
+        self._sync_frn_global_ui()
+
     def _frn_ptt_pressed(self):
         panel=getattr(self,"frn_panel",None)
         if panel is None or self._mode()!="pc": return
@@ -4137,6 +4152,12 @@ class MainWindow(QMainWindow):
 
         # --- FRN Native Alpha ----------------------------------------------
         self.frn_panel=FrnPanel(self)
+        self.frn_ptt_shortcut=QShortcut(QKeySequence(),self)
+        self.frn_ptt_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.frn_ptt_shortcut.setAutoRepeat(False)
+        self.frn_ptt_shortcut.activated.connect(self._frn_ptt_hotkey_triggered)
+        self.frn_panel.pttHotkeyChanged.connect(self._configure_frn_ptt_shortcut)
+        self._configure_frn_ptt_shortcut(self.frn_panel.ptt_hotkey_text())
         self.frn_panel.statusChanged.connect(self._frn_status_changed)
         self.frn_panel.connectedChanged.connect(lambda _yes:self._sync_frn_global_ui())
         self.frn_panel.talkerChanged.connect(lambda _name:self._sync_frn_global_ui())
@@ -4258,26 +4279,22 @@ class MainWindow(QMainWindow):
         integration_tabs.addTab(ts_page,"TeamSpeak")
 
         # --- Mumble --------------------------------------------------------
-        # The Mumble page can become quite tall (local client, Bridge, Ice and
-        # SSH administration).  Keep the entire page scrollable so credentials
-        # and emergency/admin controls never disappear below the window edge.
+        # Task-oriented Mumble panel: everyday status, user/channel admin,
+        # technical Ice/SSH settings and protection/bridge are separated.
         mumble_page=QWidget()
         mumble_outer=QVBoxLayout(mumble_page)
-        mumble_scroll=QScrollArea()
-        mumble_scroll.setWidgetResizable(True)
-        mumble_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        mumble_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        mumble_content=QWidget()
-        mf=QFormLayout(mumble_content)
-        mumble_scroll.setWidget(mumble_content)
-        mumble_outer.addWidget(mumble_scroll)
         mumble_title=QLabel("<b>Mumble-Integration</b>")
         mumble_note=QLabel(
-            "Die Grundfunktionen arbeiten lokal mit dem Mumble-Client. Dafür sind keine "
-            "Server-Adminrechte nötig. Ice ist optional und nur für erweiterte "
-            "Serverfunktionen wie Channel-Liste und Störungsraum erforderlich."
+            "Lokaler Clientstatus und Server-Administration sind getrennt. "
+            "Ice/SSH wird nur für erweiterte Adminfunktionen benötigt."
         )
         mumble_note.setWordWrap(True)
+        mumble_outer.addWidget(mumble_title)
+        mumble_outer.addWidget(mumble_note)
+
+        self.mumble_admin_tabs=QTabWidget()
+        mumble_outer.addWidget(self.mumble_admin_tabs,1)
+
         self.mumble_status=QLabel("Mumble: noch nicht geprüft")
         self.mumble_status.setWordWrap(True); self.mumble_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.mumble_channel=QLabel("Aktiver Mumble-Channel: —")
@@ -4286,18 +4303,10 @@ class MainWindow(QMainWindow):
         self.mumble_speaker.setWordWrap(True); self.mumble_speaker.setStyleSheet("font-size: 20px; font-weight: bold; padding: 8px;")
         self.mumble_details=QLabel("Lokale Steuerung: —")
         self.mumble_details.setWordWrap(True); self.mumble_details.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
-        check_local=QPushButton("Mumble prüfen")
-        check_local.clicked.connect(self.test_mumble_local)
+        check_local=QPushButton("Status aktualisieren"); check_local.clicked.connect(self.test_mumble_local)
         install_mumble=QPushButton("Mumble-Komponenten installieren / reparieren")
-        install_mumble.setToolTip("Installiert fehlende Mumble/Ice-Komponenten oder repariert die FunkGateway-Python-Umgebung, wenn Ice im System bereits vorhanden ist.")
         install_mumble.clicked.connect(self.install_mumble_components)
 
-        ice_head=QLabel("<b>Erweiterte Serversteuerung (optional / Admin)</b>")
-        ice_hint=QLabel(
-            "Normale Gatewaybetreiber verwenden die Bridge ihres Server-Admins und erhalten nur "
-            "eine Bridge-Adresse plus persönliches Token. Das Ice-Secret darf ihnen NICHT gegeben "
-            "werden. Direktes Ice/SSH ist ausschließlich für Server-Admins bzw. eigene Server gedacht."
-        ); ice_hint.setWordWrap(True)
         self.mumble_ice_mode=QComboBox()
         self.mumble_ice_mode.addItem("Aus – nur lokale Mumble-Funktionen","off")
         self.mumble_ice_mode.addItem("Direktes Ice (Adminbetrieb)","direct")
@@ -4310,102 +4319,83 @@ class MainWindow(QMainWindow):
         choose_slice=QPushButton("Murmur.ice auswählen"); choose_slice.clicked.connect(self.choose_mumble_slice)
         slice_row=QHBoxLayout(); slice_row.addWidget(self.mumble_slice); slice_row.addWidget(choose_slice)
         self.mumble_read_secret=QLineEdit(); self.mumble_read_secret.setEchoMode(QLineEdit.EchoMode.Password); self.mumble_read_secret.setPlaceholderText("wird nicht gespeichert")
-        self.mumble_write_secret=QLineEdit(); self.mumble_write_secret.setEchoMode(QLineEdit.EchoMode.Password); self.mumble_write_secret.setPlaceholderText("nur für Channel-Wechsel; wird nicht gespeichert")
-        self.mumble_show_secrets=QCheckBox("Ice-Secrets anzeigen")
-        self.mumble_show_secrets.setToolTip("Zeigt Read-/Write-Secret nur vorübergehend im Eingabefeld. Die Secrets werden weiterhin nicht gespeichert.")
-        self.mumble_show_secrets.toggled.connect(self.toggle_mumble_secrets)
+        self.mumble_write_secret=QLineEdit(); self.mumble_write_secret.setEchoMode(QLineEdit.EchoMode.Password); self.mumble_write_secret.setPlaceholderText("nur für Änderungen; wird nicht gespeichert")
+        self.mumble_show_secrets=QCheckBox("Ice-Secrets anzeigen"); self.mumble_show_secrets.toggled.connect(self.toggle_mumble_secrets)
         self.mumble_ssh_host=QLineEdit(); self.mumble_ssh_host.setPlaceholderText("SSH-Server")
         self.mumble_ssh_port=QSpinBox(); self.mumble_ssh_port.setRange(1,65535); self.mumble_ssh_port.setValue(22)
         self.mumble_ssh_user=QLineEdit(); self.mumble_ssh_user.setPlaceholderText("SSH-Benutzer")
         self.mumble_gateway_name=QLineEdit(); self.mumble_gateway_name.setPlaceholderText("automatisch aus lokalem Mumble, sonst hier eintragen")
         self.mumble_bridge_url=QLineEdit(); self.mumble_bridge_url.setPlaceholderText("https://bridge.example.org")
         self.mumble_bridge_token=QLineEdit(); self.mumble_bridge_token.setEchoMode(QLineEdit.EchoMode.Password); self.mumble_bridge_token.setPlaceholderText("persönliches fgw_... Token; wird nicht gespeichert")
-        test_bridge=QPushButton("Bridge-Verbindung / Token prüfen"); test_bridge.clicked.connect(self.test_mumble_bridge)
-        export_admin=QPushButton("Admin-Paket speichern / weitergeben"); export_admin.clicked.connect(self.save_mumble_admin_package)
-        export_admin.setToolTip("Speichert ein vollständiges Einrichtungs-, Bridge- und Hilfe-Paket zur Weitergabe an den Mumble-Server-Admin.")
         self.mumble_bridge_status=QLabel("Bridge: nicht geprüft")
         self.mumble_bridge_status.setWordWrap(True); self.mumble_bridge_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
-        start_tunnel=QPushButton("SSH-Tunnel starten / prüfen (Admin)"); start_tunnel.clicked.connect(self.start_mumble_ssh_tunnel)
-        stop_tunnel=QPushButton("SSH-Tunnel stoppen")
-        stop_tunnel.setToolTip("Stoppt nur den von FunkGateway selbst gestarteten Mumble-Ice-SSH-Tunnel.")
-        stop_tunnel.clicked.connect(self.stop_mumble_ssh_tunnel)
-        ssh_help=QPushButton("SSH sicher einrichten – Anleitung")
-        ssh_help.setToolTip("Erklärt SSH-Key, ssh-copy-id, ssh-agent und warum FunkGateway kein SSH-Passwort speichert.")
-        ssh_help.clicked.connect(self.show_mumble_ssh_help)
-        detect_ice=QPushButton("Ice-Einstellungen automatisch erkennen")
-        detect_ice.setToolTip("Sucht lokal oder per SSH nach der Murmur-Ice-Konfiguration und übernimmt einen eindeutig gefundenen Port.")
-        detect_ice.clicked.connect(self.detect_mumble_ice_settings)
-        test_ice=QPushButton("Ice-Verbindung testen"); test_ice.clicked.connect(self.test_mumble_ice)
         self.mumble_ice_status=QLabel("Erweiterte Serversteuerung: nicht eingerichtet")
         self.mumble_ice_status.setWordWrap(True); self.mumble_ice_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
 
         self.mumble_channel_combo=QComboBox(); self.mumble_channel_combo.addItem("Ice-Channel-Liste noch nicht geladen",None)
-        load_ice_channels=QPushButton("Mumble-Channels über Ice laden"); load_ice_channels.clicked.connect(self.refresh_mumble_ice_channels)
-        move_mumble=QPushButton("Gateway in ausgewählten Mumble-Channel verschieben"); move_mumble.clicked.connect(self.move_mumble_gateway_manual)
-
-        self.mumble_user_list=QListWidget()
-        self.mumble_user_list.setMinimumHeight(120)
-        self.mumble_user_list.setToolTip("Aktuell über Murmur/Ice verbundene Benutzer. Die Session-ID gilt nur für die laufende Verbindung.")
-        load_ice_users=QPushButton("Verbundene Mumble-Benutzer über Ice laden")
-        load_ice_users.clicked.connect(self.refresh_mumble_ice_users)
-        move_selected_user=QPushButton("Ausgewählten Benutzer in Ziel-Channel verschieben")
-        move_selected_user.clicked.connect(self.move_selected_mumble_user_manual)
-        self.mumble_user_status=QLabel("Benutzerliste: noch nicht geladen")
-        self.mumble_user_status.setWordWrap(True)
+        self.mumble_channel_combo.setVisible(False)
+        self.mumble_channel_list=QListWidget(); self.mumble_channel_list.setMinimumHeight(220)
+        self.mumble_channel_list.itemSelectionChanged.connect(self._mumble_channel_list_selected)
+        self.mumble_user_list=QListWidget(); self.mumble_user_list.setMinimumHeight(220)
+        self.mumble_user_status=QLabel("Benutzerliste: noch nicht geladen"); self.mumble_user_status.setWordWrap(True)
+        self.mumble_room_count=QLabel("Raumliste: noch nicht geladen")
 
         self.mumble_disturbance_combo=QComboBox(); self.mumble_disturbance_combo.addItem("Störungsraum noch nicht gewählt",None)
-        set_mumble_room=QPushButton("Ausgewählten Channel als Mumble-Störungsraum setzen"); set_mumble_room.clicked.connect(self.set_mumble_disturbance_room)
-        self.mumble_disturbance_status=QLabel("Mumble-Störungsraum: nicht eingerichtet")
-        self.mumble_disturbance_status.setWordWrap(True)
+        self.mumble_disturbance_status=QLabel("Mumble-Störungsraum: nicht eingerichtet"); self.mumble_disturbance_status.setWordWrap(True)
         self.protect_move_to_mumble_room=QCheckBox("Bei Dauer-RX automatisch in den Mumble-Störungsraum verschieben")
         self.protect_return_mumble_channel=QCheckBox("Nach Wiederaktivierung in den vorherigen Mumble-Channel zurückkehren")
         self.protect_return_mumble_channel.setChecked(True)
-        self.protect_move_to_mumble_room.setToolTip("Verschiebt nur den eigenen Mumble-Gateway-Client in den für diesen Server gespeicherten Störungsraum.")
 
-        mf.addRow(mumble_title); mf.addRow(mumble_note)
-        mf.addRow(check_local); mf.addRow(install_mumble)
-        mf.addRow("",self.mumble_status); mf.addRow("",self.mumble_channel); mf.addRow("",self.mumble_speaker); mf.addRow("",self.mumble_details)
-        mf.addRow(ice_head); mf.addRow(ice_hint)
-        mf.addRow("Anbindung:",self.mumble_ice_mode)
-        mf.addRow(QLabel("<b>Direktes Ice / SSH – nur Adminmodus</b>"))
-        admin_quick=QLabel("Für direkten Ice-Betrieb müssen Host, Port, passende Murmur.ice und mindestens das Read-Secret eingetragen sein. Für Channel-Wechsel wird zusätzlich das Write-Secret benötigt. Bei SSH wird ein Schlüssel/ssh-agent empfohlen; FunkGateway speichert kein SSH-Passwort.")
-        admin_quick.setWordWrap(True)
-        mf.addRow(admin_quick)
-        mf.addRow("Ice Host:",self.mumble_ice_host); mf.addRow("Ice Port:",self.mumble_ice_port); mf.addRow("Server-ID:",self.mumble_ice_server_id)
-        mf.addRow("Murmur.ice:",slice_row); mf.addRow("Ice Read-Secret:",self.mumble_read_secret); mf.addRow("Ice Write-Secret:",self.mumble_write_secret); mf.addRow("",self.mumble_show_secrets)
-        mf.addRow("SSH-Server:",self.mumble_ssh_host); mf.addRow("SSH-Port:",self.mumble_ssh_port); mf.addRow("SSH-Benutzer:",self.mumble_ssh_user); mf.addRow(ssh_help)
-        mf.addRow("Gateway-Mumble-Name:",self.mumble_gateway_name)
+        status_page=QWidget(); sf=QFormLayout(status_page)
+        status_hint=QLabel("Schneller Überblick über den lokal laufenden Mumble-Client."); status_hint.setWordWrap(True)
+        sf.addRow(status_hint); sf.addRow(check_local); sf.addRow(install_mumble)
+        sf.addRow("",self.mumble_status); sf.addRow("",self.mumble_channel); sf.addRow("",self.mumble_speaker); sf.addRow("",self.mumble_details)
+        self.mumble_admin_tabs.addTab(status_page,"Status")
+
+        admin_page=QWidget(); av=QVBoxLayout(admin_page)
+        admin_hint=QLabel("Benutzer links auswählen, Zielraum rechts auswählen und anschließend verschieben. „Benutzer & Räume aktualisieren“ lädt beide Listen gemeinsam.")
+        admin_hint.setWordWrap(True); av.addWidget(admin_hint)
+        cols=QHBoxLayout()
+        user_box=QGroupBox("Verbundene Benutzer"); uv=QVBoxLayout(user_box); uv.addWidget(self.mumble_user_list,1); uv.addWidget(self.mumble_user_status)
+        room_box=QGroupBox("Mumble-Räume"); rv=QVBoxLayout(room_box); rv.addWidget(self.mumble_channel_list,1); rv.addWidget(self.mumble_room_count)
+        cols.addWidget(user_box,1); cols.addWidget(room_box,1); av.addLayout(cols,1)
+        admin_buttons=QHBoxLayout()
+        refresh_admin=QPushButton("Benutzer & Räume aktualisieren"); refresh_admin.clicked.connect(self.refresh_mumble_admin)
+        move_selected_user=QPushButton("Benutzer → Raum verschieben"); move_selected_user.clicked.connect(self.move_selected_mumble_user_manual)
+        move_mumble=QPushButton("Gateway → Raum verschieben"); move_mumble.clicked.connect(self.move_mumble_gateway_manual)
+        admin_buttons.addWidget(refresh_admin); admin_buttons.addWidget(move_selected_user); admin_buttons.addWidget(move_mumble); av.addLayout(admin_buttons)
+        self.mumble_admin_tabs.addTab(admin_page,"Benutzer & Räume")
+
+        ice_page=QWidget(); ice_scroll=QScrollArea(); ice_scroll.setWidgetResizable(True)
+        ice_content=QWidget(); icef=QFormLayout(ice_content); ice_scroll.setWidget(ice_content)
+        ice_page_layout=QVBoxLayout(ice_page); ice_page_layout.addWidget(ice_scroll)
+        ice_hint=QLabel("Direktes Ice/SSH ist für Server-Admins bzw. eigene Server gedacht. Read- und Write-Secret werden nicht gespeichert."); ice_hint.setWordWrap(True)
+        icef.addRow(ice_hint); icef.addRow("Anbindung:",self.mumble_ice_mode)
+        icef.addRow("Ice Host:",self.mumble_ice_host); icef.addRow("Ice Port:",self.mumble_ice_port); icef.addRow("Server-ID:",self.mumble_ice_server_id)
+        icef.addRow("Murmur.ice:",slice_row); icef.addRow("Ice Read-Secret:",self.mumble_read_secret); icef.addRow("Ice Write-Secret:",self.mumble_write_secret); icef.addRow("",self.mumble_show_secrets)
+        icef.addRow("SSH-Server:",self.mumble_ssh_host); icef.addRow("SSH-Port:",self.mumble_ssh_port); icef.addRow("SSH-Benutzer:",self.mumble_ssh_user)
+        icef.addRow("Gateway-Mumble-Name:",self.mumble_gateway_name)
+        start_tunnel=QPushButton("SSH-Tunnel starten / prüfen"); start_tunnel.clicked.connect(self.start_mumble_ssh_tunnel)
+        stop_tunnel=QPushButton("SSH-Tunnel stoppen"); stop_tunnel.clicked.connect(self.stop_mumble_ssh_tunnel)
         tunnel_buttons=QHBoxLayout(); tunnel_buttons.addWidget(start_tunnel); tunnel_buttons.addWidget(stop_tunnel)
-        mf.addRow(tunnel_buttons); mf.addRow(detect_ice); mf.addRow(test_ice); mf.addRow("",self.mumble_ice_status)
-        mf.addRow("Ziel-Channel:",self.mumble_channel_combo); mf.addRow(load_ice_channels); mf.addRow(move_mumble)
-        mf.addRow(QLabel("<b>Verbundene Mumble-Benutzer</b>"))
-        user_help=QLabel(
-            "Zeigt die aktuell über Ice verbundenen Benutzer. Benutzer auswählen, oben den Ziel-Channel wählen "
-            "und anschließend verschieben. Das Verschieben benötigt das Ice Write-Secret."
-        )
-        user_help.setWordWrap(True)
-        mf.addRow("",user_help)
-        mf.addRow(self.mumble_user_list)
-        mf.addRow(load_ice_users)
-        mf.addRow(move_selected_user)
-        mf.addRow("",self.mumble_user_status)
-        mf.addRow(QLabel("<b>Mumble-Störungsraum</b>"))
-        mumble_room_note=QLabel(
-            "Hier wird nur der Mumble-Störungsraum und der automatische Wechsel festgelegt. "
-            "Die gemeinsamen WAV-Ansagen liegen unter Schutz → Ansagen und gelten für "
-            "TeamSpeak und Mumble."
-        )
-        mumble_room_note.setWordWrap(True)
-        mf.addRow("",mumble_room_note)
-        mf.addRow("Störungsraum:",self.mumble_disturbance_combo)
-        mf.addRow(set_mumble_room)
-        mf.addRow("",self.mumble_disturbance_status)
-        mf.addRow("",self.protect_move_to_mumble_room)
-        mf.addRow("",self.protect_return_mumble_channel)
-        mf.addRow(QLabel("<b>Bridge für normale Gatewaybetreiber</b>"))
-        bridge_help=QLabel("Vom Server-Admin erhältst du nur Bridge-Adresse und persönliches Token. Wenn dein Admin die Bridge noch nicht hat, speichere das Admin-Paket und gib es ihm weiter. Das globale Ice-Secret gehört niemals in diesen Bereich.")
-        bridge_help.setWordWrap(True)
-        mf.addRow(bridge_help); mf.addRow("Bridge-Adresse:",self.mumble_bridge_url); mf.addRow("Persönliches Token:",self.mumble_bridge_token); mf.addRow(test_bridge); mf.addRow(export_admin); mf.addRow("",self.mumble_bridge_status)
+        detect_ice=QPushButton("Ice-Einstellungen automatisch erkennen"); detect_ice.clicked.connect(self.detect_mumble_ice_settings)
+        test_ice=QPushButton("Ice-Verbindung testen"); test_ice.clicked.connect(self.test_mumble_ice)
+        ssh_help=QPushButton("SSH sicher einrichten – Anleitung"); ssh_help.clicked.connect(self.show_mumble_ssh_help)
+        icef.addRow(tunnel_buttons); icef.addRow(detect_ice); icef.addRow(test_ice); icef.addRow(ssh_help); icef.addRow("",self.mumble_ice_status)
+        self.mumble_admin_tabs.addTab(ice_page,"Ice / SSH")
+
+        protect_page=QWidget(); pf=QFormLayout(protect_page)
+        room_note=QLabel("Störungsraum und automatische Rückkehr betreffen den Gateway-Benutzer. Die gemeinsamen Ansagen werden weiterhin unter Schutz konfiguriert."); room_note.setWordWrap(True)
+        set_mumble_room=QPushButton("Ausgewählten Channel als Mumble-Störungsraum setzen"); set_mumble_room.clicked.connect(self.set_mumble_disturbance_room)
+        pf.addRow(QLabel("<b>Störungsraum / Schutz</b>")); pf.addRow(room_note); pf.addRow("Störungsraum:",self.mumble_disturbance_combo); pf.addRow(set_mumble_room)
+        pf.addRow("",self.mumble_disturbance_status); pf.addRow("",self.protect_move_to_mumble_room); pf.addRow("",self.protect_return_mumble_channel)
+        bridge_help=QLabel("Im Bridge-Modus erhält der normale Gatewaybetreiber nur Bridge-Adresse und persönliches Token. Globale Ice-Secrets bleiben beim Server-Admin."); bridge_help.setWordWrap(True)
+        test_bridge=QPushButton("Bridge-Verbindung / Token prüfen"); test_bridge.clicked.connect(self.test_mumble_bridge)
+        export_admin=QPushButton("Admin-Paket speichern / weitergeben"); export_admin.clicked.connect(self.save_mumble_admin_package)
+        pf.addRow(QLabel("<b>Bridge</b>")); pf.addRow(bridge_help); pf.addRow("Bridge-Adresse:",self.mumble_bridge_url); pf.addRow("Persönliches Token:",self.mumble_bridge_token)
+        pf.addRow(test_bridge); pf.addRow(export_admin); pf.addRow("",self.mumble_bridge_status)
+        self.mumble_admin_tabs.addTab(protect_page,"Schutz & Bridge")
+
         integration_tabs.addTab(mumble_page,"Mumble")
 
         self.tabs.addTab(w,"Integrationen")
@@ -6978,6 +6968,19 @@ done"""
             if not read: raise RuntimeError("Bitte das Ice Read-Secret eingeben.")
             channels=self.mumble_ice.channels(host,port,self.mumble_slice.text(),read,self.mumble_ice_server_id.value())
             self.mumble_channels=channels
+            if hasattr(self,"mumble_channel_list"):
+                old_cid=self.mumble_channel_combo.currentData()
+                self.mumble_channel_list.clear()
+                selected_row=-1
+                for cid,name,parent in channels:
+                    self.mumble_channel_list.addItem(f"{name}  (CID {cid})")
+                    item=self.mumble_channel_list.item(self.mumble_channel_list.count()-1)
+                    item.setData(Qt.ItemDataRole.UserRole,cid)
+                    item.setToolTip(f"CID {cid} | Parent {parent}")
+                    if old_cid is not None and int(old_cid)==cid: selected_row=self.mumble_channel_list.count()-1
+                if selected_row>=0: self.mumble_channel_list.setCurrentRow(selected_row)
+                elif self.mumble_channel_list.count(): self.mumble_channel_list.setCurrentRow(0)
+                self.mumble_room_count.setText(f"Raumliste: {len(channels)} Räume")
             for combo in (self.mumble_channel_combo,self.mumble_disturbance_combo):
                 old=combo.currentData(); combo.clear(); idx=-1
                 for cid,name,parent in channels:
@@ -6995,6 +6998,17 @@ done"""
             self.log(f"Mumble Ice: {len(channels)} Channels geladen.")
         except Exception as e:
             self.show_copyable_error("Mumble Channels",str(e))
+
+    def _mumble_channel_list_selected(self):
+        item=self.mumble_channel_list.currentItem() if hasattr(self,"mumble_channel_list") else None
+        if item is None: return
+        cid=item.data(Qt.ItemDataRole.UserRole)
+        idx=self.mumble_channel_combo.findData(cid)
+        if idx>=0: self.mumble_channel_combo.setCurrentIndex(idx)
+
+    def refresh_mumble_admin(self):
+        self.refresh_mumble_ice_channels()
+        self.refresh_mumble_ice_users()
 
     def refresh_mumble_ice_users(self):
         if self.mumble_ice_mode.currentData() == "bridge":
