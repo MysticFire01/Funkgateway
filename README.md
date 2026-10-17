@@ -1,9 +1,9 @@
-# FunkGateway UI 0.6.4
+# FunkGateway UI 0.6.5
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
 
-FunkGateway UI 0.6.4 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
+FunkGateway UI 0.6.5 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
 
 Der aktuelle Alpha-Stand umfasst Server- und Raumlisten über die FRN-SystemManager, direkte Server-Raumlisten über `NET_NAMES`, Teilnehmerliste, RX/TX-Pegel, Raumwechsel und FRN-Audio mit GSM 06.10 WAV49. Die Client-Klasse wird passend zur FunkGateway-Betriebsart gewählt: **PC-User = PC Only (CL=2)**, **Funk-Gateway = Gateway (CL=1)**. Die VX-Kennung bleibt sichtbar und editierbar; der aktuelle Default ist `20261016`.
 
@@ -12,6 +12,10 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### FRN Login-1-Kompatibilität in 0.6.5
+
+Einige FRN-Server senden vor der eigentlichen Login-1-Kennung ein führendes NUL-/Steuerbyte, z. B. `\\x002014003`. FunkGateway protokolliert die Rohantwort weiterhin vollständig, entfernt für die eigentliche Prüfung aber führende C0-Steuerzeichen. Dadurch wird `2014003` korrekt als klassische 7-stellige FRN-Antwort akzeptiert. Echte Server-Ablehnungen wie `<AL>BLOCK</AL>` bleiben unverändert echte Fehler und werden nicht umgangen.
 
 ### Einstellbare SystemManager-Schutzpause in 0.6.4
 
@@ -35,11 +39,11 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktuelle stabile Version: 0.6.4**
+**Aktuelle stabile Version: 0.6.5**
 
 ## Screenshots
 
-Die vier Betriebsarten von FunkGateway UI 0.6.4:
+Die vier Betriebsarten von FunkGateway UI 0.6.5:
 
 | PC-User | Funk-Gateway |
 |---|---|
@@ -53,7 +57,7 @@ Die vier Betriebsarten von FunkGateway UI 0.6.4:
 
 ## Betriebsarten
 
-FunkGateway UI **0.6.4** besitzt vier klar getrennte Betriebsarten:
+FunkGateway UI **0.6.5** besitzt vier klar getrennte Betriebsarten:
 
 - **PC-User / TeamSpeak** – normaler PC-/VoIP-Betrieb ohne Funkhardware. Funk-PTT, COS und Funk-RX bleiben vollständig deaktiviert. Die VoIP-Software verwendet ihre normalen **Standard/Default**-Audio-Geräte.
 - **Funk-Gateway** – vollständiger Funk ↔ VoIP-Betrieb mit Audio-Routing, RX-Erkennung, PTT, Rogerbeep, Rufzeichenbake, DTMF und Schutzfunktionen.

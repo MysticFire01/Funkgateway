@@ -1,4 +1,12 @@
-# FunkGateway UI 0.6.4
+# FunkGateway UI 0.6.5
+
+## Release 0.6.5
+
+- FRN Login-1-Kompatibilität verbessert: führende NUL-/C0-Steuerbytes werden vor der Protokollprüfung entfernt.
+- Rohantwort bleibt unverändert im Diagnose-Log sichtbar.
+- Antworten wie `\\x002014003` werden als `2014003` korrekt akzeptiert.
+- Echte `<AL>BLOCK</AL>`-Antworten bleiben weiterhin echte Server-Ablehnungen.
+- Veralteten Hinweis auf „Alpha 9“ in der BLOCK-Fehlermeldung entfernt.
 
 ## Release 0.6.4
 

@@ -892,8 +892,13 @@ class FrnNativeClient:
                 "CT:<Anmeldedaten ausgeblendet>",
             )
 
-            line1 = self._recv_login_line(time.monotonic() + 12)
-            self.signals.log.emit("RX Login 1: " + repr(line1))
+            line1_raw = self._recv_login_line(time.monotonic() + 12)
+            self.signals.log.emit("RX Login 1: " + repr(line1_raw))
+            # Manche FRN-Servervarianten stellen der eigentlichen Login-1-Antwort
+            # ein NUL-/Steuerbyte voran (z. B. "\\x002014003"). Für die
+            # Protokollprüfung entfernen wir ausschließlich führende C0-
+            # Steuerzeichen; die unveränderte Rohantwort bleibt im Diagnose-Log.
+            line1 = line1_raw.lstrip("".join(chr(i) for i in range(0x20)))
             # FRN-Servervarianten beantworten die erste Login-Stufe unterschiedlich.
             # Klassische Server liefern eine 7-stellige Kennung (oder "0").
             # Neuere/alternative Server können stattdessen die vom Client gesendete
@@ -901,7 +906,11 @@ class FrnNativeClient:
             # wie 20261016 legitim. Wir akzeptieren daher ausdrücklich nur die
             # bekannten klassischen Formen ODER exakt unsere eigene VX-Kennung.
             if not (len(line1) == 7 or line1 == "0" or line1 == str(self.cfg.protocol_version)):
-                raise RuntimeError("Unerwartete FRN-Protokollantwort: " + repr(line1))
+                raise RuntimeError(
+                    "Unerwartete FRN-Protokollantwort: "
+                    + repr(line1_raw)
+                    + (f" (bereinigt: {line1!r})" if line1 != line1_raw else "")
+                )
 
             self._set_state("LOGGING_IN_2")
             line2 = self._recv_login_line(time.monotonic() + 12)
@@ -914,8 +923,8 @@ class FrnNativeClient:
                     "FRN-Anmeldung abgelehnt: Server hat den Zugriff blockiert. "
                     f"Aktuelle Identität: CL={self.cfg.client_type}, "
                     f"VX={self.cfg.protocol_version}. "
-                    "Zum Testen kann in Alpha 9 ein anderer legitimer FRN-Client-Typ "
-                    "gewählt werden; FunkGateway imitiert dabei keinen offiziellen Client."
+                    "Zum Testen kann ein anderer legitimer FRN-Client-Typ gewählt werden; "
+                    "FunkGateway imitiert dabei keinen offiziellen Client."
                 )
 
             self._set_state("IDLE")
