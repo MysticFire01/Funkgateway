@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.14
+# FunkGateway UI 0.6.15
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -12,6 +12,10 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### Letzten FRN-Raum nach Trennen behalten in 0.6.15
+
+Beim normalen Trennen bleibt der zuletzt verwendete FRN-Raum jetzt im Feld **Raum** stehen. Damit kann ohne erneute Raumauswahl sofort wieder verbunden werden. Teilnehmerliste, Sprecherstatus und Pegel werden weiterhin sauber zurückgesetzt.
 
 ### ALT GR als FRN-PTT-Hotkey in 0.6.14
 
