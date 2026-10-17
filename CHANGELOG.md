@@ -1,4 +1,11 @@
-# FunkGateway UI 0.6.13
+# FunkGateway UI 0.6.14
+
+## Release 0.6.14
+
+- ALT GR wird bei der FRN-Hotkey-Aufnahme als eigene Taste erkannt.
+- Anzeige ist jetzt sauber „ALT GR“ statt einer kryptischen Tastenkombination.
+- Hold-Modus unterstützt ALT GR: drücken = TX, loslassen = RX.
+- Latch-Modus unterstützt ALT GR als Umschalttaste.
 
 ## Release 0.6.13
 
