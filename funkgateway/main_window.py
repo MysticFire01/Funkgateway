@@ -10498,25 +10498,101 @@ done"""
 
 
     def closeEvent(self,ev):
-        if hasattr(self,"frn_panel"):
-            try: self.frn_panel.disconnect_frn()
-            except Exception: pass
-        self._stop_pc_mic_monitor()
-        if getattr(self,"voip_parrot_running",False):
-            self.stop_voip_parrot()
-        if getattr(self,"pc_parrot_running",False):
-            self.stop_pc_parrot()
-        self.save_cfg(); self.stop_gateway()
+        """Shut down without leaving the desktop with an unresponsive window.
+
+        Older releases performed every cleanup operation while the main window
+        was still mapped.  A few individually bounded waits (audio workers,
+        parrot processes or a Mumble SSH/Ice tunnel) could therefore add up
+        long enough for GNOME to report "FunkGateway UI antwortet nicht".
+
+        Hide/unmap the window first, stop Qt timers that could start fresh work,
+        then perform the normal safety cleanup.  Each step is timed so a slow
+        backend can be identified from the log on the next start.
+        """
+        if getattr(self,"_shutdown_in_progress",False):
+            ev.accept()
+            return
+        self._shutdown_in_progress=True
+
+        started=time.monotonic()
+
+        # Remove the mapped window before any potentially blocking backend
+        # cleanup.  Processing the hide event once keeps GNOME/KDE from treating
+        # a deliberately closing application as a frozen visible window.
         try:
-            if self.ts_commander_state:
-                self._configure_teamspeak()
-                self.ts_client.set_channel_commander(False)
+            self.hide()
+            QApplication.processEvents()
         except Exception:
             pass
-        self.ts_client.close()
-        try: self.mumble_ice.stop_tunnel()
-        except Exception: pass
-        try: self.frn_global_hotkey.stop()
-        except Exception: pass
-        if self.ptt: self.ptt.close()
+
+        # Prevent periodic watchdogs/pollers from starting new work while the
+        # resources below are being torn down.
+        for obj in self.findChildren(QTimer):
+            try:
+                obj.stop()
+            except Exception:
+                pass
+
+        def step(label,func):
+            t0=time.monotonic()
+            try:
+                func()
+            except Exception as exc:
+                try:
+                    self.log(f"Beenden: {label} meldete Fehler: {exc}")
+                except Exception:
+                    pass
+            dt=time.monotonic()-t0
+            try:
+                self.log(f"Beenden: {label} fertig ({dt:.2f} s).")
+            except Exception:
+                pass
+
+        if hasattr(self,"frn_panel"):
+            step("FRN trennen",self.frn_panel.disconnect_frn)
+
+        step("PC-Mikrofonmonitor stoppen",self._stop_pc_mic_monitor)
+
+        if getattr(self,"voip_parrot_running",False):
+            step("VoIP-Papagei stoppen",self.stop_voip_parrot)
+        if getattr(self,"pc_parrot_running",False):
+            step("PC-Papagei stoppen",self.stop_pc_parrot)
+
+        step("Konfiguration speichern",self.save_cfg)
+        step("Gateway/Audio/PTT stoppen",self.stop_gateway)
+
+        def close_teamspeak():
+            try:
+                if self.ts_commander_state:
+                    self._configure_teamspeak()
+                    self.ts_client.set_channel_commander(False)
+            finally:
+                self.ts_client.close()
+        step("TeamSpeak schließen",close_teamspeak)
+
+        # On application exit there is no need to synchronously wait up to two
+        # seconds for an SSH tunnel.  SIGTERM is sufficient; the OS reaps the
+        # child as the application exits.  This avoids a needless GUI-thread
+        # stall while retaining the normal wait/kill behaviour everywhere else.
+        def stop_mumble_tunnel_fast():
+            proc=getattr(self.mumble_ice,"tunnel_proc",None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            self.mumble_ice.tunnel_proc=None
+        step("Mumble-Tunnel stoppen",stop_mumble_tunnel_fast)
+
+        if hasattr(self,"frn_global_hotkey"):
+            step("globalen FRN-Hotkey stoppen",self.frn_global_hotkey.stop)
+
+        if self.ptt:
+            step("PTT schließen",self.ptt.close)
+
+        total=time.monotonic()-started
+        try:
+            self.log(f"Beenden abgeschlossen ({total:.2f} s).")
+        except Exception:
+            pass
         ev.accept()
