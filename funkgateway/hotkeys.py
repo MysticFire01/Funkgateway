@@ -14,12 +14,13 @@ class ModifierHoldWatcher(QObject):
     pressed = Signal()
     released = Signal()
 
-    def __init__(self, parent=None, interval_ms: int = 40):
+    def __init__(self, parent=None, interval_ms: int = 10):
         super().__init__(parent)
         self._name = ""
         self._down = False
         self._timer = QTimer(self)
-        self._timer.setInterval(max(20, int(interval_ms)))
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(max(5, int(interval_ms)))
         self._timer.timeout.connect(self._poll)
         self._timer.start()
 
