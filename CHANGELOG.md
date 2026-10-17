@@ -1,3 +1,15 @@
+# FunkGateway UI 0.6.20
+
+## Release 0.6.20
+
+- Installer für Debian/Ubuntu und Generic Linux auf konsistente pynput-Installation vereinheitlicht.
+- Release-Pakete installieren pynput jetzt ebenfalls direkt in der virtuellen Umgebung.
+- Generic Installer berücksichtigt apt, dnf, pacman und zypper mit distributionsspezifischen X11/XTest-, Audio- und GSM-Abhängigkeiten.
+- Bei dnf/pacman/zypper verhindert ein einzelnes nicht verfügbares Paket nicht mehr die Installation aller übrigen Pakete.
+- Vor dem Start werden Python-venv und die zentralen Python-Abhängigkeiten ausdrücklich geprüft.
+- Versionsmetadaten in constants.py, __init__.py und main.py auf 0.6.20 synchronisiert.
+- Funktionierende FRN-Hotkey- und Hold-PTT-Logik aus 0.6.19 bleibt unverändert.
+
 # FunkGateway UI 0.6.19
 
 ## Release 0.6.19
