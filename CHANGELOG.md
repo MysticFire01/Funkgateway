@@ -1,4 +1,13 @@
-# FunkGateway UI 0.6.16
+# FunkGateway UI 0.6.17
+
+## Release 0.6.17
+
+- FRN-PTT-Hotkey kann wahlweise nur in FunkGateway oder systemweit arbeiten.
+- Sicherer Standard ist „Nur in FunkGateway“.
+- Systemweiter Hotkey funktioniert auch bei aktivem Mumble-/Browser-/anderen Fenster.
+- Systemweiter Hotkey ist nur bei verbundener FRN-Sitzung im PC-User-Modus wirksam.
+- Hinweis auf mögliche Tastenkonflikte mit anderen Programmen ergänzt.
+- pynput als optionale technische Grundlage für systemweite Hotkeys ergänzt.
 
 ## Release 0.6.16
 
