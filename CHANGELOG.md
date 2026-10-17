@@ -1,4 +1,12 @@
-# FunkGateway UI 0.6.18
+# FunkGateway UI 0.6.19
+
+## Release 0.6.19
+
+- Vorhandene venvs werden beim Start auf fehlendes pynput geprüft.
+- Fehlendes pynput wird für den systemweiten FRN-Hotkey automatisch nachinstalliert.
+- Ein fehlgeschlagenes Nachinstallieren blockiert FunkGateway nicht; lokaler Hotkey bleibt verfügbar.
+- repair-venv.sh installiert und prüft pynput jetzt ebenfalls.
+- Systemweiter X11-Hotkey kann dadurch nach Updates zuverlässig Press/Release für echtes Hold-PTT liefern.
 
 ## Release 0.6.18
 

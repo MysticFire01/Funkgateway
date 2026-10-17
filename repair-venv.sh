@@ -24,7 +24,7 @@ echo "Erstelle .venv mit --system-site-packages ..."
 
 echo "Installiere FunkGateway-Pythonpakete ..."
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
-.venv/bin/python -m pip install     "PySide6>=6.5,<6.9"     "sounddevice>=0.4,<0.6"     "soundfile>=0.12,<0.14"     "pyserial>=3.5,<4"
+.venv/bin/python -m pip install     "PySide6>=6.5,<6.9"     "sounddevice>=0.4,<0.6"     "soundfile>=0.12,<0.14"     "pyserial>=3.5,<4"     "pynput>=1.7,<2"
 
 if ! .venv/bin/python -c 'import Ice; print(Ice.stringVersion())' >/dev/null 2>&1; then
     if .venv/bin/python -m pip show numpy >/dev/null 2>&1; then
@@ -35,9 +35,9 @@ fi
 
 .venv/bin/python - <<'PY'
 from PySide6.QtWidgets import QApplication
-import serial, sounddevice, soundfile
+import serial, sounddevice, soundfile, pynput
 import Ice
-print("GUI + Audio + pyserial: OK")
+print("GUI + Audio + pyserial + pynput: OK")
 print("Python-Ice:", Ice.stringVersion())
 print("Ice-Modul:", Ice.__file__)
 PY

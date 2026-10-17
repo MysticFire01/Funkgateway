@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.18
+# FunkGateway UI 0.6.19
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -26,6 +26,10 @@ Beim normalen Trennen bleibt der zuletzt verwendete FRN-Raum jetzt im Feld **Rau
 ### ALT GR als FRN-PTT-Hotkey in 0.6.14
 
 ALT GR wird bei der Hotkey-Aufnahme jetzt als eigene Taste erkannt, verständlich als **ALT GR** angezeigt und im Hold-Modus über Qt GroupSwitchModifier ausgewertet. Damit gilt auch für ALT GR: drücken = TX, loslassen = RX. Im Latch-Modus schaltet jeder Tastendruck den TX-Zustand um.
+
+### Systemweiten FRN-Hotkey nach Updates automatisch reparieren in 0.6.19
+
+Bestehende Installationen aus älteren Versionen können ein venv ohne **pynput** besitzen. Beim Start prüft FunkGateway jetzt automatisch, ob pynput vorhanden ist, und ergänzt es bei Bedarf. Die venv-Reparatur installiert und prüft pynput ebenfalls. Dadurch bleibt der systemweite X11-Hotkey nach einem Update nicht mehr wegen einer alten Python-Umgebung wirkungslos.
 
 ### FRN-Hotkey Hold und Systemweit-Diagnose in 0.6.18
 
