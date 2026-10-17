@@ -1475,6 +1475,8 @@ class MainWindow(QMainWindow):
             if "Mumble verbunden" in mumble_state:
                 parts.append("Mumble aktiv")
                 voip_connected=True
+            elif "Status unklar" in mumble_state or "nicht lesbar" in mumble_state:
+                parts.append("Mumble Status unklar")
             elif not mumble_state:
                 parts.append("Mumble prüft …")
             else:
@@ -6391,7 +6393,11 @@ class MainWindow(QMainWindow):
                         if marker != self.mumble_last_status:
                             self.log("Mumble: " + marker); self.mumble_last_status=marker
                     except Exception as e:
-                        self.mumble_status.setText(f"Mumble läuft – lokale Steuerung konnte nicht gelesen werden ({e})")
+                        marker=f"Mumble Status unklar – lokale Steuerung nicht lesbar ({e})"
+                        self.mumble_status.setText(marker)
+                        if marker != self.mumble_last_status:
+                            self.log("Mumble: " + marker)
+                            self.mumble_last_status=marker
                 else:
                     self.mumble_status.setText("Mumble-Modul ausgeschaltet")
                     self.mumble_channel.setText("Aktiver Mumble-Channel: —")
@@ -6516,8 +6522,12 @@ class MainWindow(QMainWindow):
             return "Mumble nicht installiert"
         if not status.get("running"):
             return "Mumble installiert – Client nicht gestartet"
+        if status.get("connected") is None:
+            return "Mumble Status unklar – Verbindungsstatus nicht lesbar"
         if not status.get("connected"):
             return "Mumble läuft – nicht mit Server verbunden"
+        if status.get("detail_errors"):
+            return "Mumble verbunden – Zusatzstatus teilweise nicht lesbar"
         return "Mumble verbunden"
 
     def test_mumble_local(self):
@@ -6543,12 +6553,18 @@ class MainWindow(QMainWindow):
         speakers=status.get("speakers") or []
         self.mumble_channel.setText(f"Aktiver Mumble-Channel: {channel}")
         self.mumble_speaker.setText("Aktueller Mumble-Sprecher: " + (", ".join(speakers) if speakers else "—"))
-        self.mumble_details.setText(
+        muted=status.get("muted")
+        deaf=status.get("deaf")
+        txmode=status.get("transmit_mode")
+        details=(
             f"Server: {server}:{port} | Benutzer: {user} | "
-            f"Mute: {'ja' if status.get('muted') else 'nein'} | "
-            f"Deaf: {'ja' if status.get('deaf') else 'nein'} | "
-            f"Transmit-Mode: {status.get('transmit_mode','—')}"
+            f"Mute: {'—' if muted is None else 'ja' if muted else 'nein'} | "
+            f"Deaf: {'—' if deaf is None else 'ja' if deaf else 'nein'} | "
+            f"Transmit-Mode: {'—' if txmode is None else txmode}"
         )
+        if status.get("detail_errors"):
+            details += " | Teilstatus: " + "; ".join(status.get("detail_errors") or [])
+        self.mumble_details.setText(details)
         if not self.mumble_gateway_name.text().strip() and status.get("user"):
             self.mumble_gateway_name.setText(status["user"])
 

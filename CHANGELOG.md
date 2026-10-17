@@ -1,4 +1,13 @@
-# FunkGateway UI 0.6.7
+# FunkGateway UI 0.6.8
+
+## Release 0.6.8
+
+- Mumble-Verbindungsstatus ist nicht mehr von allen optionalen D-Bus-Abfragen abhängig.
+- getCurrentUrl/Verbindung wird als primärer Zustand behandelt.
+- Fehler bei Sprecherliste, Mute/Deaf oder Transmit-Mode lassen eine echte Mumble-Verbindung bestehen.
+- Dauerzustand „Mumble prüft …“ bei D-Bus-Fehlern behoben.
+- Neuer Zustand „Mumble Status unklar“ bei nicht lesbarer lokaler Verbindungssteuerung.
+- Teilweise fehlende Zusatzinformationen werden im Mumble-Reiter als Diagnose angezeigt.
 
 ## Release 0.6.7
 

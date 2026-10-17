@@ -138,16 +138,49 @@ class MumbleLocalBackend:
             return {"installed":False,"running":False,"connected":False}
         if not self.running():
             return {"installed":True,"running":False,"connected":False}
-        ctx=self.current_context()
-        return {
-            "installed":True,
-            "running":True,
-            **ctx,
-            "speakers":self.talking_users(),
-            "muted":self.is_muted(),
-            "deaf":self.is_deaf(),
-            "transmit_mode":self.transmit_mode(),
-        }
+
+        # The connection URL is the authoritative local connection signal.
+        # Optional D-Bus details must never make an otherwise valid Mumble
+        # connection look disconnected merely because one auxiliary method is
+        # missing, slow or temporarily unavailable (seen with older clients).
+        try:
+            ctx=self.current_context()
+        except Exception as exc:
+            return {
+                "installed":True,
+                "running":True,
+                "connected":None,
+                "url":"",
+                "user":"",
+                "server":"",
+                "port":0,
+                "channel":"",
+                "speakers":[],
+                "muted":None,
+                "deaf":None,
+                "transmit_mode":None,
+                "status_error":str(exc),
+                "detail_errors":[f"getCurrentUrl: {exc}"],
+            }
+
+        result={"installed":True,"running":True,**ctx}
+        errors=[]
+
+        for key,func,default in (
+            ("speakers",self.talking_users,[]),
+            ("muted",self.is_muted,None),
+            ("deaf",self.is_deaf,None),
+            ("transmit_mode",self.transmit_mode,None),
+        ):
+            try:
+                result[key]=func()
+            except Exception as exc:
+                result[key]=default
+                errors.append(f"{key}: {exc}")
+
+        if errors:
+            result["detail_errors"]=errors
+        return result
 
 
 class MumbleIceBackend:
