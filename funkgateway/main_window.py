@@ -10501,5 +10501,7 @@ done"""
         self.ts_client.close()
         try: self.mumble_ice.stop_tunnel()
         except Exception: pass
+        try: self.frn_global_hotkey.stop()
+        except Exception: pass
         if self.ptt: self.ptt.close()
         ev.accept()
