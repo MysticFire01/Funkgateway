@@ -3570,7 +3570,7 @@ class MainWindow(QMainWindow):
     def _configure_frn_ptt_shortcut(self, sequence=None):
         if not hasattr(self,"frn_ptt_shortcut"): return
         text=str(sequence if sequence is not None else self.frn_panel.ptt_hotkey_text()).strip()
-        special=text in ("Ctrl","Alt","Shift","Meta")
+        special=text in ("Ctrl","Alt","AltGr","Shift","Meta")
         if hasattr(self,"frn_modifier_watcher"):
             self.frn_modifier_watcher.set_key(text if special else "")
         self.frn_ptt_shortcut.setKey(QKeySequence() if special or not text else QKeySequence(text))
