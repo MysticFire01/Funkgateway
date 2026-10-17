@@ -42,6 +42,7 @@ from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBri
 from .integrations.frn_panel import FrnPanel
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
+from .hotkeys import ModifierHoldWatcher
 
 
 class AnalogSMeter(QWidget):
@@ -3569,14 +3570,32 @@ class MainWindow(QMainWindow):
     def _configure_frn_ptt_shortcut(self, sequence=None):
         if not hasattr(self,"frn_ptt_shortcut"): return
         text=str(sequence if sequence is not None else self.frn_panel.ptt_hotkey_text()).strip()
-        special={
-            "Ctrl":Qt.Key.Key_Control,
-            "Alt":Qt.Key.Key_Alt,
-            "Shift":Qt.Key.Key_Shift,
-            "Meta":Qt.Key.Key_Meta,
-        }
-        self.frn_ptt_shortcut.setKey(QKeySequence(special[text]) if text in special else (QKeySequence(text) if text else QKeySequence()))
-        self.frn_ptt_shortcut.setEnabled(bool(text))
+        special=text in ("Ctrl","Alt","Shift","Meta")
+        if hasattr(self,"frn_modifier_watcher"):
+            self.frn_modifier_watcher.set_key(text if special else "")
+        self.frn_ptt_shortcut.setKey(QKeySequence() if special or not text else QKeySequence(text))
+        self.frn_ptt_shortcut.setEnabled(bool(text) and not special)
+
+    def _frn_modifier_hotkey_pressed(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is None or self._mode()!="pc" or not panel.connected or not panel.audio_enabled.isChecked(): return
+        mode,limit_on,seconds=panel.ptt_settings()
+        if mode=="hold":
+            panel.ptt(True)
+            if panel.ptt_active and limit_on:
+                self.frn_ptt_timer.start(max(1,int(seconds))*1000)
+            self._sync_frn_global_ui()
+        else:
+            self._frn_ptt_hotkey_triggered()
+
+    def _frn_modifier_hotkey_released(self):
+        panel=getattr(self,"frn_panel",None)
+        if panel is None or self._mode()!="pc": return
+        mode,_,_=panel.ptt_settings()
+        if mode=="hold":
+            panel.ptt(False)
+            self.frn_ptt_timer.stop()
+            self._sync_frn_global_ui()
 
     def _frn_ptt_hotkey_triggered(self):
         panel=getattr(self,"frn_panel",None)
@@ -4162,6 +4181,9 @@ class MainWindow(QMainWindow):
         self.frn_ptt_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.frn_ptt_shortcut.setAutoRepeat(False)
         self.frn_ptt_shortcut.activated.connect(self._frn_ptt_hotkey_triggered)
+        self.frn_modifier_watcher=ModifierHoldWatcher(self)
+        self.frn_modifier_watcher.pressed.connect(self._frn_modifier_hotkey_pressed)
+        self.frn_modifier_watcher.released.connect(self._frn_modifier_hotkey_released)
         self.frn_panel.pttHotkeyChanged.connect(self._configure_frn_ptt_shortcut)
         self._configure_frn_ptt_shortcut(self.frn_panel.ptt_hotkey_text())
         self.frn_panel.statusChanged.connect(self._frn_status_changed)
