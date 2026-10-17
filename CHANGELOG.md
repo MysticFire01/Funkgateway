@@ -1,4 +1,10 @@
-# FunkGateway UI 0.6.15
+# FunkGateway UI 0.6.16
+
+## Release 0.6.16
+
+- Modifier-Hotkeys für FRN PTT reagieren schneller.
+- Abfrageintervall für STRG, ALT, ALT GR, SHIFT und Windows/Super von 40 ms auf 10 ms reduziert.
+- Präziser Qt-Timer für unmittelbarere Hold-PTT-Reaktion.
 
 ## Release 0.6.15
 
