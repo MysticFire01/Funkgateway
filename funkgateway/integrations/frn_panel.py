@@ -183,9 +183,30 @@ class FrnPanel(QWidget):
             client_type=1 if radio_auto else 2
         else:
             client_type=int(selected)
-        vx=self.protocol_version.text().strip() or '20261016'
+        vx=self.protocol_version.text().strip() or '2014003'
+
+        # FRN requires BC to match the selected client class.
+        if client_type == 2:
+            band_channel='PC Only'
+        elif client_type == 0:
+            band_channel='Crosslink'
+        else:
+            band_channel=self.band.text().strip()
+            if not band_channel:
+                raise ValueError(
+                    'Für Gateway (CL=1) muss Band / Kanal nach FRN-Format angegeben werden.'
+                )
+
+        # Strict alternative FRN servers reject an empty CT field for PC clients.
+        # Keep real city text untouched; use "- -" only when no city is entered.
+        city=self.city.text().strip()
+        if client_type == 2:
+            city_part='- -' if (not city or city in ('-', '- -')) else city
+        else:
+            city_part=city
+
         pulse_input='funkgateway_rx_source' if radio_auto else None
-        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,self.band.text().strip(),self.description.text().strip(),self.country.text().strip(),self.city.text().strip(),self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input,self.main_password_fallback.isChecked())
+        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,band_channel,self.description.text().strip(),self.country.text().strip(),city_part,self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input,self.main_password_fallback.isChecked())
 
     def connect_frn(self):
         try: cfg=self._cfg()
