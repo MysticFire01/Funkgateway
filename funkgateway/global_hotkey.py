@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import time
+
 from PySide6.QtCore import QObject, Signal
 
 
@@ -22,22 +25,53 @@ class GlobalPttHotkey(QObject):
 
     def start(self):
         if self._listener is not None:
-            return True
+            try:
+                if self._listener.is_alive():
+                    return True
+            except Exception:
+                pass
+            self._listener = None
+
+        session=(os.environ.get("XDG_SESSION_TYPE") or "").strip().lower()
+        if session=="wayland":
+            self.statusChanged.emit(
+                "Systemweiter Hotkey nicht verfügbar: Wayland-Sitzung erkannt. "
+                "Der aktuelle globale Listener benötigt X11. Lokaler Hotkey bleibt aktiv."
+            )
+            return False
+
         try:
             from pynput import keyboard
         except Exception as exc:
-            self.statusChanged.emit(f"Globaler Hotkey nicht verfügbar: {exc}")
+            self.statusChanged.emit(
+                f"Systemweiter Hotkey nicht verfügbar: Python-Modul pynput fehlt oder startet nicht ({exc}). "
+                "Lokaler Hotkey bleibt aktiv."
+            )
             return False
 
-        self._keyboard = keyboard
-        self._listener = keyboard.Listener(
-            on_press=self._on_press,
-            on_release=self._on_release,
-            suppress=False,
-        )
-        self._listener.daemon = True
-        self._listener.start()
-        self.statusChanged.emit("Globaler Hotkey aktiv")
+        try:
+            self._keyboard = keyboard
+            listener = keyboard.Listener(
+                on_press=self._on_press,
+                on_release=self._on_release,
+                suppress=False,
+            )
+            listener.daemon = True
+            listener.start()
+            time.sleep(0.08)
+            if not listener.is_alive():
+                raise RuntimeError("Tastatur-Listener wurde unmittelbar beendet")
+            self._listener = listener
+        except Exception as exc:
+            self._listener = None
+            self.statusChanged.emit(
+                f"Systemweiter Hotkey konnte nicht gestartet werden ({exc}). "
+                "Lokaler Hotkey bleibt aktiv."
+            )
+            return False
+
+        backend="X11/pynput" if session=="x11" else "pynput"
+        self.statusChanged.emit(f"Systemweiter Hotkey aktiv ({backend})")
         return True
 
     def stop(self):
