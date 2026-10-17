@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.16
+# FunkGateway UI 0.6.17
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -12,6 +12,12 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### Wählbarer Hotkey-Bereich in 0.6.17
+
+Für FRN PTT kann jetzt zwischen **„Nur in FunkGateway“** und **„Systemweit – auch in Mumble/anderen Fenstern“** gewählt werden. Standard ist bewusst **nur in FunkGateway**, damit eine Taste, die in anderen Programmen gebraucht wird, dort nicht versehentlich FRN-PTT auslöst. Der systemweite Modus muss ausdrücklich gewählt werden und arbeitet nur bei verbundener FRN-Sitzung im PC-User-Modus.
+
+Für systemweite PTT empfiehlt sich eine selten genutzte Taste oder Kombination, z. B. F9 bzw. Ctrl+F9, um Konflikte mit anderen Programmen zu vermeiden.
 
 ### Letzten FRN-Raum nach Trennen behalten in 0.6.15
 
