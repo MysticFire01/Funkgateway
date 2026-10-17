@@ -1,4 +1,15 @@
-# FunkGateway UI 0.6.3
+# FunkGateway UI 0.6.4
+
+## Release 0.6.4
+
+- Einstellbare SystemManager-Schutzpause für automatische FRN-Listenabfragen.
+- Schutzpause kann aktiv/deaktiviert werden; Dauer 1–120 Minuten, Standard 15 Minuten.
+- Nach 3 aufeinanderfolgenden automatischen SystemManager-Fehlern wird die Automatik pausiert.
+- Manuelles „Serverliste laden“ umgeht die Schutzpause jederzeit bewusst und bleibt verfügbar.
+- Manuelle Fehler zählen nicht zum automatischen Schutzschwellenwert.
+- Erfolgreiche Abfragen setzen Fehlerzähler, Backoff und Schutzpause zurück.
+- UI zeigt „Automatik: bereit“, „Schutzpause: aus“ oder die ungefähre Restdauer der Pause.
+- Einstellungen werden in der FunkGateway-Konfiguration gespeichert.
 
 ## Release 0.6.3
 

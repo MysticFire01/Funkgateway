@@ -1,5 +1,6 @@
 from __future__ import annotations
 import html
+import time
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,
@@ -20,9 +21,14 @@ class FrnPanel(QWidget):
         self._sm_auto_interval_ms=180000
         self._sm_backoff_steps_ms=(60000,120000,300000,600000)
         self._sm_backoff_index=0
+        self._sm_consecutive_errors=0
+        self._sm_protect_until=0.0
+        self._sm_request_kind=None
         self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._explorer_error)
         self._build(); self.refresh_audio_devices(); self._update_status()
         self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(self._sm_auto_interval_ms); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
+        self._sm_status_timer=QTimer(self); self._sm_status_timer.setInterval(10000); self._sm_status_timer.timeout.connect(self._update_sm_guard_status); self._sm_status_timer.start()
+        self._update_sm_guard_status()
 
     @staticmethod
     def _radio_icon(color):
@@ -50,7 +56,9 @@ class FrnPanel(QWidget):
         for label,obj in [('SystemManager:',self.manager),('Server:',self.server),('Port:',self.port),('Raum:',self.room),('E-Mail:',self.email),('Passwort:',self.password),('',self.show_password),('Rufzeichen / Name:',self.callsign),('Beschreibung:',self.description),('Band / Kanal:',self.band),('Land:',self.country),('Stadt / Bereich:',self.city),('FRN Client-Typ (CL):',self.client_type),('FRN Version (VX):',self.protocol_version),('',compat_note),('',self.audio_enabled),('Audio Eingang:',self.audio_in),('Audio Ausgang:',self.audio_out),('',rb),('',br)]: f.addRow(label,obj)
         tabs.addTab(w,'Verbindung')
         # Servers & rooms
-        w=QWidget(); vv=QVBoxLayout(w); top=QHBoxLayout(); self.explorer_manager=QComboBox(); self.explorer_manager.addItem('Alle','all'); self.explorer_manager.addItem('DE Allgemein / Original','de_orig'); self.explorer_manager.addItem('DE Alternativ','de_alt'); self.explorer_manager.addItem('Russland','ru'); load=QPushButton('Serverliste laden'); load.clicked.connect(lambda:self.explorer.refresh(self.explorer_manager.currentData())); self.explorer_manager.currentIndexChanged.connect(lambda *_:self.explorer.refresh(self.explorer_manager.currentData())); self.explorer_status=QLabel('Noch nicht geladen'); top.addWidget(self.explorer_manager); top.addWidget(load); top.addWidget(self.explorer_status); vv.addLayout(top)
+        w=QWidget(); vv=QVBoxLayout(w); top=QHBoxLayout(); self.explorer_manager=QComboBox(); self.explorer_manager.addItem('Alle','all'); self.explorer_manager.addItem('DE Allgemein / Original','de_orig'); self.explorer_manager.addItem('DE Alternativ','de_alt'); self.explorer_manager.addItem('Russland','ru'); load=QPushButton('Serverliste laden'); load.clicked.connect(self._manual_refresh_servers); self.explorer_manager.currentIndexChanged.connect(lambda *_:self._manual_refresh_servers()); self.explorer_status=QLabel('Noch nicht geladen'); top.addWidget(self.explorer_manager); top.addWidget(load); top.addWidget(self.explorer_status); vv.addLayout(top)
+        guard=QHBoxLayout(); self.sm_guard_enabled=QCheckBox('SystemManager-Schutzpause aktiv'); self.sm_guard_enabled.setChecked(True); self.sm_guard_minutes=QSpinBox(); self.sm_guard_minutes.setRange(1,120); self.sm_guard_minutes.setValue(15); self.sm_guard_minutes.setSuffix(' min'); self.sm_guard_status=QLabel('Automatik: bereit'); guard.addWidget(self.sm_guard_enabled); guard.addWidget(QLabel('Dauer:')); guard.addWidget(self.sm_guard_minutes); guard.addWidget(self.sm_guard_status,1); vv.addLayout(guard)
+        guard_note=QLabel('Nach 3 aufeinanderfolgenden automatischen SystemManager-Fehlern pausiert nur die Automatik. Manuelles Laden bleibt jederzeit möglich und umgeht die Schutzpause.'); guard_note.setWordWrap(True); vv.addWidget(guard_note)
         server_note=QLabel('Der in der Serverliste angezeigte Raum ist nur ein veröffentlichter Hinweis. Server auswählen lädt die bekannten Räume; verbunden wird erst nach bewusster Raumwahl.'); server_note.setWordWrap(True); vv.addWidget(server_note)
         search_row=QHBoxLayout(); search_row.addWidget(QLabel('Server suchen:')); self.server_search=QLineEdit(); self.server_search.setPlaceholderText('Server, Host/IP, Port oder Raum eingeben …'); self.server_search.setClearButtonEnabled(True); self.server_search.textChanged.connect(self.filter_servers); self.server_search.returnPressed.connect(self.connect_first_filtered_server); search_row.addWidget(self.server_search,1); vv.addLayout(search_row)
         self.server_table=QTableWidget(0,4); self.server_table.setHorizontalHeaderLabels(['Server','Port','Raum','Clients']); self.server_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch); self.server_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); self.server_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.server_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.server_table.cellClicked.connect(lambda *_:self.use_selected_server(False)); self.server_table.cellDoubleClicked.connect(lambda *_:self.use_selected_server(False)); vv.addWidget(self.server_table)
@@ -192,18 +200,65 @@ class FrnPanel(QWidget):
     def _explorer_result(self,rows):
         self.rows=list(rows or [])
         self._sm_backoff_index=0
+        self._sm_consecutive_errors=0
+        self._sm_protect_until=0.0
+        self._sm_request_kind=None
         if hasattr(self,'_room_refresh_timer'):
             self._room_refresh_timer.setInterval(self._sm_auto_interval_ms)
+        self._update_sm_guard_status()
         self.filter_servers()
         self.populate_rooms()
 
     def _explorer_error(self,text):
         self._log(str(text))
+        kind=self._sm_request_kind
+        self._sm_request_kind=None
+
+        # Manual requests intentionally bypass the automatic protection and do
+        # not count towards its error threshold.
+        if kind=='manual':
+            self._update_sm_guard_status()
+            return
+
+        self._sm_consecutive_errors += 1
+        if (hasattr(self,'sm_guard_enabled') and self.sm_guard_enabled.isChecked()
+                and self._sm_consecutive_errors >= 3):
+            minutes=max(1,int(self.sm_guard_minutes.value()))
+            self._sm_protect_until=time.monotonic() + minutes*60
+            self._sm_consecutive_errors=0
+            if hasattr(self,'_room_refresh_timer'):
+                self._room_refresh_timer.setInterval(self._sm_auto_interval_ms)
+            self._log(f'FRN SystemManager: Schutzpause für automatische Abfragen aktiviert ({minutes} min). Manuelles Laden bleibt möglich.')
+            self._update_sm_guard_status()
+            return
+
         delay=self._sm_backoff_steps_ms[min(self._sm_backoff_index,len(self._sm_backoff_steps_ms)-1)]
         self._sm_backoff_index=min(self._sm_backoff_index+1,len(self._sm_backoff_steps_ms)-1)
         if hasattr(self,'_room_refresh_timer'):
             self._room_refresh_timer.setInterval(delay)
         self._log(f'FRN SystemManager: automatische Aktualisierung pausiert für {delay//60000} Minute(n).')
+        self._update_sm_guard_status()
+
+    def _update_sm_guard_status(self):
+        if not hasattr(self,'sm_guard_status'):
+            return
+        if not self.sm_guard_enabled.isChecked():
+            self.sm_guard_status.setText('Schutzpause: aus')
+            return
+        remaining=max(0.0,self._sm_protect_until-time.monotonic())
+        if remaining>0:
+            mins=max(1,int((remaining+59)//60))
+            self.sm_guard_status.setText(f'Automatik pausiert: noch ca. {mins} min')
+        else:
+            if self._sm_protect_until:
+                self._sm_protect_until=0.0
+            self.sm_guard_status.setText('Automatik: bereit')
+
+    def _manual_refresh_servers(self):
+        """User-triggered refresh always bypasses automatic guard/backoff."""
+        self._sm_request_kind='manual'
+        self._log('FRN SystemManager: manuelle Serverlisten-Abfrage.')
+        self.explorer.refresh(self.explorer_manager.currentData())
 
     def _auto_manager_key(self):
         """Choose one manager for background refresh; never poll all managers automatically."""
@@ -216,10 +271,15 @@ class FrnPanel(QWidget):
 
     def _refresh_room_counts(self):
         """Polite background refresh of non-active room occupancy."""
+        if (hasattr(self,'sm_guard_enabled') and self.sm_guard_enabled.isChecked()
+                and time.monotonic() < self._sm_protect_until):
+            self._update_sm_guard_status()
+            return
         key=self._auto_manager_key()
         if not key:
             return
         try:
+            self._sm_request_kind='auto'
             self.explorer.refresh(key)
         except Exception as exc:
             self._explorer_error('FRN Raumbelegung: Aktualisierung fehlgeschlagen: '+str(exc))
@@ -370,7 +430,7 @@ class FrnPanel(QWidget):
         t=f'FRN: {state}{extra}{tx}'; self.state_label.setText(t); self.statusChanged.emit(t)
     def _log(self,t): self.log.appendPlainText(str(t))
     def to_config(self):
-        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value()}
+        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value()}
     def load_config(self,d):
         if not isinstance(d,dict):return
         for cb,key in ((self.manager,'manager'),(self.ptt_mode,'ptt_mode'),(self.explorer_manager,'explorer_manager'),(self.client_type,'client_type')):
@@ -378,7 +438,7 @@ class FrnPanel(QWidget):
             if i>=0:cb.setCurrentIndex(i)
         self.protocol_version.setText(str(d.get('protocol_version','20261016') or '20261016'));
         if hasattr(self,'manual_room'): self.manual_room.setText(d.get('manual_room',''))
-        self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180))
+        self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self._update_sm_guard_status()
         for cb,key in ((self.audio_in,'audio_input'),(self.audio_out,'audio_output')):
             i=cb.findData(d.get(key));
             if i>=0:cb.setCurrentIndex(i)
