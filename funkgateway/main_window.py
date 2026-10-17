@@ -4353,6 +4353,7 @@ class MainWindow(QMainWindow):
         self.mumble_ssh_port=QSpinBox(); self.mumble_ssh_port.setRange(1,65535); self.mumble_ssh_port.setValue(22)
         self.mumble_ssh_user=QLineEdit(); self.mumble_ssh_user.setPlaceholderText("SSH-Benutzer")
         self.mumble_gateway_name=QLineEdit(); self.mumble_gateway_name.setPlaceholderText("automatisch aus lokalem Mumble, sonst hier eintragen")
+        self.mumble_gateway_name.textChanged.connect(self._update_mumble_gateway_status)
         self.mumble_bridge_url=QLineEdit(); self.mumble_bridge_url.setPlaceholderText("https://bridge.example.org")
         self.mumble_bridge_token=QLineEdit(); self.mumble_bridge_token.setEchoMode(QLineEdit.EchoMode.Password); self.mumble_bridge_token.setPlaceholderText("persönliches fgw_... Token; wird nicht gespeichert")
         self.mumble_bridge_status=QLabel("Bridge: nicht geprüft")
@@ -4384,7 +4385,15 @@ class MainWindow(QMainWindow):
         admin_hint=QLabel("Benutzer links auswählen, Zielraum rechts auswählen und anschließend verschieben. „Benutzer & Räume aktualisieren“ lädt beide Listen gemeinsam.")
         admin_hint.setWordWrap(True); av.addWidget(admin_hint)
         cols=QHBoxLayout()
-        user_box=QGroupBox("Verbundene Benutzer"); uv=QVBoxLayout(user_box); uv.addWidget(self.mumble_user_list,1); uv.addWidget(self.mumble_user_status)
+        user_box=QGroupBox("Verbundene Benutzer"); uv=QVBoxLayout(user_box)
+        uv.addWidget(self.mumble_user_list,1)
+        self.mumble_gateway_status=QLabel("Gateway-Benutzer: automatisch / noch nicht gesetzt")
+        self.mumble_gateway_status.setWordWrap(True)
+        set_gateway_user=QPushButton("Markierten Benutzer als Gateway setzen")
+        set_gateway_user.clicked.connect(self.set_selected_mumble_gateway)
+        uv.addWidget(self.mumble_user_status)
+        uv.addWidget(self.mumble_gateway_status)
+        uv.addWidget(set_gateway_user)
         room_box=QGroupBox("Mumble-Räume"); rv=QVBoxLayout(room_box); rv.addWidget(self.mumble_channel_list,1); rv.addWidget(self.mumble_room_count)
         cols.addWidget(user_box,1); cols.addWidget(room_box,1); av.addLayout(cols,1)
         admin_buttons=QHBoxLayout()
@@ -7034,6 +7043,27 @@ done"""
         idx=self.mumble_channel_combo.findData(cid)
         if idx>=0: self.mumble_channel_combo.setCurrentIndex(idx)
 
+    def _update_mumble_gateway_status(self,*_):
+        if not hasattr(self,"mumble_gateway_status"): return
+        name=self.mumble_gateway_name.text().strip() if hasattr(self,"mumble_gateway_name") else ""
+        self.mumble_gateway_status.setText("Gateway-Benutzer: "+(name if name else "automatisch / noch nicht gesetzt"))
+
+    def set_selected_mumble_gateway(self):
+        item=self.mumble_user_list.currentItem() if hasattr(self,"mumble_user_list") else None
+        if item is None:
+            QMessageBox.information(self,"Mumble Gateway","Bitte zuerst links einen verbundenen Benutzer auswählen.")
+            return
+        data=item.data(Qt.ItemDataRole.UserRole) or {}
+        name=str(data.get("name") or "").strip()
+        if not name:
+            QMessageBox.information(self,"Mumble Gateway","Der ausgewählte Benutzer hat keinen lesbaren Namen.")
+            return
+        self.mumble_gateway_name.setText(name)
+        self.save_cfg()
+        self._update_mumble_gateway_status()
+        self.log(f"Mumble: Gateway-Benutzer gesetzt: {name}.")
+        self.refresh_mumble_ice_users()
+
     def refresh_mumble_admin(self):
         self.refresh_mumble_ice_channels()
         self.refresh_mumble_ice_users()
@@ -7056,15 +7086,21 @@ done"""
                 host,port,self.mumble_slice.text(),read,self.mumble_ice_server_id.value()
             )
             self.mumble_user_list.clear()
+            gateway_name=self.mumble_gateway_name.text().strip()
             for row in users:
+                is_gateway=bool(gateway_name and row['name']==gateway_name)
                 item_text=(
+                    ("★ " if is_gateway else "")+
                     f"{row['name']}  |  {row['channel_name']} "
                     f"(CID {row['channel']}, Session {row['session']})"
                 )
                 self.mumble_user_list.addItem(item_text)
                 item=self.mumble_user_list.item(self.mumble_user_list.count()-1)
                 item.setData(Qt.ItemDataRole.UserRole,row)
+                if is_gateway:
+                    font=item.font(); font.setBold(True); item.setFont(font)
             self.mumble_user_status.setText(f"Benutzerliste: {len(users)} Benutzer verbunden")
+            self._update_mumble_gateway_status()
             self.log(f"Mumble Ice: {len(users)} verbundene Benutzer geladen.")
         except Exception as e:
             self.mumble_user_status.setText(f"Benutzerliste: Fehler ({e})")
