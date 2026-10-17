@@ -302,3 +302,14 @@ Ab **0.5.9.28** liegt die TeamSpeak-Moderation in einem eigenen Reiter. Die Seit
 Die unter Windows getesteten FRN-Protokollkorrekturen sind auch in Linux enthalten:
 PC-Clients senden bei leerer Stadt `CT=- -`, vorhandene Städtenamen unverändert,
 `BC` wird passend zu `CL` erzeugt und `ST:0` wird nach erfolgreichem Login gesendet.
+
+
+## Nativer Mumble-Client ab 0.6.23
+
+Linux kann sich jetzt zusätzlich direkt aus FunkGateway mit einem Mumble-Server
+verbinden. Der neue Untertab **Integrationen → Mumble → Native Client** bietet
+Server-/Channel-Verbindung, Teilnehmer/Sprecher, direkte Wiedergabe,
+PC-User-Mikrofon-PTT und Client-Zertifikate.
+
+Die bisherigen Mumble-D-Bus-, Ice/SSH- und Bridge-Funktionen bleiben parallel
+erhalten.
