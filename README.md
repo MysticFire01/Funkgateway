@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.15
+# FunkGateway UI 0.6.16
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
