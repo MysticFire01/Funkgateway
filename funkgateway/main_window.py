@@ -39,6 +39,7 @@ from .tones import make_cw, make_dtmf, make_roger_tone
 from .helptext import HELP_HTML
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
+from .integrations.mumble_native_panel import MumbleNativePanel
 from .integrations.frn_panel import FrnPanel
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
@@ -4354,6 +4355,9 @@ class MainWindow(QMainWindow):
 
         self.mumble_admin_tabs=QTabWidget()
         mumble_outer.addWidget(self.mumble_admin_tabs,1)
+
+        self.mumble_native_panel=MumbleNativePanel(self)
+        self.mumble_admin_tabs.addTab(self.mumble_native_panel,"Native Client")
 
         self.mumble_status=QLabel("Mumble: noch nicht geprüft")
         self.mumble_status.setWordWrap(True); self.mumble_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
