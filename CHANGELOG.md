@@ -1,3 +1,14 @@
+# FunkGateway UI 0.6.21
+
+## Release 0.6.21
+
+- Linux-Abschlussfehler behoben: Das Hauptfenster wird beim Beenden sofort ausgeblendet, bevor Backend-Aufräumarbeiten laufen.
+- Alle Qt-Timer werden beim Shutdown gestoppt, damit während des Beendens keine neuen Polls oder Routing-Arbeiten starten.
+- Abschaltschritte für FRN, PC-Mikrofonmonitor, Papagei, Gateway/Audio/PTT, TeamSpeak, Mumble und globalen FRN-Hotkey werden einzeln zeitlich protokolliert.
+- Mumble-SSH/Ice-Tunnel wird beim Programmende nicht mehr synchron bis zu zwei Sekunden abgewartet; SIGTERM genügt beim Exit.
+- Verhindert den GNOME-Dialog „FunkGateway UI antwortet nicht“ durch aufsummierte synchrone Wartezeiten im sichtbaren Qt-Fenster.
+- Keine Änderung an FRN-Hotkey-, Hold-PTT- oder Installer-Logik aus 0.6.20.
+
 # FunkGateway UI 0.6.20
 
 ## Release 0.6.20
