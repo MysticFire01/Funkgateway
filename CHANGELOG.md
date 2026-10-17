@@ -1,4 +1,10 @@
-# FunkGateway UI 0.6.14
+# FunkGateway UI 0.6.15
+
+## Release 0.6.15
+
+- Letzter FRN-Raum bleibt nach einem normalen Trennen im Feld „Raum“ erhalten.
+- Schnelles Wiederverbinden ohne erneute Raumauswahl möglich.
+- Sitzungsabhängige Daten wie Teilnehmer, Sprecherstatus und Pegel werden weiterhin zurückgesetzt.
 
 ## Release 0.6.14
 
