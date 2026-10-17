@@ -1,4 +1,4 @@
-# FunkGateway UI 0.6.13
+# FunkGateway UI 0.6.14
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
@@ -12,6 +12,10 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### ALT GR als FRN-PTT-Hotkey in 0.6.14
+
+ALT GR wird bei der Hotkey-Aufnahme jetzt als eigene Taste erkannt, verständlich als **ALT GR** angezeigt und im Hold-Modus über Qt GroupSwitchModifier ausgewertet. Damit gilt auch für ALT GR: drücken = TX, loslassen = RX. Im Latch-Modus schaltet jeder Tastendruck den TX-Zustand um.
 
 ### Komfortablere Gateway- und Hotkey-Auswahl in 0.6.13
 
