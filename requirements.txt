@@ -2,3 +2,4 @@ PySide6>=6.5,<7
 sounddevice
 soundfile
 pyserial
+pynput>=1.7,<2
