@@ -462,10 +462,8 @@ class FrnNativeClient:
                 self.input_proc.terminate()
             except Exception:
                 pass
-            self.input_proc = None
-        self._close_audio()
+
         s = self.sock
-        self.sock = None
         if s:
             try:
                 s.shutdown(socket.SHUT_RDWR)
@@ -475,6 +473,14 @@ class FrnNativeClient:
                 s.close()
             except Exception:
                 pass
+
+        thread = self.thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                self.signals.log.emit(
+                    "WARN: FRN-Thread reagierte beim Stoppen nicht innerhalb von 3 s."
+                )
 
     def request_tx(self, enabled: bool):
         if enabled:
@@ -528,6 +534,20 @@ class FrnNativeClient:
             "Audio aktiv: GSM 06.10 WAV49, 8 kHz mono. "
             "FRN-RX wird auf den gewählten Ausgang ausgegeben."
         )
+
+    def _wait_audio_workers(self):
+        """Wait until RX/TX audio workers no longer use stream/codec resources."""
+        current = threading.current_thread()
+        for name in ("tx_thread", "play_thread"):
+            worker = getattr(self, name, None)
+            if worker and worker.is_alive() and worker is not current:
+                worker.join(timeout=2.0)
+                if worker.is_alive():
+                    self.signals.log.emit(
+                        f"WARN: {name} läuft nach 2 s noch; Audio-Ressourcen bleiben vorerst offen."
+                    )
+                    return False
+        return True
 
     def _close_audio(self):
         for stream_name in ("input_stream", "output_stream"):
@@ -894,9 +914,7 @@ class FrnNativeClient:
             self.sock.settimeout(0.5)
             self.signals.connected.emit(True)
 
-            if self.cfg.audio_enabled:
-                self._start_audio()
-
+            # Audio starts only after the server accepted login stage 2.
             self._set_state("LOGGING_IN_1")
             self._send(
                 (self._login_string(dyn) + "\r\n").encode("cp1252", "replace"),
@@ -934,12 +952,15 @@ class FrnNativeClient:
                     "FRN-SERVER BLOCK: Server hat den Zugriff blockiert. "
                     f"Aktuelle Identität: CL={self.cfg.client_type}, "
                     f"VX={self.cfg.protocol_version}. "
-                    "Zum Testen kann ein anderer legitimer FRN-Client-Typ gewählt werden; "
-                    "FunkGateway imitiert dabei keinen offiziellen Client."
+                    "Der Server akzeptiert diesen FunkGateway-Client in dieser Klasse/Version nicht."
                 )
+
+            if self.cfg.audio_enabled:
+                self._start_audio()
 
             self._set_state("IDLE")
             self._send_line("RX0")
+            self._send_line("ST:0")
             self.signals.log.emit(
                 "FRN verbunden. Native Audioverbindung ist aktiv."
                 if self.cfg.audio_enabled else
@@ -971,9 +992,12 @@ class FrnNativeClient:
                 self.signals.error.emit(str(exc))
                 self._set_state("ERROR")
         finally:
+            # Every network-thread exit also stops RX/TX audio workers.
+            self.stop_evt.set()
             self.want_tx.clear()
             self.tx_granted_evt.clear()
-            self._close_audio()
+            if self._wait_audio_workers():
+                self._close_audio()
             s = self.sock
             self.sock = None
             if s:
