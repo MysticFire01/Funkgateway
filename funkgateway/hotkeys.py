@@ -25,7 +25,7 @@ class ModifierHoldWatcher(QObject):
 
     def set_key(self, name: str):
         name = str(name or "").strip()
-        if name not in ("Ctrl", "Alt", "Shift", "Meta"):
+        if name not in ("Ctrl", "Alt", "AltGr", "Shift", "Meta"):
             name = ""
         if name != self._name:
             self._name = name
@@ -39,6 +39,7 @@ class ModifierHoldWatcher(QObject):
         flags = {
             "Ctrl": Qt.KeyboardModifier.ControlModifier,
             "Alt": Qt.KeyboardModifier.AltModifier,
+            "AltGr": Qt.KeyboardModifier.GroupSwitchModifier,
             "Shift": Qt.KeyboardModifier.ShiftModifier,
             "Meta": Qt.KeyboardModifier.MetaModifier,
         }
