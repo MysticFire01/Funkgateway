@@ -1,4 +1,12 @@
-# FunkGateway UI 0.6.12
+# FunkGateway UI 0.6.13
+
+## Release 0.6.13
+
+- FRN-Hotkey wird per Tastendruck aufgenommen; kein manuelles Eingeben von „Ctrl“, „Alt“ oder „Meta“ mehr nötig.
+- STRG, ALT, SHIFT und Windows/Super allein werden verständlich angezeigt und übernommen.
+- Mumble-Adminpanel zeigt den aktuell gesetzten Gateway-Benutzer direkt an.
+- Markierter Mumble-Benutzer kann per Button als Gateway gesetzt werden.
+- Gateway-Benutzer wird in der verbundenen Benutzerliste mit ★ hervorgehoben.
 
 ## Release 0.6.12
 
