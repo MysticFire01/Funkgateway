@@ -1,9 +1,9 @@
-# FunkGateway UI 0.6.6
+# FunkGateway UI 0.6.7
 
 
 ## Neu: Native FRN-Unterstützung (Alpha)
 
-FunkGateway UI 0.6.6 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
+FunkGateway UI 0.6.7 enthält jetzt eine **native FRN-Integration als Alpha** unter **Integrationen → FRN · Alpha**. Für den FRN-Betrieb ist kein zusätzlicher FRN-Client nötig.
 
 Der aktuelle Alpha-Stand umfasst Server- und Raumlisten über die FRN-SystemManager, direkte Server-Raumlisten über `NET_NAMES`, Teilnehmerliste, RX/TX-Pegel, Raumwechsel und FRN-Audio mit GSM 06.10 WAV49. Die Client-Klasse wird passend zur FunkGateway-Betriebsart gewählt: **PC-User = PC Only (CL=2)**, **Funk-Gateway = Gateway (CL=1)**. Die VX-Kennung bleibt sichtbar und editierbar; der aktuelle Default ist `20261016`.
 
@@ -12,6 +12,12 @@ Die Teilnehmerliste zeigt den Funkzustand direkt an: **grün = verbunden/idle**,
 Die globale **FRN PTT** steht im PC-User-Modus zur Verfügung (Halten oder Klick/Verriegelung, optional mit TX-Zeitbegrenzung). Im Funk-Gateway-Modus gibt es bewusst keine manuelle FRN-PTT: dort folgt der FRN-TX-Zustand dem Gatewaybetrieb.
 
 Die native FRN-Unterstützung ist weiterhin **Alpha**. Unterschiedliche FRN-Servervarianten werden fortlaufend auf Login-, Raumlisten- und Audio-Kompatibilität getestet.
+
+### Sicherer Passwort-Fallback und manuelle SM-Abfragen in 0.6.7
+
+Der Fallback vom dynamischen FRN-Passwort auf das Hauptpasswort ist jetzt standardmäßig **deaktiviert**. Kann der ausgewählte SystemManager kein dynamisches Passwort liefern, wird die Anmeldung am Sprachserver nicht mehr automatisch mit dem Hauptpasswort versucht. Wer einen bekannten kompatiblen Server bewusst testen möchte, kann **„Hauptpasswort-Fallback erlauben“** einschalten.
+
+Außerdem sind manuelle und automatische SystemManager-Abfragen technisch getrennt. Eine manuelle Abfrage kann einen bereits laufenden Auto-Request nicht mehr nachträglich als „automatisch“ markieren. Fehler bei bewusst manuellen Abfragen lösen weder den automatischen 1/2/5/10-Minuten-Backoff noch die Schutzpause aus.
 
 ### Klarere FRN-Diagnose in 0.6.6
 
@@ -43,11 +49,11 @@ Automatische Funkansagen sind zusätzlich geschützt: Während Rufzeichenbake, P
 
 **FunkGateway UI** ist ein Open-Source-Linux-Gateway-Controller für Funk ↔ VoIP. Der Core übernimmt Audio-Routing, RX-Erkennung, PTT, Schutzfunktionen, Rogerbeep, Rufzeichenbake und Papagei/Echotest. TeamSpeak und Mumble sind optionale Integrationen.
 
-**Aktuelle stabile Version: 0.6.6**
+**Aktuelle stabile Version: 0.6.7**
 
 ## Screenshots
 
-Die vier Betriebsarten von FunkGateway UI 0.6.6:
+Die vier Betriebsarten von FunkGateway UI 0.6.7:
 
 | PC-User | Funk-Gateway |
 |---|---|
@@ -61,7 +67,7 @@ Die vier Betriebsarten von FunkGateway UI 0.6.6:
 
 ## Betriebsarten
 
-FunkGateway UI **0.6.6** besitzt vier klar getrennte Betriebsarten:
+FunkGateway UI **0.6.7** besitzt vier klar getrennte Betriebsarten:
 
 - **PC-User / TeamSpeak** – normaler PC-/VoIP-Betrieb ohne Funkhardware. Funk-PTT, COS und Funk-RX bleiben vollständig deaktiviert. Die VoIP-Software verwendet ihre normalen **Standard/Default**-Audio-Geräte.
 - **Funk-Gateway** – vollständiger Funk ↔ VoIP-Betrieb mit Audio-Routing, RX-Erkennung, PTT, Rogerbeep, Rufzeichenbake, DTMF und Schutzfunktionen.

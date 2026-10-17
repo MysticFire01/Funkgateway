@@ -1,4 +1,14 @@
-# FunkGateway UI 0.6.6
+# FunkGateway UI 0.6.7
+
+## Release 0.6.7
+
+- Hauptpasswort-Fallback für FRN-Serverlogins ist standardmäßig deaktiviert.
+- Neuer optionaler Schalter „Hauptpasswort-Fallback erlauben“; Einstellung wird gespeichert.
+- Ohne dynamisches Passwort wird die Serveranmeldung standardmäßig vor dem Sprachserver-Login beendet.
+- Bewusst aktivierter Fallback wird im Diagnose-Log ausdrücklich gekennzeichnet.
+- SystemManager-Explorer merkt sich die Herkunft einer tatsächlich gestarteten Abfrage (manuell/automatisch).
+- Eine übersprungene Zusatzabfrage kann die Klassifikation einer bereits laufenden Abfrage nicht mehr überschreiben.
+- Fehler manueller SystemManager-Abfragen lösen keinen automatischen Backoff und keine Schutzpause aus.
 
 ## Release 0.6.6
 

@@ -266,14 +266,17 @@ class FrnSystemExplorer:
     def __init__(self):
         self.signals = ExplorerSignals()
         self._thread = None
+        self.request_kind = None
 
-    def refresh(self, manager_key: str):
+    def refresh(self, manager_key: str, request_kind: str = "manual"):
         if self._thread and self._thread.is_alive():
-            return
+            return False
+        self.request_kind = request_kind
         self._thread = threading.Thread(
             target=self._worker, args=(manager_key,), daemon=True
         )
         self._thread.start()
+        return True
 
     def _one_manager(self, key: str):
         p = MANAGERS[key]
@@ -387,6 +390,7 @@ class FrnConfig:
     audio_output: Optional[int]
     audio_enabled: bool
     pulse_audio_input: Optional[str] = None
+    allow_main_password_fallback: bool = False
 
 
 class FrnNativeClient:
@@ -867,10 +871,17 @@ class FrnNativeClient:
                     f"Dynamisches Passwort von {MANAGERS[self.cfg.manager_key]['label']} erhalten."
                 )
             except Exception as exc:
+                if not self.cfg.allow_main_password_fallback:
+                    raise RuntimeError(
+                        f"SYSTEMMANAGER: Dynamisches Passwort nicht verfügbar ({exc}); "
+                        "Serveranmeldung aus Sicherheitsgründen nicht versucht. "
+                        "Der Hauptpasswort-Fallback ist deaktiviert."
+                    ) from exc
                 dyn = self.cfg.main_password
                 self.signals.log.emit(
                     f"SYSTEMMANAGER: Dynamisches Passwort nicht verfügbar ({exc}); "
-                    "FRN-Hauptpasswort wird für den Server-Login verwendet."
+                    "Hauptpasswort-Fallback ist ausdrücklich aktiviert – "
+                    "FRN-Hauptpasswort wird für diesen Server-Login verwendet."
                 )
 
             self._set_state("CONNECTING")

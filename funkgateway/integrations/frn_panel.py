@@ -46,6 +46,7 @@ class FrnPanel(QWidget):
         self.manager=QComboBox(); [self.manager.addItem(x['label'],k) for k,x in MANAGERS.items()]
         self.server=QLineEdit(); self.port=QSpinBox(); self.port.setRange(1,65535); self.port.setValue(10024); self.room=QLineEdit()
         self.email=QLineEdit(); self.password=QLineEdit(); self.password.setEchoMode(QLineEdit.Password); self.show_password=QCheckBox('Passwort anzeigen'); self.show_password.toggled.connect(lambda x:self.password.setEchoMode(QLineEdit.Normal if x else QLineEdit.Password))
+        self.main_password_fallback=QCheckBox('Hauptpasswort-Fallback erlauben'); self.main_password_fallback.setChecked(False); self.main_password_fallback.setToolTip('Standardmäßig AUS. Nur bewusst aktivieren, wenn ein FRN-Server den Login ohne dynamisches Passwort ausdrücklich unterstützt.')
         self.callsign=QLineEdit(); self.description=QLineEdit('FunkGateway UI'); self.band=QLineEdit(); self.country=QLineEdit('Germany'); self.city=QLineEdit()
         self.client_type=QComboBox(); self.client_type.addItem('Automatisch nach FunkGateway-Modus','auto'); self.client_type.addItem('Gateway (CL=1)',1); self.client_type.addItem('PC only (CL=2)',2); self.client_type.addItem('Crosslink (CL=0)',0)
         self.protocol_version=QLineEdit('20261016'); self.protocol_version.setToolTip('FRN-Protokoll-/Clientversionskennung (VX). Keine Fremdsoftware wird imitiert.')
@@ -53,7 +54,7 @@ class FrnPanel(QWidget):
         self.connect_btn=QPushButton('Verbinden'); self.disconnect_btn=QPushButton('Trennen'); self.disconnect_btn.setEnabled(False); self.connect_btn.clicked.connect(self.connect_frn); self.disconnect_btn.clicked.connect(self.disconnect_frn)
         br=QHBoxLayout(); br.addWidget(self.connect_btn); br.addWidget(self.disconnect_btn)
         compat_note=QLabel('Kompatibilität: Standardmäßig wird CL passend zum FunkGateway-Modus gewählt. Bei Servern mit Client-Filtern kann die legitime FRN-Klasse manuell gewählt werden.'); compat_note.setWordWrap(True)
-        for label,obj in [('SystemManager:',self.manager),('Server:',self.server),('Port:',self.port),('Raum:',self.room),('E-Mail:',self.email),('Passwort:',self.password),('',self.show_password),('Rufzeichen / Name:',self.callsign),('Beschreibung:',self.description),('Band / Kanal:',self.band),('Land:',self.country),('Stadt / Bereich:',self.city),('FRN Client-Typ (CL):',self.client_type),('FRN Version (VX):',self.protocol_version),('',compat_note),('',self.audio_enabled),('Audio Eingang:',self.audio_in),('Audio Ausgang:',self.audio_out),('',rb),('',br)]: f.addRow(label,obj)
+        for label,obj in [('SystemManager:',self.manager),('Server:',self.server),('Port:',self.port),('Raum:',self.room),('E-Mail:',self.email),('Passwort:',self.password),('',self.show_password),('',self.main_password_fallback),('Rufzeichen / Name:',self.callsign),('Beschreibung:',self.description),('Band / Kanal:',self.band),('Land:',self.country),('Stadt / Bereich:',self.city),('FRN Client-Typ (CL):',self.client_type),('FRN Version (VX):',self.protocol_version),('',compat_note),('',self.audio_enabled),('Audio Eingang:',self.audio_in),('Audio Ausgang:',self.audio_out),('',rb),('',br)]: f.addRow(label,obj)
         tabs.addTab(w,'Verbindung')
         # Servers & rooms
         w=QWidget(); vv=QVBoxLayout(w); top=QHBoxLayout(); self.explorer_manager=QComboBox(); self.explorer_manager.addItem('Alle','all'); self.explorer_manager.addItem('DE Allgemein / Original','de_orig'); self.explorer_manager.addItem('DE Alternativ','de_alt'); self.explorer_manager.addItem('Russland','ru'); load=QPushButton('Serverliste laden'); load.clicked.connect(self._manual_refresh_servers); self.explorer_manager.currentIndexChanged.connect(lambda *_:self._manual_refresh_servers()); self.explorer_status=QLabel('Noch nicht geladen'); top.addWidget(self.explorer_manager); top.addWidget(load); top.addWidget(self.explorer_status); vv.addLayout(top)
@@ -98,7 +99,7 @@ class FrnPanel(QWidget):
             client_type=int(selected)
         vx=self.protocol_version.text().strip() or '20261016'
         pulse_input='funkgateway_rx_source' if radio_auto else None
-        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,self.band.text().strip(),self.description.text().strip(),self.country.text().strip(),self.city.text().strip(),self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input)
+        return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,self.band.text().strip(),self.description.text().strip(),self.country.text().strip(),self.city.text().strip(),self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input,self.main_password_fallback.isChecked())
 
     def connect_frn(self):
         try: cfg=self._cfg()
@@ -214,7 +215,7 @@ class FrnPanel(QWidget):
         if not msg.startswith('SYSTEMMANAGER:'):
             msg='SYSTEMMANAGER: '+msg
         self._log(msg)
-        kind=self._sm_request_kind
+        kind=getattr(self.explorer,'request_kind',None)
         self._sm_request_kind=None
 
         # Manual requests intentionally bypass the automatic protection and do
@@ -259,9 +260,12 @@ class FrnPanel(QWidget):
 
     def _manual_refresh_servers(self):
         """User-triggered refresh always bypasses automatic guard/backoff."""
-        self._sm_request_kind='manual'
-        self._log('FRN SystemManager: manuelle Serverlisten-Abfrage.')
-        self.explorer.refresh(self.explorer_manager.currentData())
+        started=self.explorer.refresh(self.explorer_manager.currentData(), request_kind='manual')
+        if started:
+            self._sm_request_kind='manual'
+            self._log('FRN SystemManager: manuelle Serverlisten-Abfrage.')
+        else:
+            self._log('FRN SystemManager: Abfrage läuft bereits; manuelle Zusatzabfrage wurde nicht gestartet.')
 
     def _auto_manager_key(self):
         """Choose one manager for background refresh; never poll all managers automatically."""
@@ -282,8 +286,9 @@ class FrnPanel(QWidget):
         if not key:
             return
         try:
-            self._sm_request_kind='auto'
-            self.explorer.refresh(key)
+            started=self.explorer.refresh(key, request_kind='auto')
+            if started:
+                self._sm_request_kind='auto'
         except Exception as exc:
             self._explorer_error('FRN Raumbelegung: Aktualisierung fehlgeschlagen: '+str(exc))
 
@@ -433,7 +438,7 @@ class FrnPanel(QWidget):
         t=f'FRN: {state}{extra}{tx}'; self.state_label.setText(t); self.statusChanged.emit(t)
     def _log(self,t): self.log.appendPlainText(str(t))
     def to_config(self):
-        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value()}
+        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value(),'main_password_fallback':self.main_password_fallback.isChecked()}
     def load_config(self,d):
         if not isinstance(d,dict):return
         for cb,key in ((self.manager,'manager'),(self.ptt_mode,'ptt_mode'),(self.explorer_manager,'explorer_manager'),(self.client_type,'client_type')):
@@ -441,7 +446,7 @@ class FrnPanel(QWidget):
             if i>=0:cb.setCurrentIndex(i)
         self.protocol_version.setText(str(d.get('protocol_version','20261016') or '20261016'));
         if hasattr(self,'manual_room'): self.manual_room.setText(d.get('manual_room',''))
-        self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self._update_sm_guard_status()
+        self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self.main_password_fallback.setChecked(bool(d.get('main_password_fallback',False))); self._update_sm_guard_status()
         for cb,key in ((self.audio_in,'audio_input'),(self.audio_out,'audio_output')):
             i=cb.findData(d.get(key));
             if i>=0:cb.setCurrentIndex(i)
