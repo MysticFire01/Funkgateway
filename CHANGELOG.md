@@ -497,6 +497,17 @@
 
 # Changelog
 
+## 0.6.22 – FRN-Kompatibilität aus Windows zurückportiert
+
+- FRN-Stadtfix auch unter Linux: leeres PC-Stadtfeld sendet exakt `CT=- -`
+- eingetragene Stadt wird unverändert gesendet, ohne angehängtes `- -`
+- `CL=2` koppelt automatisch `BC=PC Only`, `CL=0` automatisch `BC=Crosslink`
+- leerer VX-Fallback auf `2014003` korrigiert
+- FRN-Audio startet erst nach erfolgreicher Login-Stufe 2
+- nach erfolgreichem Login wird zusätzlich zu `RX0` auch `ST:0` gesendet
+- Audio-Worker werden bei BLOCK/Loginfehlern und beim Trennen sauber beendet
+- Linux-Audioweg selbst bleibt unverändert
+
 - Test 14: modusabhängiges VoIP-Audio-Routing ergänzt. Unterstützte Sprachclients werden jetzt beim Wechsel automatisch auf die passenden RX/TX-Geräte gesetzt: PC-User auf die aktuellen Desktop-Standardgeräte, Funk-Gateway auf `FunkGateway_TX`/`FunkGateway_RX_Input`, VoIP-Papagei auf die dedizierten Papagei-RX/TX-Geräte. Dadurch bleiben keine Papagei-Routen mehr im Gateway hängen; numerische IDs werden weiterhin nicht fest verdrahtet.
 
 ## 0.5.9.28 – Kompaktes und ausführliches Protokoll
