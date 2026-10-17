@@ -1,4 +1,16 @@
-# FunkGateway UI 0.6.10
+# FunkGateway UI 0.6.12
+
+## Release 0.6.12
+
+- STRG, ALT, SHIFT und Windows/Super einzeln als FRN-PTT-Hotkey auswählbar.
+- Hold-Modus: Tastendruck schaltet TX ein, Loslassen sicher wieder auf RX.
+- Latch-Modus: erster Tastendruck TX an, nächster Tastendruck TX aus.
+- Normale Hotkeys wie F9 oder Ctrl+F9 bleiben verfügbar.
+- Automatische maximale Sendedauer bleibt auch bei Hotkey-PTT aktiv.
+
+## Release 0.6.11
+
+- Einzelne Modifikatortasten für FRN-PTT vorbereitet; Hold-Verhalten in 0.6.12 vervollständigt.
 
 ## Release 0.6.10
 
