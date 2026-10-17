@@ -43,6 +43,7 @@ from .integrations.frn_panel import FrnPanel
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
 from .hotkeys import ModifierHoldWatcher
+from .global_hotkey import GlobalPttHotkey
 
 
 class AnalogSMeter(QWidget):
@@ -3570,11 +3571,23 @@ class MainWindow(QMainWindow):
     def _configure_frn_ptt_shortcut(self, sequence=None):
         if not hasattr(self,"frn_ptt_shortcut"): return
         text=str(sequence if sequence is not None else self.frn_panel.ptt_hotkey_text()).strip()
+        scope=self.frn_panel.ptt_hotkey_scope_value() if hasattr(self.frn_panel,"ptt_hotkey_scope_value") else "local"
         special=text in ("Ctrl","Alt","AltGr","Shift","Meta")
-        if hasattr(self,"frn_modifier_watcher"):
-            self.frn_modifier_watcher.set_key(text if special else "")
-        self.frn_ptt_shortcut.setKey(QKeySequence() if special or not text else QKeySequence(text))
-        self.frn_ptt_shortcut.setEnabled(bool(text) and not special)
+        if scope=="global":
+            if hasattr(self,"frn_modifier_watcher"): self.frn_modifier_watcher.set_key("")
+            self.frn_ptt_shortcut.setKey(QKeySequence())
+            self.frn_ptt_shortcut.setEnabled(False)
+            if hasattr(self,"frn_global_hotkey"):
+                self.frn_global_hotkey.set_hotkey(text)
+                self.frn_global_hotkey.start()
+        else:
+            if hasattr(self,"frn_global_hotkey"):
+                self.frn_global_hotkey.stop()
+                self.frn_global_hotkey.set_hotkey("")
+            if hasattr(self,"frn_modifier_watcher"):
+                self.frn_modifier_watcher.set_key(text if special else "")
+            self.frn_ptt_shortcut.setKey(QKeySequence() if special or not text else QKeySequence(text))
+            self.frn_ptt_shortcut.setEnabled(bool(text) and not special)
 
     def _frn_modifier_hotkey_pressed(self):
         panel=getattr(self,"frn_panel",None)
@@ -4184,6 +4197,10 @@ class MainWindow(QMainWindow):
         self.frn_modifier_watcher=ModifierHoldWatcher(self)
         self.frn_modifier_watcher.pressed.connect(self._frn_modifier_hotkey_pressed)
         self.frn_modifier_watcher.released.connect(self._frn_modifier_hotkey_released)
+        self.frn_global_hotkey=GlobalPttHotkey(self)
+        self.frn_global_hotkey.pressed.connect(self._frn_modifier_hotkey_pressed)
+        self.frn_global_hotkey.released.connect(self._frn_modifier_hotkey_released)
+        self.frn_global_hotkey.statusChanged.connect(lambda text:self.log("FRN Hotkey: "+text))
         self.frn_panel.pttHotkeyChanged.connect(self._configure_frn_ptt_shortcut)
         self._configure_frn_ptt_shortcut(self.frn_panel.ptt_hotkey_text())
         self.frn_panel.statusChanged.connect(self._frn_status_changed)
