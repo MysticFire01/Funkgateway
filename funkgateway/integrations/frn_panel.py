@@ -149,8 +149,13 @@ class FrnPanel(QWidget):
         self.ptt_hotkey=HotkeyCaptureButton()
         self.ptt_hotkey.setToolTip('Klicken und danach einfach die gewünschte Taste drücken. STRG, ALT, ALT GR, SHIFT und Windows/Super funktionieren auch allein. Entf/Backspace deaktiviert den Hotkey, Esc bricht ab.')
         self.ptt_hotkey.hotkeyChanged.connect(self.pttHotkeyChanged.emit)
-        self.ptt_hint=QLabel('Die globale FRN-PTT befindet sich oben in FunkGateway. Der Hotkey schaltet TX ein/aus und ist nur im PC-User-Modus aktiv. Im Gatewaymodus gibt es keine manuelle FRN-PTT.'); self.ptt_hint.setWordWrap(True)
-        f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
+        self.ptt_hotkey_scope=QComboBox()
+        self.ptt_hotkey_scope.addItem('Nur in FunkGateway','local')
+        self.ptt_hotkey_scope.addItem('Systemweit – auch in Mumble/anderen Fenstern','global')
+        self.ptt_hotkey_scope.setCurrentIndex(0)
+        self.ptt_hotkey_scope.currentIndexChanged.connect(lambda *_:self.pttHotkeyChanged.emit(self.ptt_hotkey_text()))
+        self.ptt_hint=QLabel('Standard ist „Nur in FunkGateway“. So löst eine Taste, die du in anderen Programmen benutzt, dort keine FRN-PTT aus. „Systemweit“ bitte nur bewusst wählen und möglichst eine selten genutzte Taste/Kombination verwenden.'); self.ptt_hint.setWordWrap(True)
+        f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('Hotkey-Bereich:',self.ptt_hotkey_scope); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
         # diag
         w=QWidget(); vv=QVBoxLayout(w); self.log=QPlainTextEdit(); self.log.setReadOnly(True); vv.addWidget(self.log); tabs.addTab(w,'Diagnose')
 
@@ -266,6 +271,7 @@ class FrnPanel(QWidget):
     def toggle_ptt(self): self.ptt(not self.ptt_active)
     def ptt_settings(self): return self.ptt_mode.currentData(),self.ptt_limit_enabled.isChecked(),self.ptt_limit.value()
     def ptt_hotkey_text(self): return self.ptt_hotkey.hotkey()
+    def ptt_hotkey_scope_value(self): return self.ptt_hotkey_scope.currentData() or 'local'
     def set_gateway_mode(self,is_gateway):
         radio_auto=bool(is_gateway)
         was_radio_auto=self._radio_auto_mode
@@ -521,7 +527,7 @@ class FrnPanel(QWidget):
         t=f'FRN: {state}{extra}{tx}'; self.state_label.setText(t); self.statusChanged.emit(t)
     def _log(self,t): self.log.appendPlainText(str(t))
     def to_config(self):
-        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'ptt_hotkey':self.ptt_hotkey_text(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value(),'main_password_fallback':self.main_password_fallback.isChecked()}
+        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'ptt_hotkey':self.ptt_hotkey_text(),'ptt_hotkey_scope':self.ptt_hotkey_scope_value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value(),'main_password_fallback':self.main_password_fallback.isChecked()}
     def load_config(self,d):
         if not isinstance(d,dict):return
         for cb,key in ((self.manager,'manager'),(self.ptt_mode,'ptt_mode'),(self.explorer_manager,'explorer_manager'),(self.client_type,'client_type')):
@@ -530,7 +536,10 @@ class FrnPanel(QWidget):
         self.protocol_version.setText(str(d.get('protocol_version','20261016') or '20261016'));
         if hasattr(self,'manual_room'): self.manual_room.setText(d.get('manual_room',''))
         self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); hotkey=str(d.get('ptt_hotkey','F9') or '')
-        self.ptt_hotkey.set_hotkey(hotkey,emit=True); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self.main_password_fallback.setChecked(bool(d.get('main_password_fallback',False))); self._update_sm_guard_status()
+        self.ptt_hotkey.set_hotkey(hotkey,emit=True)
+        scope=str(d.get('ptt_hotkey_scope','local') or 'local'); si=self.ptt_hotkey_scope.findData(scope)
+        if si>=0:self.ptt_hotkey_scope.setCurrentIndex(si)
+        self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self.main_password_fallback.setChecked(bool(d.get('main_password_fallback',False))); self._update_sm_guard_status()
         for cb,key in ((self.audio_in,'audio_input'),(self.audio_out,'audio_output')):
             i=cb.findData(d.get(key));
             if i>=0:cb.setCurrentIndex(i)
