@@ -211,8 +211,11 @@ class FrnPanel(QWidget):
         self.talker_name=''
         self.ptt_active=False
         self.rx_db=-120.0; self.tx_db=-120.0
-        self.room.clear()
-        if hasattr(self,'manual_room'): self.manual_room.clear()
+        # Den zuletzt verwendeten Raum bewusst stehen lassen.
+        # So kann nach einem normalen Trennen sofort wieder verbunden werden.
+        # Nur sitzungsabhängige Anzeigen werden zurückgesetzt.
+        if hasattr(self,'manual_room') and not self.manual_room.text().strip():
+            self.manual_room.setText(self.room.text().strip())
         if hasattr(self,'room_table'):
             self.room_table.clearSelection(); self.room_table.setRowCount(0)
         if hasattr(self,'participants'):
