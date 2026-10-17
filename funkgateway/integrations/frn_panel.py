@@ -8,6 +8,76 @@ from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabe
     QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit)
 from .frn_native import FrnNativeClient,FrnSystemExplorer,FrnConfig,MANAGERS,sd
 
+class HotkeyCaptureButton(QPushButton):
+    hotkeyChanged=Signal(str)
+
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._hotkey='F9'
+        self._capturing=False
+        self.clicked.connect(self.begin_capture)
+        self._refresh_text()
+
+    def hotkey(self):
+        return self._hotkey
+
+    def set_hotkey(self,value,emit=False):
+        self._hotkey=str(value or '').strip()
+        self._capturing=False
+        try:self.releaseKeyboard()
+        except Exception:pass
+        self._refresh_text()
+        if emit:self.hotkeyChanged.emit(self._hotkey)
+
+    def _refresh_text(self):
+        names={'Ctrl':'STRG','Alt':'ALT','Shift':'SHIFT','Meta':'Windows / Super','':'Aus'}
+        shown=names.get(self._hotkey,self._hotkey or 'Aus')
+        self.setText(f'Hotkey: {shown}  –  ändern')
+
+    def begin_capture(self):
+        self._capturing=True
+        self.setText('Jetzt gewünschte Taste drücken …')
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.grabKeyboard()
+
+    def keyPressEvent(self,event):
+        if not self._capturing:
+            return super().keyPressEvent(event)
+        key=event.key()
+        if key==Qt.Key.Key_Escape:
+            self._capturing=False
+            self.releaseKeyboard()
+            self._refresh_text()
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Backspace,Qt.Key.Key_Delete):
+            value=''
+        else:
+            special={
+                Qt.Key.Key_Control:'Ctrl',
+                Qt.Key.Key_Alt:'Alt',
+                Qt.Key.Key_Shift:'Shift',
+                Qt.Key.Key_Meta:'Meta',
+                Qt.Key.Key_Super_L:'Meta',
+                Qt.Key.Key_Super_R:'Meta',
+            }
+            value=special.get(key)
+            if value is None:
+                try:
+                    value=QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
+                except Exception:
+                    value=QKeySequence(key).toString(QKeySequence.SequenceFormat.PortableText)
+        self.set_hotkey(value,emit=True)
+        event.accept()
+
+    def focusOutEvent(self,event):
+        if self._capturing:
+            self._capturing=False
+            try:self.releaseKeyboard()
+            except Exception:pass
+            self._refresh_text()
+        super().focusOutEvent(event)
+
 class FrnPanel(QWidget):
     statusChanged=Signal(str)
     connectedChanged=Signal(bool)
@@ -75,17 +145,9 @@ class FrnPanel(QWidget):
         self.ptt_mode=QComboBox(); self.ptt_mode.addItem('Halten zum Senden','hold'); self.ptt_mode.addItem('Klick zum Verriegeln','latch')
         self.ptt_limit_enabled=QCheckBox('Automatische TX-Abschaltung'); self.ptt_limit_enabled.setChecked(True)
         self.ptt_limit=QSpinBox(); self.ptt_limit.setRange(1,1800); self.ptt_limit.setValue(180); self.ptt_limit.setSuffix(' s')
-        self.ptt_hotkey=QComboBox(); self.ptt_hotkey.setEditable(True)
-        self.ptt_hotkey.addItem('F9','F9')
-        self.ptt_hotkey.addItem('STRG allein','Ctrl')
-        self.ptt_hotkey.addItem('ALT allein','Alt')
-        self.ptt_hotkey.addItem('SHIFT allein','Shift')
-        self.ptt_hotkey.addItem('Windows / Super allein','Meta')
-        self.ptt_hotkey.addItem('Aus','')
-        self.ptt_hotkey.setCurrentIndex(0)
-        self.ptt_hotkey.setToolTip('Frei wählbarer Hotkey. STRG, ALT, SHIFT und Windows/Super können auch allein verwendet werden.')
-        self.ptt_hotkey.currentIndexChanged.connect(lambda *_:self.pttHotkeyChanged.emit(self.ptt_hotkey_text()))
-        self.ptt_hotkey.lineEdit().editingFinished.connect(lambda:self.pttHotkeyChanged.emit(self.ptt_hotkey_text()))
+        self.ptt_hotkey=HotkeyCaptureButton()
+        self.ptt_hotkey.setToolTip('Klicken und danach einfach die gewünschte Taste drücken. STRG, ALT, SHIFT und Windows/Super funktionieren auch allein. Entf/Backspace deaktiviert den Hotkey, Esc bricht ab.')
+        self.ptt_hotkey.hotkeyChanged.connect(self.pttHotkeyChanged.emit)
         self.ptt_hint=QLabel('Die globale FRN-PTT befindet sich oben in FunkGateway. Der Hotkey schaltet TX ein/aus und ist nur im PC-User-Modus aktiv. Im Gatewaymodus gibt es keine manuelle FRN-PTT.'); self.ptt_hint.setWordWrap(True)
         f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
         # diag
@@ -199,10 +261,7 @@ class FrnPanel(QWidget):
         self.ptt_active=bool(on); self.client.request_tx(bool(on)); self.pttStateChanged.emit(bool(on)); self._update_status()
     def toggle_ptt(self): self.ptt(not self.ptt_active)
     def ptt_settings(self): return self.ptt_mode.currentData(),self.ptt_limit_enabled.isChecked(),self.ptt_limit.value()
-    def ptt_hotkey_text(self):
-        if self.ptt_hotkey.currentIndex()>=0 and self.ptt_hotkey.currentData() is not None:
-            return str(self.ptt_hotkey.currentData())
-        return self.ptt_hotkey.currentText().strip()
+    def ptt_hotkey_text(self): return self.ptt_hotkey.hotkey()
     def set_gateway_mode(self,is_gateway):
         radio_auto=bool(is_gateway)
         was_radio_auto=self._radio_auto_mode
@@ -467,11 +526,7 @@ class FrnPanel(QWidget):
         self.protocol_version.setText(str(d.get('protocol_version','20261016') or '20261016'));
         if hasattr(self,'manual_room'): self.manual_room.setText(d.get('manual_room',''))
         self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); hotkey=str(d.get('ptt_hotkey','F9') or '')
-        hi=self.ptt_hotkey.findData(hotkey)
-        if hi>=0:
-            self.ptt_hotkey.setCurrentIndex(hi)
-        else:
-            self.ptt_hotkey.setEditText(hotkey); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self.main_password_fallback.setChecked(bool(d.get('main_password_fallback',False))); self._update_sm_guard_status()
+        self.ptt_hotkey.set_hotkey(hotkey,emit=True); self.sm_guard_enabled.setChecked(bool(d.get('sm_guard_enabled',True))); self.sm_guard_minutes.setValue(int(d.get('sm_guard_minutes',15) or 15)); self.main_password_fallback.setChecked(bool(d.get('main_password_fallback',False))); self._update_sm_guard_status()
         for cb,key in ((self.audio_in,'audio_input'),(self.audio_out,'audio_output')):
             i=cb.findData(d.get(key));
             if i>=0:cb.setCurrentIndex(i)
