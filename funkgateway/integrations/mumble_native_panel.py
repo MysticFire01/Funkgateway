@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, 
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
     QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
-    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView, QFileDialog
 )
 
 try:
@@ -22,7 +22,11 @@ from .mumble_public import MumblePublicServerLoader
 from .frn_panel import HotkeyCaptureButton
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
-from ..mumble_certificates import list_certificates, create_certificate
+from ..mumble_certificates import (
+    list_certificates, create_certificate, import_pkcs12, import_pem,
+    export_pem, export_pkcs12, delete_certificate, certificate_backend_status,
+    CERT_DIR,
+)
 
 
 DEFAULT_MUMBLE_FAVORITES = [
@@ -129,9 +133,12 @@ class MumbleNativePanel(QWidget):
         favrow.addWidget(self.favorite_delete)
         self.favorite_nick_label=QLabel("Favoriten-Nickname: allgemeiner Nickname")
         self.cert=QComboBox()
-        self.refresh_cert=QPushButton("Zertifikate neu laden"); self.refresh_cert.clicked.connect(self._refresh_certs)
-        self.create_cert=QPushButton("Neues Zertifikat"); self.create_cert.clicked.connect(self._create_cert)
-        certrow=QHBoxLayout(); certrow.addWidget(self.cert,1); certrow.addWidget(self.refresh_cert); certrow.addWidget(self.create_cert)
+        self.cert.currentIndexChanged.connect(self._cert_changed)
+        certrow=QHBoxLayout()
+        certrow.addWidget(self.cert,1)
+        open_cert_tab=QPushButton("Zertifikate verwalten …")
+        open_cert_tab.clicked.connect(self._open_cert_tab)
+        certrow.addWidget(open_cert_tab)
 
         buttons=QHBoxLayout()
         self.connect_btn=QPushButton("Verbinden"); self.disconnect_btn=QPushButton("Trennen")
@@ -280,6 +287,46 @@ class MumbleNativePanel(QWidget):
         self.public_use.clicked.connect(self._use_public_server)
         publiclayout.addWidget(self.public_use)
         self.mumble_tabs.addTab(publicbox,"Öffentliche Serverliste")
+
+        cert_page=QWidget(self.mumble_tabs)
+        certv=QVBoxLayout(cert_page)
+        certv.addWidget(QLabel(
+            "<b>Mumble-Zertifikatsverwaltung</b> – Zertifikate dienen als "
+            "persönliche Mumble-Identität. Beim Export den privaten Schlüssel "
+            "sicher aufbewahren."
+        ))
+        self.cert_manager=QComboBox()
+        self.cert_manager.currentIndexChanged.connect(self._manager_cert_changed)
+        certv.addWidget(self.cert_manager)
+        self.cert_info=QLabel("Kein Zertifikat ausgewählt")
+        self.cert_info.setWordWrap(True)
+        self.cert_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        certv.addWidget(self.cert_info)
+        certv.addWidget(QLabel("Zertifikat wird beim nächsten Verbindungsaufbau verwendet."))
+        cert_actions=QGroupBox("Zertifikate verwalten")
+        actions=QVBoxLayout(cert_actions)
+        for buttons in (
+            (("Neu erstellen",self._create_cert),
+             ("Zertifikate aktualisieren",self._refresh_certs),
+             ("Zertifikatsmodul prüfen",self._test_cert_backend)),
+            (("P12 / PFX importieren",self._import_cert_p12),
+             ("PEM + Schlüssel importieren",self._import_cert_pem)),
+            (("P12 / PFX exportieren",self._export_cert_p12),
+             ("PEM + Schlüssel exportieren",self._export_cert_pem)),
+            (("Ausgewähltes Zertifikat löschen",self._delete_cert),),
+        ):
+            row=QHBoxLayout()
+            for label,callback in buttons:
+                button=QPushButton(label)
+                button.clicked.connect(callback)
+                row.addWidget(button)
+            actions.addLayout(row)
+        certv.addWidget(cert_actions)
+        self.cert_backend_label=QLabel("Zertifikatsmodul: noch nicht geprüft")
+        self.cert_backend_label.setWordWrap(True)
+        certv.addWidget(self.cert_backend_label)
+        certv.addStretch(1)
+        self.mumble_tabs.addTab(cert_page,"Zertifikate")
 
         self._refresh_audio()
         self._refresh_certs()
