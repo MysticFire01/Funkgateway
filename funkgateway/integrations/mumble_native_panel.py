@@ -193,6 +193,116 @@ class MumbleNativePanel(QWidget):
         except Exception as exc:
             self._error("Zertifikat: "+str(exc))
 
+    def _load_settings(self):
+        import json
+        self.host.setText(str(self.settings.value("host","voice.mumble-funk.de")))
+        self.port.setValue(int(self.settings.value("port",64738)))
+        self.nick.setText(str(self.settings.value("nickname","FunkGateway Linux")))
+        self.master_volume.setValue(int(self.settings.value("master_volume",100)))
+        try:
+            values=json.loads(str(self.settings.value("user_volumes","{}")))
+            if isinstance(values,dict):
+                self._user_volumes={
+                    str(k):max(0,min(200,int(v))) for k,v in values.items()
+                }
+        except (TypeError,ValueError):
+            self._user_volumes={}
+        self.client.set_user_volumes(self._user_volumes)
+
+    def _save_settings(self):
+        import json
+        self.settings.setValue("host",self.host.text().strip())
+        self.settings.setValue("port",self.port.value())
+        self.settings.setValue("nickname",self.nick.text().strip())
+        self.settings.setValue("master_volume",self.master_volume.value())
+        self.settings.setValue("user_volumes",json.dumps(self._user_volumes))
+        self.settings.sync()
+
+    def _master_volume_changed(self,value):
+        self.client.set_playback_volume(value)
+        self._save_settings()
+
+    def _change_user_volume(self,name,percent):
+        self.client.set_user_volume(name,percent)
+        key=self.client.volume_key(name)
+        if int(percent)==100:
+            self._user_volumes.pop(key,None)
+        else:
+            self._user_volumes[key]=int(percent)
+
+    def _user_context_menu(self,pos):
+        item=self.users.itemAt(pos)
+        if item is None:
+            return
+        data=item.data(Qt.UserRole)
+        if not isinstance(data,dict) or data.get("is_self"):
+            return
+        menu=QMenu(self)
+        name=str(data.get("name") or "")
+        volume=menu.addAction(
+            f"🔊 Lautstärke einstellen … ({self.client.user_volume(name)} %)"
+        )
+        chosen=menu.exec(self.users.viewport().mapToGlobal(pos))
+        if chosen==volume:
+            self._user_volume_popup(name)
+
+    def _user_volume_popup(self,name):
+        old=self.client.user_volume(name)
+        dlg=QDialog(self)
+        dlg.setWindowTitle("Mumble-Lautstärke – "+name)
+        dlg.setMinimumWidth(390)
+        layout=QVBoxLayout(dlg)
+        layout.addWidget(QLabel("Lokale Empfangslautstärke für "+name))
+        row=QHBoxLayout()
+        slider=QSlider(Qt.Horizontal)
+        slider.setRange(0,200)
+        slider.setValue(old)
+        value=QSpinBox()
+        value.setRange(0,200)
+        value.setSuffix(" %")
+        value.setValue(old)
+        slider.valueChanged.connect(value.setValue)
+        value.valueChanged.connect(slider.setValue)
+        value.valueChanged.connect(lambda n:self._change_user_volume(name,n))
+        row.addWidget(slider,1)
+        row.addWidget(value)
+        layout.addLayout(row)
+        reset=QPushButton("Auf 100 % zurücksetzen")
+        reset.clicked.connect(lambda:value.setValue(100))
+        layout.addWidget(reset)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec()==QDialog.Accepted:
+            self._save_settings()
+        else:
+            self._change_user_volume(name,old)
+
+    def _chat_line(self,source,message):
+        plain=html.unescape(re.sub(r"<[^>]*>"," ",str(message or "")))
+        plain=plain.replace(chr(13)," ").replace(chr(10)," ")
+        self.chat_log.appendPlainText(
+            f"[{datetime.now():%H:%M:%S}] {source}: {plain}"
+        )
+
+    def _chat_received(self,item):
+        who=self.client.chat_sender_name(item.get("actor"))
+        scope="Privat" if item.get("sessions") else "Channel"
+        self._chat_line(f"{scope} · {who}",item.get("message"))
+
+    def _send_chat(self):
+        message=self.chat_input.text().strip()
+        if not message:
+            return
+        try:
+            dest=self.client.send_chat(message,self.chat_target.currentData())
+            if dest is not None:
+                self._chat_line("Ich → "+dest,message)
+                self.chat_input.clear()
+        except Exception as exc:
+            self._error(str(exc))
+
     def _connect(self):
         cert=self.cert.currentData()
         certfile=cert.get("cert_path","") if isinstance(cert,dict) else ""
