@@ -1086,17 +1086,17 @@ class ZelloPanel(QWidget):
             self.public_status.setText(
                 "Bitte zuerst unter Kanäle einen eigenen Favoriten auswählen.")
             return
-        if len(name)>120 or "\\n" in name:
+        if len(name)>120 or "\n" in name:
             self.public_status.setText("Ungültiger Kanalname.")
             return
         description=self.public_description.text().strip()
         # GitHub Issue intake: no PAT, no credential upload, requires GitHub sign-in.
-        body=("Vorschlag für das FunkGateway Community Directory\\n\\n"
-              "Plattform: Zello\\n"
-              "Kanalname: "+name+"\\n"
-              "Beschreibung: "+description+"\\n\\n"
+        body=("Vorschlag für das FunkGateway Community Directory\n\n"
+              "Plattform: Zello\n"
+              "Kanalname: "+name+"\n"
+              "Beschreibung: "+description+"\n\n"
               "Ich bestätige, dass der Kanal öffentlich gelistet werden darf "
-              "und keine privaten Zugangsdaten enthalten sind.\\n"
+              "und keine privaten Zugangsdaten enthalten sind.\n"
               "Bitte vor Aufnahme prüfen: [ ]")
         url=("https://github.com/MysticFire01/Funkgateway/issues/new?"
              +urlencode({"title":"[Community Directory] Zello: "+name,
