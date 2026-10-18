@@ -390,6 +390,10 @@ class MumbleNativePanel(QWidget):
             self.channels.clear(); self.users.clear(); self.current_channel.setText("—")
             self.chat_target.clear()
             self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
+            for control in (self.self_mute,self.self_deaf):
+                control.blockSignals(True)
+                control.setChecked(False)
+                control.blockSignals(False)
 
     def _status(self,text):
         self.status.setText(str(text))
