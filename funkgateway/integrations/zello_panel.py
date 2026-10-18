@@ -57,6 +57,8 @@ class ZelloPanel(QWidget):
         self._tx_timeout.setSingleShot(True)
         self._tx_timeout.timeout.connect(self._tx_request_timeout)
         self._tx_wanted = False
+        self._mic_muted = False
+        self._rx_deafened = False
         self._tx_stream_id = None
         self._tx_input = None
         self._tx_encoder = None
@@ -280,6 +282,18 @@ class ZelloPanel(QWidget):
         audio_box=QGroupBox("Zello Audio")
         audio_box.setLayout(audio_controls)
         outer.addWidget(audio_box)
+        self.mute_btn = QPushButton("Mikrofon: AN")
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.toggled.connect(self._set_mic_muted)
+        self.deaf_btn = QPushButton("Empfang: AN")
+        self.deaf_btn.setCheckable(True)
+        self.deaf_btn.toggled.connect(self._set_rx_deafened)
+        mute_row = QHBoxLayout()
+        mute_row.addWidget(self.mute_btn)
+        mute_row.addWidget(self.deaf_btn)
+        audio_controls.addLayout(mute_row)
+        self.audio_state_label = QLabel("Zello Audio: Mikrofon AN · Empfang AN")
+        audio_controls.addWidget(self.audio_state_label)
         self.mic_gain.sliderReleased.connect(self._save_directory)
         self.rx_volume.sliderReleased.connect(self._save_directory)
         self.ptt_btn=QPushButton("Zello PTT halten")
@@ -446,7 +460,9 @@ class ZelloPanel(QWidget):
                 "ptt_hotkey":self._ptt_hotkey_setting,
                 "ptt_hotkey_scope":self._ptt_hotkey_scope,
                 "mic_gain":self.mic_gain.value(),
-                "rx_volume":self.rx_volume.value()}
+                "rx_volume":self.rx_volume.value(),
+                 "mic_muted":self._mic_muted,
+                 "rx_deafened":self._rx_deafened}
 
     def load_config(self,data):
         if not isinstance(data,dict):
@@ -468,6 +484,8 @@ class ZelloPanel(QWidget):
         self._configure_hotkey(save=False)
         self.mic_gain.setValue(max(0,min(300,int(data.get("mic_gain",100)))))
         self.rx_volume.setValue(max(0,min(200,int(data.get("rx_volume",100)))))
+        self.mute_btn.setChecked(bool(data.get("mic_muted",False)))
+        self.deaf_btn.setChecked(bool(data.get("rx_deafened",False)))
         try:
             import keyring
             values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
@@ -573,7 +591,7 @@ class ZelloPanel(QWidget):
                 label="online" if self.channel_online else "offline"
                 self.channel_status.setText("Kanalstatus: "+label+(" – "+error if error else ""))
                 self.users_online.setText("Teilnehmer online: "+str(data.get("users_online","—")))
-                self.ptt_btn.setEnabled(bool(self.connected and self.channel_online))
+                self.ptt_btn.setEnabled(bool(self.connected and self.channel_online and not self._mic_muted))
                 self.pttStateChanged.emit(bool(self._tx_wanted))
                 if not self.channel_online:
                     self._stop_tx()
@@ -697,6 +715,38 @@ class ZelloPanel(QWidget):
         self._ws.sendTextMessage(json.dumps(dict(command=command,seq=seq,**kwargs)))
         return seq
 
+    def _save_audio_controls(self):
+        window = self.window()
+        if hasattr(window, "save_cfg"):
+            window.save_cfg()
+
+    def _refresh_audio_controls(self):
+        self.mute_btn.setText("Mikrofon: STUMM" if self._mic_muted else "Mikrofon: AN")
+        self.deaf_btn.setText("Empfang: TAUB" if self._rx_deafened else "Empfang: AN")
+        self.audio_state_label.setText(
+            "Zello Audio: Mikrofon " + ("STUMM" if self._mic_muted else "AN") +
+            " · Empfang " + ("TAUB" if self._rx_deafened else "AN"))
+        self.ptt_btn.setEnabled(bool(self.connected and self.channel_online and not self._mic_muted))
+        self.pttStateChanged.emit(bool(self._tx_wanted or self._tx_stream_id is not None))
+
+    def _set_mic_muted(self, muted):
+        self._mic_muted = bool(muted)
+        if self._mic_muted:
+            self._stop_tx()
+        self._refresh_audio_controls()
+        self._save_audio_controls()
+
+    def _set_rx_deafened(self, deafened):
+        self._rx_deafened = bool(deafened)
+        if self._rx_deafened:
+            while True:
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._refresh_audio_controls()
+        self._save_audio_controls()
+
     def _update_ptt_ui(self):
         active=bool(self._tx_wanted or self._tx_stream_id is not None)
         self.ptt_btn.setText("Zello TX AKTIV" if active else "Zello PTT halten")
@@ -704,7 +754,7 @@ class ZelloPanel(QWidget):
         self.pttStateChanged.emit(active)
 
     def set_ptt(self,active):
-        active=bool(active) and self.connected and self.channel_online
+        active=bool(active) and self.connected and self.channel_online and not self._mic_muted
         if active:
             if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
                 return
@@ -770,7 +820,7 @@ class ZelloPanel(QWidget):
             self._stop_tx()
 
     def _flush_tx(self):
-        if not self._tx_wanted or self._tx_stream_id is None:
+        if not self._tx_wanted or self._tx_stream_id is None or self._mic_muted:
             return
         for _ in range(5):
             try:
@@ -1335,11 +1385,12 @@ class ZelloPanel(QWidget):
                     f"letzte Paket-ID: {packet_id} · Sprecher: {speaker} · Opus {rate} Hz")
             self._last_packet=time.monotonic()
             self._set_speaker(speaker)
-            try:
-                self._audio_queue.put_nowait((rate,pcm))
-            except queue.Full:
-                self._audio_queue.get_nowait()
-                self._audio_queue.put_nowait((rate,pcm))
+            if not self._rx_deafened:
+                try:
+                    self._audio_queue.put_nowait((rate,pcm))
+                except queue.Full:
+                    self._audio_queue.get_nowait()
+                    self._audio_queue.put_nowait((rate,pcm))
         except Exception as exc:
             self.audio_status.setText("Opus-Dekodierung: "+str(exc))
 
@@ -1360,7 +1411,7 @@ class ZelloPanel(QWidget):
                         old_rate=rate
                     if rate!=48000:
                         pcm,state=audioop.ratecv(pcm,2,1,rate,48000,state)
-                    if pcm and not self._audio_stop.is_set():
+                    if pcm and not self._audio_stop.is_set() and not self._rx_deafened:
                         output.write(self._scale_pcm(pcm,self._rx_gain_factor))
         except Exception as exc:
             self.audioError.emit(str(exc))
