@@ -811,6 +811,8 @@ class MumbleNativePanel(QWidget):
         if on:
             self._refresh_channels()
         else:
+            self._channel_rows=[]
+            self._participant_rows=[]
             self.channels.clear(); self.users.clear(); self.current_channel.setText("—")
             self.chat_target.clear()
             self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
