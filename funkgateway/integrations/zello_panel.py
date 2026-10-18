@@ -24,6 +24,7 @@ class ZelloPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.connected = False
+        self.channel_online = False
         self.talker_name = ""
         self._requested_disconnect = False
         self._streams = {}
@@ -107,6 +108,9 @@ class ZelloPanel(QWidget):
         self.status.setWordWrap(True)
         self.speaker = QLabel("Sprecher: —")
         outer.addWidget(self.status)
+        self.channel_status=QLabel("Kanalstatus: nicht geprüft")
+        self.channel_status.setWordWrap(True)
+        outer.addWidget(self.channel_status)
         outer.addWidget(self.speaker)
         self.audio_status=QLabel("Audioempfang: bereit")
         outer.addWidget(self.audio_status)
@@ -201,6 +205,8 @@ class ZelloPanel(QWidget):
             self._set_status("Benutzer, Passwort, Kanal und API-Token erforderlich")
             return
         self._requested_disconnect = False
+        self.channel_online=False
+        self.channel_status.setText("Kanalstatus: wartet auf Zello …")
         self.connect_btn.setEnabled(False)
         self._set_status("Verbinde …")
         self._ws.open(QUrl("wss://zello.io/ws"))
@@ -227,13 +233,23 @@ class ZelloPanel(QWidget):
                 self._start_audio()
                 self.connect_btn.setEnabled(False)
                 self.disconnect_btn.setEnabled(True)
-                self.ptt_btn.setEnabled(True)
+                self.ptt_btn.setEnabled(False)
+                self.channel_status.setText("Kanalstatus: Anmeldung erfolgreich; warte auf Kanalstatus")
                 self._set_status("Verbunden mit " + self.channel.text().strip())
                 self.connectedChanged.emit(True)
             else:
                 self._set_status("Anmeldung fehlgeschlagen: " +
                                  str(data.get("error", "unbekannter Fehler")))
                 self._ws.close()
+        elif data.get("command") == "on_channel_status":
+            if str(data.get("channel","")).casefold() == self.channel.text().strip().casefold():
+                self.channel_online=(data.get("status")=="online")
+                error=str(data.get("error") or "")
+                label="online" if self.channel_online else "offline"
+                self.channel_status.setText("Kanalstatus: "+label+(" – "+error if error else ""))
+                self.ptt_btn.setEnabled(bool(self.connected and self.channel_online))
+                if not self.channel_online:
+                    self._stop_tx()
         elif self._tx_pending and data.get("seq") == self._tx_request_seq:
             elapsed=time.monotonic()-self._tx_requested_at
             self.tx_diagnostic.setText("PTT-Diagnose: Serverantwort nach %.2f s: success=%s, stream_id=%s, error=%s" % (elapsed, data.get("success"), data.get("stream_id","—"), data.get("error","—")))
@@ -297,7 +313,7 @@ class ZelloPanel(QWidget):
         self.ptt_btn.setStyleSheet("background:#E58B22;color:black;font-weight:bold;" if active else "")
 
     def set_ptt(self,active):
-        active=bool(active) and self.connected
+        active=bool(active) and self.connected and self.channel_online
         if active:
             if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
                 return
@@ -486,6 +502,8 @@ class ZelloPanel(QWidget):
         self._stop_tx()
         self.ptt_btn.setEnabled(False)
         self._clear_audio()
+        self.channel_online=False
+        self.channel_status.setText("Kanalstatus: getrennt")
         was_connected = self.connected
         self.connected = False
         self.talker_name = ""
