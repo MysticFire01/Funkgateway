@@ -97,12 +97,17 @@ class MumbleNativePanel(QWidget):
         self.refresh_audio=QPushButton("Audiogeräte neu laden"); self.refresh_audio.clicked.connect(self._refresh_audio)
         self.playback=QCheckBox("Mumble-Empfang direkt wiedergeben"); self.playback.setChecked(True)
         self.ptt_enabled=QCheckBox("PC-User Mikrofon-PTT aktiv"); self.ptt_enabled.setChecked(True)
+        self.self_mute=QCheckBox("Eigenes Mikrofon stummschalten")
+        self.self_mute.toggled.connect(self._self_mute_changed)
+        self.self_deaf=QCheckBox("Eigenen Empfang taub schalten")
+        self.self_deaf.toggled.connect(self._self_deaf_changed)
         self.ptt=QPushButton("Mumble PTT halten"); self.ptt.setMinimumHeight(42)
         self.ptt.pressed.connect(lambda:self.client.set_pc_ptt(True))
         self.ptt.released.connect(lambda:self.client.set_pc_ptt(False))
         self.in_level=QLabel("Mikrofon: < -60 dBFS"); self.out_level=QLabel("Mumble: < -60 dBFS")
         af.addRow("Mikrofon:",self.input); af.addRow("Lautsprecher:",self.output); af.addRow("",self.playback)
         af.addRow("",self.ptt_enabled); af.addRow("",self.ptt); af.addRow("",self.refresh_audio)
+        af.addRow("",self.self_mute); af.addRow("",self.self_deaf)
         self.master_volume=QSpinBox()
         self.master_volume.setRange(0,200)
         self.master_volume.setValue(100)
@@ -233,6 +238,28 @@ class MumbleNativePanel(QWidget):
         else:
             self._user_volumes[key]=int(percent)
 
+    def _self_mute_changed(self,enabled):
+        if not self.client.connected:
+            self.self_mute.blockSignals(True)
+            self.self_mute.setChecked(False)
+            self.self_mute.blockSignals(False)
+            return
+        try:
+            self.client.set_self_mute(enabled)
+        except Exception as exc:
+            self._error(str(exc))
+
+    def _self_deaf_changed(self,enabled):
+        if not self.client.connected:
+            self.self_deaf.blockSignals(True)
+            self.self_deaf.setChecked(False)
+            self.self_deaf.blockSignals(False)
+            return
+        try:
+            self.client.set_self_deaf(enabled)
+        except Exception as exc:
+            self._error(str(exc))
+
     def _user_context_menu(self,pos):
         item=self.users.itemAt(pos)
         if item is None:
@@ -245,9 +272,39 @@ class MumbleNativePanel(QWidget):
         volume=menu.addAction(
             f"🔊 Lautstärke einstellen … ({self.client.user_volume(name)} %)"
         )
+        local=menu.addAction(
+            "🔊 Lokale Stummschaltung aufheben" if data.get("local_user_mute")
+            else "🔇 Lokal stummschalten"
+        )
+        menu.addSeparator()
+        server_mute=menu.addAction(
+            "🔒 Server-Mute aufheben" if data.get("server_mute")
+            else "🔒 Serverseitig stummschalten"
+        )
+        server_deaf=menu.addAction(
+            "🔒 Server-Deaf aufheben" if data.get("server_deaf")
+            else "🔒 Serverseitig taub schalten"
+        )
+        server_mute.setToolTip("Erfordert Mumble-Serverrechte")
+        server_deaf.setToolTip("Erfordert Mumble-Serverrechte")
         chosen=menu.exec(self.users.viewport().mapToGlobal(pos))
-        if chosen==volume:
-            self._user_volume_popup(name)
+        try:
+            if chosen==volume:
+                self._user_volume_popup(name)
+            elif chosen==local:
+                self.client.set_local_user_mute(
+                    data["session"],not data.get("local_user_mute")
+                )
+            elif chosen==server_mute:
+                self.client.set_server_user_mute(
+                    data["session"],not data.get("server_mute")
+                )
+            elif chosen==server_deaf:
+                self.client.set_server_user_deaf(
+                    data["session"],not data.get("server_deaf")
+                )
+        except Exception as exc:
+            self._error(str(exc))
 
     def _user_volume_popup(self,name):
         old=self.client.user_volume(name)
