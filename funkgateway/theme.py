@@ -1,5 +1,5 @@
 """Theme support for FunkGateway UI 0.6.x."""
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QColor, QPalette
 
 SCHEMES = {
     "Funk Blau": {"accent": "#2F80ED"},
@@ -85,16 +85,12 @@ QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
    Explicitly style the popup view: otherwise Linux/GTK themes can show a
    bright native selection bar on the dark FunkGateway theme. */
 QComboBox {{
-    min-height: 24px;
-    padding: 5px 30px 5px 9px;
+    min-height: 22px;
+    padding: 4px 28px 4px 9px;
 }}
-QComboBox:hover {{ border-color: {p['accent']}; }}
-QComboBox:focus {{ border: 1px solid {p['accent']}; }}
-QComboBox:on {{
-    border-color: {p['accent']};
-    border-bottom-left-radius: 2px;
-    border-bottom-right-radius: 2px;
-}}
+QComboBox:hover {{ border-color: {p['border']}; }}
+QComboBox:focus {{ border: 1px solid {p['border']}; }}
+QComboBox:on {{ border-color: {p['border']}; }}
 QComboBox:disabled {{
     color: {p['muted']};
     background-color: {p['panel_alt']};
@@ -102,7 +98,7 @@ QComboBox:disabled {{
 QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 27px;
+    width: 23px;
     border-left: 1px solid {p['border']};
     border-top-right-radius: 6px;
     border-bottom-right-radius: 6px;
@@ -116,18 +112,16 @@ QComboBox QAbstractItemView {{
     color: {p['text']};
     selection-background-color: {p['accent']};
     selection-color: {p['accent_text']};
-    border: 1px solid {p['accent']};
-    border-radius: 5px;
-    padding: 5px;
+    border: 1px solid {p['border']};
+    border-radius: 3px;
+    padding: 2px;
     outline: 0;
     show-decoration-selected: 1;
 }}
 QComboBox QAbstractItemView::item {{
-    min-height: 26px;
-    padding: 5px 9px;
-    background-color: {p['panel']};
-    color: {p['text']};
-    border-radius: 4px;
+    min-height: 24px;
+    padding: 3px 8px;
+    border: 0px;
 }}
 QComboBox QAbstractItemView::item:selected {{
     background-color: {p['accent']};
@@ -165,6 +159,11 @@ QHeaderView::section {{
     padding: 6px 8px;
     font-weight: 600;
 }}
+QComboBoxPrivateContainer {{
+    background-color: {p['panel']};
+    border: 1px solid {p['border']};
+    padding: 0px;
+}}
 QCheckBox {{ spacing: 7px; }}
 QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 7px; background: {p['panel']}; }}
 QTabBar::tab {{ background: {p['panel_alt']}; color: {p['text']}; border: 1px solid {p['border']}; padding: 7px 11px; margin-right: 2px; }}
@@ -181,4 +180,21 @@ QToolTip {{ background-color: {p['panel_alt']}; color: {p['text']}; border: 1px 
 def apply_theme(app, theme_mode="System", scheme_name="Funk Blau"):
     p=palette_for(app,theme_mode,scheme_name)
     app.setStyleSheet(stylesheet(p))
+    # Set palette roles as well: Qt's native popup/list view can otherwise
+    # keep the desktop theme's white Base and thick focus frame.
+    palette=app.palette()
+    roles={
+        QPalette.ColorRole.Window:p["bg"],
+        QPalette.ColorRole.WindowText:p["text"],
+        QPalette.ColorRole.Base:p["panel"],
+        QPalette.ColorRole.AlternateBase:p["panel_alt"],
+        QPalette.ColorRole.Text:p["text"],
+        QPalette.ColorRole.Button:p["panel_alt"],
+        QPalette.ColorRole.ButtonText:p["text"],
+        QPalette.ColorRole.Highlight:p["accent"],
+        QPalette.ColorRole.HighlightedText:p["accent_text"],
+    }
+    for role,color in roles.items():
+        palette.setColor(role,QColor(color))
+    app.setPalette(palette)
     return p
