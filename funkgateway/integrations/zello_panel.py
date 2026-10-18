@@ -3,9 +3,13 @@ Uses the official secure Channel API; audio streaming is not yet implemented.
 """
 import json
 import base64
+import struct
+import threading
+import queue
+import time
 import webbrowser
 from datetime import datetime, timezone
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl, Signal, QTimer
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
@@ -15,23 +19,34 @@ class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
     talkerChanged = Signal(str)
     statusChanged = Signal(str)
+    audioError = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.connected = False
         self.talker_name = ""
         self._requested_disconnect = False
+        self._streams = {}
+        self._audio_queue = queue.Queue(maxsize=120)
+        self._audio_stop = threading.Event()
+        self._audio_thread = None
+        self._last_packet = 0.0
+        self._rx_timer = QTimer(self)
+        self._rx_timer.setInterval(350)
+        self._rx_timer.timeout.connect(self._check_audio_timeout)
+        self.audioError.connect(self._audio_error)
         self._ws = QWebSocket()
         self._ws.connected.connect(self._socket_connected)
         self._ws.disconnected.connect(self._socket_disconnected)
         self._ws.textMessageReceived.connect(self._message)
+        self._ws.binaryMessageReceived.connect(self._binary_message)
         self._ws.errorOccurred.connect(self._socket_error)
         outer = QVBoxLayout(self)
         heading = QLabel("<h3>Zello · Friends & Family</h3>")
         outer.addWidget(heading)
         info = QLabel("Nativer Kanal-Client (Alpha): offizielle Zello Channel API. "
-                      "Diese erste Ausbaustufe testet Anmeldung und Verbindungsstatus. "
-                      "Empfangen und Senden von Sprache sind noch nicht freigeschaltet.")
+                      "Diese Alpha-Version empfängt Opus-Sprache und zeigt den Sprecher an. "
+                      "Senden/PTT folgt später.")
         info.setWordWrap(True)
         outer.addWidget(info)
         group = QGroupBox("Kanalverbindung")
@@ -72,6 +87,8 @@ class ZelloPanel(QWidget):
         self.speaker = QLabel("Sprecher: —")
         outer.addWidget(self.status)
         outer.addWidget(self.speaker)
+        self.audio_status=QLabel("Audioempfang: bereit")
+        outer.addWidget(self.audio_status)
         help_label = QLabel('Token über https://developers.zello.com/ erstellen. '
                             'Zello unterstützt hier nur jeweils einen Friends-&-Family-Kanal. '
                             'Zugangsdaten bleiben in dieser Version nur im Arbeitsspeicher und '
