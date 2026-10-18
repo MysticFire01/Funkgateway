@@ -359,7 +359,7 @@ class ZelloPanel(QWidget):
         discover_actions.addWidget(pick_discover)
         discover_actions.addWidget(switch_discover)
         discovery_layout.addLayout(discover_actions)
-        self.discover_status=QLabel("Verzeichnisdaten noch nicht geladen.")
+        self.discover_status=QLabel("80 Kanalnummern; 9 Namen mit geprüften Zusätzen, übrige aus Bildtabellen noch ungeprüft.")
         self.discover_status.setWordWrap(True)
         discovery_layout.addWidget(self.discover_status)
         source_link=QPushButton("Quelle anzeigen (optional)")
@@ -367,17 +367,20 @@ class ZelloPanel(QWidget):
             "https://www.cb-digitalfunk.de/kanal%C3%BCbersicht"))
         discovery_layout.addWidget(source_link)
         pages["Entdecken"].addWidget(discovery)
+        # All 80 numbered entries; suffixes beyond the published HTML text
+        # require verification against the image tables before connecting.
+        suffixes={1:"Rufkanal Deutschland",2:"Ruf-Nord",3:"Ruf-West",
+                  4:"Ruf-Ost",5:"Ruf-Süd",9:"Trucker",10:"Trucker",
+                  19:"Jugend",29:"Jugend"}
         self._discovery_entries=[
-            "Digital Funk Kanal 01 (Rufkanal Deutschland)",
-            "Digital Funk Kanal 02 (Ruf-Nord)",
-            "Digital Funk Kanal 03 (Ruf-West)",
-            "Digital Funk Kanal 04 (Ruf-Ost)",
-            "Digital Funk Kanal 05 (Ruf-Süd)",
-        ]
+            "Digital Funk Kanal {:02d}{}".format(
+                number, " ("+suffixes[number]+")" if number in suffixes else "")
+            for number in range(1,81)]
+        self._discovery_verified=set(suffixes)
+        self._discovery_sources={}
         self._discovery_network=QNetworkAccessManager(self)
         self._discovery_busy=False
         self._discovery_replies=[]
-        self._discovery_sources={}
         self._search_discovery()
         QTimer.singleShot(0,self._fetch_discovery)
         move_widget(directory,"Buddys")
@@ -897,10 +900,17 @@ class ZelloPanel(QWidget):
             names=self._extract_directory_names(raw.decode("utf-8","replace"))
             if not names:
                 raise ValueError("Keine erkennbaren Kanalnamen in der Quelle")
-            self._discovery_entries=names
+            verified={int(x.group(1)) for name in names if (x:=re.match(r"Digital Funk Kanal (\\d{2})",name))}
+            existing={int(x.group(1)):x for name in self._discovery_entries if (x:=re.match(r"Digital Funk Kanal (\\d{2})",name))}
+            for name in names:
+                match=re.match(r"Digital Funk Kanal (\\d{2})",name)
+                if match:
+                    existing[int(match.group(1))]=name
+            self._discovery_entries=[existing[k] for k in sorted(existing)]
+            self._discovery_verified.update(verified)
             self._search_discovery()
             self.discover_status.setText(
-                f"{len(names)} Kanäle aus Digitalfunk-Deutschland geladen. "
+                f"{len(names)} textbasierte Kanalnamen abgeglichen; 80 Nummern angezeigt. "
                 "Namen sind extern veröffentlicht, Online-Status nicht verifiziert.")
         except Exception as exc:
             self._search_discovery()
@@ -919,7 +929,17 @@ class ZelloPanel(QWidget):
 
     def _discovery_name(self):
         item=self.discover_results.currentItem()
-        return item.text().strip() if item else ""
+        if item is None:
+            return ""
+        name=item.text().strip()
+        match=re.match(r"Digital Funk Kanal (\\d{2})",name)
+        if match and int(match.group(1)) not in self._discovery_verified:
+            self.discover_status.setText(
+                "Kanal "+match.group(1)+" ist noch nicht anhand der Bildtabelle "
+                "überprüft. Bitte den vollständigen Namen mit allen Zusätzen "
+                "der Originalquelle vergleichen.")
+            return ""
+        return name
 
     def _discover_select(self,*_args):
         name=self._discovery_name()
