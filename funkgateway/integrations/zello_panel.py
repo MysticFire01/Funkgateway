@@ -1108,25 +1108,21 @@ class ZelloPanel(QWidget):
             self.public_status.setText(
                 "Bitte zuerst unter Kanäle einen eigenen Favoriten auswählen.")
             return
-        if len(name)>120 or "\n" in name:
+        if len(name)>120 or "\n" in name or "\r" in name:
             self.public_status.setText("Ungültiger Kanalname.")
             return
         description=self.public_description.text().strip()
-        # GitHub Issue intake: no PAT, no credential upload, requires GitHub sign-in.
-        body=("Vorschlag für das FunkGateway Community Directory\n\n"
-              "Plattform: Zello\n"
-              "Kanalname: "+name+"\n"
-              "Beschreibung: "+description+"\n\n"
-              "Ich bestätige, dass der Kanal öffentlich gelistet werden darf "
-              "und keine privaten Zugangsdaten enthalten sind.\n"
-              "Bitte vor Aufnahme prüfen: [ ]")
-        url=("https://github.com/MysticFire01/Funkgateway/issues/new?"
-             +urlencode({"title":"[Community Directory] Zello: "+name,
-                         "body":body}))
-        webbrowser.open(url)
-        self.public_status.setText(
-            "Vorschlag im Browser geöffnet (GitHub-Anmeldung nötig). "
-            "Es wurde noch nichts veröffentlicht.")
+        url=("https://funkgateway-directory-api.xanadu97348.workers.dev/submit?"
+             +urlencode({"channel":name,"description":description}))
+        if webbrowser.open(url):
+            self.public_status.setText(
+                "Öffentliches Einreichungsformular geöffnet. "
+                "Bitte Angaben prüfen und dort selbst absenden. "
+                "Eine GitHub-Anmeldung ist nicht erforderlich.")
+        else:
+            self.public_status.setText(
+                "Browser konnte nicht geöffnet werden. "
+                "Einreichungsseite: "+url.split("?")[0])
 
     def _refresh_directories(self, *_args):
         buddy_filter=self.buddy_search.text().strip().casefold()
