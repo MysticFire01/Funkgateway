@@ -1301,11 +1301,45 @@ class MumbleNativePanel(QWidget):
             self.channel.setText(path)
             self._refresh_channels()
 
+    def _update_speaker_icons(self):
+        """Update speaking/mute icons in place, without rebuilding or scrolling."""
+        by_session={int(row["session"]):row for row in self._participant_rows
+                    if row.get("session") is not None}
+        def walk(node):
+            data=node.data(0,Qt.UserRole)
+            if isinstance(data,dict) and data.get("kind")=="user":
+                row=by_session.get(data.get("session"))
+                if row is not None:
+                    talking=bool(row.get("talking"))
+                    kind=("whisper" if row.get("speech_mode")=="whisper"
+                          else ("self" if row.get("is_self") else "talk")
+                          ) if talking else "idle"
+                    if (data.get("talking")!=talking or
+                            data.get("speech_mode")!=row.get("speech_mode")):
+                        node.setIcon(0,self._mouth_icon(kind))
+                        node.setData(0,Qt.UserRole,{"kind":"user",**row})
+            for index in range(node.childCount()):
+                walk(node.child(index))
+        for index in range(self.channels.topLevelItemCount()):
+            walk(self.channels.topLevelItem(index))
+
     def _participants(self,rows):
         new_rows=list(rows or [])
+        previous_structure={
+            (row.get("session"),row.get("name"),row.get("channel_id"))
+            for row in self._participant_rows
+        }
+        new_structure={
+            (row.get("session"),row.get("name"),row.get("channel_id"))
+            for row in new_rows
+        }
         if new_rows != self._participant_rows:
             self._participant_rows=new_rows
-            self._refresh_channels()
+            if new_structure!=previous_structure:
+                self._channel_rows=self.client.channel_snapshot()
+                self._render_channels()
+            else:
+                self._update_speaker_icons()
         previous=self.chat_target.currentData()
         self.chat_target.blockSignals(True)
         self.chat_target.clear()
