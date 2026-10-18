@@ -86,6 +86,12 @@ class ZelloPanel(QWidget):
         self.token_expiry.setWordWrap(True)
         self.token.textChanged.connect(self._token_updated)
         form.addRow("",self.token_expiry)
+        self.save_credentials_btn=QPushButton("Zello-Zugangsdaten speichern")
+        self.save_credentials_btn.clicked.connect(self.save_credentials)
+        form.addRow("",self.save_credentials_btn)
+        self.credential_status=QLabel("Benutzer und Kanal in FunkGateway-Konfiguration; Passwörter im System-Schlüsselbund.")
+        self.credential_status.setWordWrap(True)
+        form.addRow("",self.credential_status)
         outer.addWidget(group)
         buttons = QHBoxLayout()
         self.connect_btn = QPushButton("Verbinden")
@@ -118,6 +124,47 @@ class ZelloPanel(QWidget):
         help_label.setWordWrap(True)
         outer.addWidget(help_label)
         outer.addStretch(1)
+
+    def to_config(self):
+        return {"username":self.username.text().strip(),
+                "channel":self.channel.text().strip()}
+
+    def load_config(self,data):
+        if not isinstance(data,dict):
+            data={}
+        self.username.setText(str(data.get("username","") or ""))
+        self.channel.setText(str(data.get("channel","") or ""))
+        try:
+            import keyring
+            values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
+            if values.get("username")==self.username.text().strip():
+                self.password.setText(str(values.get("password","")))
+                self.token.setText(str(values.get("token","")))
+                self.credential_status.setText("Zello-Zugangsdaten aus System-Schlüsselbund geladen.")
+        except Exception:
+            self.credential_status.setText("Kein Schlüsselbund verfügbar; Passwort und Token bitte eingeben.")
+
+    def save_credentials(self):
+        window=self.window()
+        try:
+            if hasattr(window,"save_cfg"):
+                window.save_cfg()
+        except Exception as exc:
+            self.credential_status.setText("Konfiguration nicht gespeichert: "+str(exc))
+            return
+        try:
+            import keyring
+            from keyring.errors import KeyringError
+            values=json.dumps({"username":self.username.text().strip(),
+                               "password":self.password.text(),
+                               "token":self.token.text()})
+            keyring.set_password("FunkGateway.Zello","credentials",values)
+            self.credential_status.setText(
+                "Gespeichert: Benutzer/Kanal in config.json; Passwort/Token im System-Schlüsselbund.")
+        except Exception as exc:
+            self.credential_status.setText(
+                "Benutzer/Kanal gespeichert. Passwort/Token NICHT gespeichert: "+
+                str(exc)+" – System-Schlüsselbund prüfen.")
 
     def _token_updated(self, value):
         """Read JWT expiry locally; never transmit the token for inspection."""
