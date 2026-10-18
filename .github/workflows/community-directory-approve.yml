@@ -34,9 +34,9 @@ jobs:
               return;
             }
             const body = String(issue.body || '');
-            const platform = body.match(/^Plattform:\s*(.+)$/mi)?.[1]?.trim();
-            const name = body.match(/^Kanalname:\s*(.+)$/mi)?.[1]?.trim();
-            const description = body.match(/^Beschreibung:\s*(.*)$/mi)?.[1]?.trim() || '';
+            const platform = body.match(/^Plattform:[ \t]*(.+)$/mi)?.[1]?.trim();
+            const name = body.match(/^Kanalname:[ \t]*(.+)$/mi)?.[1]?.trim();
+            const description = body.match(/^Beschreibung:[ \t]*(.*)$/mi)?.[1]?.trim() || '';
             if (platform !== 'Zello' || !name ||
                 name.length > 120 || description.length > 160 ||
                 /[\r\n\x00-\x1f]/.test(name + description) ||
