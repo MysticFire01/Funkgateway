@@ -258,8 +258,15 @@ class ZelloPanel(QWidget):
         outer.removeItem(buttons)
         pages["Verbindung"].addLayout(buttons)
         move_widget(help_label,"Verbindung")
-        move_widget(target_box,"Kanäle")
-        move_widget(channels_box,"Kanäle")
+        # Compact side-by-side channel controls: target on the left,
+        # saved favorites on the right. Preserve existing widget signals.
+        channel_columns=QHBoxLayout()
+        channel_columns.setSpacing(12)
+        outer.removeWidget(target_box)
+        outer.removeWidget(channels_box)
+        channel_columns.addWidget(target_box,1)
+        channel_columns.addWidget(channels_box,1)
+        pages["Kanäle"].addLayout(channel_columns)
         move_widget(directory,"Buddys")
         for widget in (self.rx_diagnostic,self.rx_detail,self.rx_packets,
                        self.copy_rx_btn,self.tx_diagnostic):
