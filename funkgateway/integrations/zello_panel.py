@@ -12,14 +12,17 @@ from datetime import datetime, timezone
 from PySide6.QtCore import QUrl, Signal, QTimer, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
+from ..hotkeys import LocalPttHotkey
+from ..global_hotkey import GlobalPttHotkey
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QTabWidget)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
     talkerChanged = Signal(str)
     statusChanged = Signal(str)
     audioError = Signal(str)
+    pttStateChanged = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,6 +38,8 @@ class ZelloPanel(QWidget):
         self._audio_thread = None
         self._last_packet = 0.0
         self._known_speakers = set()
+        self._ptt_hotkey_setting = ""
+        self._ptt_hotkey_scope = "local"
         self._channel_favorites = set()
         self._pending_channel_switch = ""
         self._tx_recipient = ""
@@ -222,6 +227,28 @@ class ZelloPanel(QWidget):
         outer.addWidget(directory)
         outer.addWidget(channels_box)
         self._refresh_directories()
+        hotkey_row=QHBoxLayout()
+        self.hotkey_edit=QLineEdit()
+        self.hotkey_edit.setPlaceholderText("z. B. F9 oder Ctrl+Shift+Z")
+        self.hotkey_scope=QComboBox()
+        self.hotkey_scope.addItem("Nur FunkGateway","local")
+        self.hotkey_scope.addItem("Systemweit (X11)","global")
+        self.hotkey_apply=QPushButton("Hotkey übernehmen")
+        self.hotkey_apply.clicked.connect(self._configure_hotkey)
+        hotkey_row.addWidget(QLabel("Zello-PTT-Hotkey:"))
+        hotkey_row.addWidget(self.hotkey_edit)
+        hotkey_row.addWidget(self.hotkey_scope)
+        hotkey_row.addWidget(self.hotkey_apply)
+        outer.addLayout(hotkey_row)
+        self.hotkey_status=QLabel("Zello-Hotkey: deaktiviert")
+        outer.addWidget(self.hotkey_status)
+        self._local_hotkey=LocalPttHotkey(self)
+        self._global_hotkey=GlobalPttHotkey(self)
+        self._local_hotkey.pressed.connect(lambda:self.set_ptt(True))
+        self._local_hotkey.released.connect(lambda:self.set_ptt(False))
+        self._global_hotkey.pressed.connect(lambda:self.set_ptt(True))
+        self._global_hotkey.released.connect(lambda:self.set_ptt(False))
+        self._global_hotkey.statusChanged.connect(self.hotkey_status.setText)
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
         self.ptt_btn.setEnabled(False)
@@ -283,7 +310,9 @@ class ZelloPanel(QWidget):
         return {"username":self.username.text().strip(),
                 "channel":self.channel.text().strip(),
                 "known_speakers":sorted(self._known_speakers),
-                "channel_favorites":sorted(self._channel_favorites)}
+                "channel_favorites":sorted(self._channel_favorites),
+                "ptt_hotkey":self._ptt_hotkey_setting,
+                "ptt_hotkey_scope":self._ptt_hotkey_scope}
 
     def load_config(self,data):
         if not isinstance(data,dict):
@@ -299,6 +328,10 @@ class ZelloPanel(QWidget):
         self._channel_favorites=set(str(x).strip() for x in data.get("channel_favorites",[])
                                     if isinstance(x,str) and x.strip())
         self._refresh_directories()
+        self.hotkey_edit.setText(str(data.get("ptt_hotkey","") or ""))
+        idx=self.hotkey_scope.findData(data.get("ptt_hotkey_scope","local"))
+        self.hotkey_scope.setCurrentIndex(max(0,idx))
+        self._configure_hotkey(save=False)
         try:
             import keyring
             values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
@@ -519,6 +552,7 @@ class ZelloPanel(QWidget):
         active=bool(self._tx_wanted or self._tx_stream_id is not None)
         self.ptt_btn.setText("Zello TX AKTIV" if active else "Zello PTT halten")
         self.ptt_btn.setStyleSheet("background:#E58B22;color:black;font-weight:bold;" if active else "")
+        self.pttStateChanged.emit(active)
 
     def set_ptt(self,active):
         active=bool(active) and self.connected and self.channel_online
@@ -635,6 +669,33 @@ class ZelloPanel(QWidget):
         self._update_ptt_ui()
         self.tx_status.setText("Zello TX: bereit")
 
+    def _configure_hotkey(self, *_args, save=True):
+        self.set_ptt(False)
+        self._global_hotkey.stop()
+        self._local_hotkey.set_hotkey("")
+        value=self.hotkey_edit.text().strip()
+        scope=self.hotkey_scope.currentData() or "local"
+        self._ptt_hotkey_setting=value
+        self._ptt_hotkey_scope=scope
+        if not value:
+            self.hotkey_status.setText("Zello-Hotkey: deaktiviert")
+        elif scope=="global":
+            self._global_hotkey.set_hotkey(value)
+            if self._global_hotkey.start():
+                self.hotkey_status.setText("Zello-Hotkey: systemweit aktiv")
+            else:
+                self._local_hotkey.set_hotkey(value)
+                self.hotkey_status.setText("Zello-Hotkey: lokal aktiv (global nicht verfügbar)")
+        else:
+            self._local_hotkey.set_hotkey(value)
+            self.hotkey_status.setText("Zello-Hotkey: lokal aktiv")
+        if save:
+            self._save_directory()
+
+    def stop_ptt_hotkeys(self):
+        self._local_hotkey.set_hotkey("")
+        self._global_hotkey.stop()
+
     def _save_directory(self):
         window=self.window()
         if hasattr(window,"save_cfg"):
@@ -644,8 +705,12 @@ class ZelloPanel(QWidget):
         buddy_filter=self.buddy_search.text().strip().casefold()
         channel_filter=self.channel_search.text().strip().casefold()
         self.buddy_list.clear()
-        self.buddy_list.addItems(sorted((x for x in self._known_speakers
-                                         if buddy_filter in x.casefold()),key=str.casefold))
+        for name in sorted((x for x in self._known_speakers
+                            if buddy_filter in x.casefold()),key=str.casefold):
+            speaking=bool(self.talker_name and name.casefold()==self.talker_name.casefold())
+            item=QListWidgetItem(("🎙 " if speaking else "● ")+name)
+            item.setData(Qt.ItemDataRole.UserRole,name)
+            self.buddy_list.addItem(item)
         self.channel_list.clear()
         self.channel_list.addItems(sorted((x for x in self._channel_favorites
                                            if channel_filter in x.casefold()),key=str.casefold))
@@ -663,7 +728,7 @@ class ZelloPanel(QWidget):
     def _remove_buddy(self):
         item=self.buddy_list.currentItem()
         if item is None: return
-        name=item.text()
+        name=item.data(Qt.ItemDataRole.UserRole) or item.text()
         self._known_speakers.discard(name)
         idx=self.target_user.findText(name)
         if idx>=0: self.target_user.removeItem(idx)
@@ -677,7 +742,7 @@ class ZelloPanel(QWidget):
             item=self.buddy_list.currentItem()
         if item is None:
             return
-        name=item.text().strip()
+        name=str(item.data(Qt.ItemDataRole.UserRole) or item.text()).strip()
         if not name:
             return
         self.target_mode.setCurrentIndex(1)
@@ -751,6 +816,7 @@ class ZelloPanel(QWidget):
         if self.talker_name==name:
             return
         self.talker_name=name
+        self._refresh_directories()
         if name and name not in ("Unbekannt","Sprecher nicht übermittelt") and name not in self._known_speakers:
             self._known_speakers.add(name)
             self.target_user.addItem(name)
@@ -873,5 +939,6 @@ class ZelloPanel(QWidget):
         self._ws.close()
 
     def closeEvent(self, event):
+        self.stop_ptt_hotkeys()
         self.disconnect_channel()
         super().closeEvent(event)
