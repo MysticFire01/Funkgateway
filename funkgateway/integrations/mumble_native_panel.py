@@ -313,6 +313,7 @@ class MumbleNativePanel(QWidget):
              ("PEM + Schlüssel importieren",self._import_cert_pem)),
             (("P12 / PFX exportieren",self._export_cert_p12),
              ("PEM + Schlüssel exportieren",self._export_cert_pem)),
+            (("Mit Zertifikat verbundenen Benutzer registrieren",self._register_current_user),),
             (("Ausgewähltes Zertifikat löschen",self._delete_cert),),
         ):
             row=QHBoxLayout()
@@ -557,6 +558,29 @@ class MumbleNativePanel(QWidget):
             )
         except Exception as exc:
             QMessageBox.warning(self,"Zertifikat exportieren",str(exc))
+
+    def _register_current_user(self):
+        if not self.client.connected:
+            QMessageBox.information(
+                self,"Mumble-Registrierung",
+                "Zuerst mit dem gewünschten Zertifikat verbinden."
+            )
+            return
+        if not self._selected_cert():
+            QMessageBox.warning(
+                self,"Mumble-Registrierung",
+                "Bitte zuerst ein Zertifikat auswählen und damit verbinden."
+            )
+            return
+        try:
+            self.client.register_current_user()
+            QMessageBox.information(
+                self,"Mumble-Registrierung",
+                "Registrierung beim Mumble-Server angefordert. "
+                "Die Serverrechte entscheiden, ob sie zugelassen wird."
+            )
+        except Exception as exc:
+            QMessageBox.warning(self,"Mumble-Registrierung",str(exc))
 
     def _delete_cert(self):
         info=self._selected_cert()
@@ -878,11 +902,10 @@ class MumbleNativePanel(QWidget):
         self.set_mumble_ptt(False)
 
     def set_mumble_ptt(self,active):
-        if not (self.client.connected and self.ptt_enabled.isChecked()
-                and not self.self_mute.isChecked() and not self.self_deaf.isChecked()):
-            if not active:
-                self.client.set_pc_ptt(False)
-            return
+        permitted=(self.client.connected and self.ptt_enabled.isChecked()
+                   and not self.self_mute.isChecked() and not self.self_deaf.isChecked())
+        if not permitted:
+            active=False
         self.client.set_pc_ptt(bool(active))
         self.ptt.setText("Mumble PTT · SENDEN" if active else "Mumble PTT halten")
         self.ptt.setStyleSheet(
