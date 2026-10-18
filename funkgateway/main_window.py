@@ -1498,17 +1498,28 @@ class MainWindow(QMainWindow):
                 parts.append("TeamSpeak prüft …")
             else:
                 parts.append("TeamSpeak getrennt")
-        if hasattr(self,"mumble_enabled") and self.mumble_enabled.isChecked():
+        native_panel=getattr(self,"mumble_native_panel",None)
+        native_mumble_connected=bool(
+            native_panel is not None and native_panel.client.connected
+        )
+        if native_mumble_connected:
+            # The built-in client is independent of the external desktop
+            # client checkbox/status and takes precedence in the dashboard.
+            parts.append("Mumble intern aktiv")
+            voip_connected=True
+        elif hasattr(self,"mumble_enabled") and self.mumble_enabled.isChecked():
             mumble_state=str(getattr(self,"mumble_last_status","") or "")
             if "Mumble verbunden" in mumble_state:
-                parts.append("Mumble aktiv")
+                parts.append("Mumble extern aktiv")
                 voip_connected=True
             elif "Status unklar" in mumble_state or "nicht lesbar" in mumble_state:
-                parts.append("Mumble Status unklar")
+                parts.append("Mumble extern: Status unklar")
             elif not mumble_state:
-                parts.append("Mumble prüft …")
+                parts.append("Mumble extern prüft …")
             else:
-                parts.append("Mumble getrennt")
+                parts.append("Mumble extern getrennt")
+        elif native_panel is not None:
+            parts.append("Mumble getrennt")
         if hasattr(self,"frn_panel"):
             parts.append("FRN aktiv" if self.frn_panel.connected else "FRN Alpha getrennt")
             if self.frn_panel.connected: voip_connected=True
@@ -1685,6 +1696,22 @@ class MainWindow(QMainWindow):
                 if frn.talker_name: frn_label += f" · RX {frn.talker_name}"
                 if frn.ptt_active: frn_label += " · TX"
                 detail += f"&nbsp;&nbsp;<span style='color:{frn_color}'>●</span> {html.escape(frn_label)}"
+            if native_mumble_connected:
+                speaker_names=getattr(self,"_native_mumble_speakers",[])
+                native_label="Mumble intern verbunden"
+                channel=native_panel.current_channel.text().strip()
+                if channel and channel!="—":
+                    native_label+=" · "+channel
+                if speaker_names:
+                    native_label+=" · Sprecher: "+", ".join(speaker_names[:3])
+                    if len(speaker_names)>3:
+                        native_label+=f" (+{len(speaker_names)-3})"
+                else:
+                    native_label+=" · RX frei"
+                detail+=(
+                    "&nbsp;&nbsp;<span style='color:#27AE60'>●</span> "+
+                    html.escape(native_label)
+                )
             self.live_status_bar.setText(f"<b>{html.escape(mode_name)}</b>&nbsp;&nbsp;{detail}")
 
     @staticmethod
@@ -3617,6 +3644,20 @@ class MainWindow(QMainWindow):
         self._sync_frn_global_ui()
         self.update_start_status()
 
+    def _native_mumble_connection_changed(self,connected):
+        if not connected:
+            self._native_mumble_speakers=[]
+        self.update_start_status()
+
+    def _native_mumble_speakers_changed(self,names):
+        updated=[str(name) for name in (names or []) if str(name).strip()]
+        if updated!=getattr(self,"_native_mumble_speakers",[]):
+            self._native_mumble_speakers=updated
+            self.update_start_status()
+
+    def _native_mumble_channel_changed(self,_channel):
+        self.update_start_status()
+
     def _sync_mumble_ptt_ui(self,*_args):
         if not hasattr(self,"mumble_ptt_top_btn"):
             return
@@ -4447,6 +4488,16 @@ class MainWindow(QMainWindow):
         )
         self.mumble_native_panel.client.connectedChanged.connect(
             self._sync_mumble_ptt_ui
+        )
+        self._native_mumble_speakers=[]
+        self.mumble_native_panel.client.connectedChanged.connect(
+            self._native_mumble_connection_changed
+        )
+        self.mumble_native_panel.client.speakersChanged.connect(
+            self._native_mumble_speakers_changed
+        )
+        self.mumble_native_panel.client.channelChanged.connect(
+            self._native_mumble_channel_changed
         )
         self.mumble_native_scroll.setWidget(self.mumble_native_panel)
         mumble_outer.addWidget(self.mumble_native_scroll,1)
