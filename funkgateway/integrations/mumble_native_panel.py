@@ -67,7 +67,12 @@ class MumbleNativePanel(QWidget):
         return QIcon(pix)
 
     def _build(self):
-        v=QVBoxLayout(self)
+        outer=QVBoxLayout(self)
+        self.mumble_tabs=QTabWidget(self)
+        outer.addWidget(self.mumble_tabs)
+        client_page=QWidget(self.mumble_tabs)
+        v=QVBoxLayout(client_page)
+        self.mumble_tabs.addTab(client_page,"Mumble-Client")
 
         info=QLabel(
             "<b>Nativer Mumble-Client</b><br>"
@@ -202,12 +207,12 @@ class MumbleNativePanel(QWidget):
         self.public_status.setWordWrap(True)
         publiclayout.addWidget(self.public_status)
         self.public_list=QListWidget()
-        self.public_list.itemDoubleClicked.connect(self._use_public_server)
+        self.public_list.itemDoubleClicked.connect(self._connect_public_server)
         publiclayout.addWidget(self.public_list)
-        self.public_use=QPushButton("Ausgewählten Server übernehmen")
+        self.public_use=QPushButton("Ausgewählten Server übernehmen (ohne Connect)")
         self.public_use.clicked.connect(self._use_public_server)
         publiclayout.addWidget(self.public_use)
-        v.addWidget(publicbox)
+        self.mumble_tabs.addTab(publicbox,"Öffentliche Serverliste")
 
         self._refresh_audio()
         self._refresh_certs()
@@ -466,15 +471,36 @@ class MumbleNativePanel(QWidget):
             if self._public_source=="legacy-fallback" else ""
         )
 
-    def _use_public_server(self,*_args):
-        item=self.public_list.currentItem()
-        if item is None:
+    def _connect_public_server(self,item):
+        """Double-click selects the server and starts the native connection."""
+        if not self._use_public_server(item):
             return
+        self.mumble_tabs.setCurrentIndex(0)
+        self.status.setText(
+            "Native Mumble: verbinde zu "
+            + self.host.text().strip() + ":" + str(self.port.value()) + " …"
+        )
+        self._connect()
+
+    def _use_public_server(self,item=None):
+        if item is None or isinstance(item,bool):
+            item=self.public_list.currentItem()
+        if item is None:
+            return False
         row=item.data(Qt.UserRole)
         if not isinstance(row,dict):
-            return
-        host=str(row.get("host") or "")
+            return False
+        host=str(row.get("host") or "").strip()
         port=int(row.get("port") or 64738)
+        if not host:
+            return False
+        # Server-specific passwords and channel names must not leak into a new
+        # public-list connection. Keep them only when choosing the same server.
+        changed=(host.casefold()!=self.host.text().strip().casefold()
+                 or port!=self.port.value())
+        if changed:
+            self.password.clear()
+            self.channel.clear()
         self.host.setText(host)
         self.port.setValue(port)
         matched=None
@@ -487,6 +513,7 @@ class MumbleNativePanel(QWidget):
             self.host.setText(host)
             self.port.setValue(port)
         self._save_settings()
+        return True
 
     def _load_settings(self):
         import json
