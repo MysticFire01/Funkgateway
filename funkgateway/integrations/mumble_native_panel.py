@@ -150,11 +150,22 @@ class MumbleNativePanel(QWidget):
 
         self.status=QLabel("Native Mumble: getrennt"); self.status.setWordWrap(True)
         self.current_channel=QLabel("—")
+        self.mumble_audio_state=QLabel("Self-Mute: —  ·  Self-Deaf: —  ·  Server-Mute: —  ·  Server-Deaf: —")
+        self.mumble_audio_state.setWordWrap(True)
+        self.mumble_audio_state.setToolTip(
+            "Self = eigene Stummschaltung, Server = vom Mumble-Server vorgegeben. "
+            "Serverseitige Sperren können hier nicht selbst aufgehoben werden."
+        )
+        self._server_mute=False
+        self._server_deaf=False
+        self._self_mute_active=False
+        self._self_deaf_active=False
         f.addRow("Favoriten:",favrow)
         f.addRow("",self.favorite_nick_label)
         f.addRow("Server:",self.host); f.addRow("Port:",self.port); f.addRow("Nickname:",self.nick)
         f.addRow("Passwort:",self.password); f.addRow("Start-Channel:",self.channel); f.addRow("Zertifikat:",certrow)
         f.addRow(buttons); f.addRow("Status:",self.status); f.addRow("Aktueller Channel:",self.current_channel)
+        f.addRow("Mute / Deaf:",self.mumble_audio_state)
         v.addWidget(box)
 
         audio=QGroupBox("Audio / PC-PTT"); af=QFormLayout(audio)
@@ -182,6 +193,11 @@ class MumbleNativePanel(QWidget):
         af.addRow("Mikrofon:",self.input); af.addRow("Lautsprecher:",self.output); af.addRow("",self.playback)
         af.addRow("",self.ptt_enabled); af.addRow("",self.ptt); af.addRow("",self.refresh_audio)
         af.addRow("",self.self_mute); af.addRow("",self.self_deaf)
+        self.mumble_audio_detail=QLabel(
+            "Self-Mute: —  ·  Self-Deaf: —  ·  Server-Mute: —  ·  Server-Deaf: —"
+        )
+        self.mumble_audio_detail.setWordWrap(True)
+        af.addRow("Mute/Deaf-Status:",self.mumble_audio_detail)
         self.master_volume=QSpinBox()
         self.master_volume.setRange(0,200)
         self.master_volume.setValue(100)
@@ -918,6 +934,8 @@ class MumbleNativePanel(QWidget):
                    and not self.self_mute.isChecked() and not self.self_deaf.isChecked())
         if not permitted:
             active=False
+        if active and (self._server_mute or self._server_deaf):
+            active=False
         self.client.set_pc_ptt(bool(active))
         self.ptt.setText("Mumble PTT · SENDEN" if active else "Mumble PTT halten")
         self.ptt.setStyleSheet(
@@ -1025,6 +1043,39 @@ class MumbleNativePanel(QWidget):
             self._user_volumes.pop(key,None)
         else:
             self._user_volumes[key]=int(percent)
+
+    def _update_mumble_self_state(self,row=None):
+        if row is None:
+            self._server_mute=False
+            self._server_deaf=False
+            self._self_mute_active=False
+            self._self_deaf_active=False
+            text="Self-Mute: —  ·  Self-Deaf: —  ·  Server-Mute: —  ·  Server-Deaf: —"
+        else:
+            self._self_mute_active=bool(row.get("local_mute"))
+            self._self_deaf_active=bool(row.get("local_deaf"))
+            self._server_mute=bool(row.get("server_mute"))
+            self._server_deaf=bool(row.get("server_deaf"))
+            text=(
+                "Self-Mute: "+("AN" if self._self_mute_active else "AUS")+
+                "  ·  Self-Deaf: "+("AN" if self._self_deaf_active else "AUS")+
+                "  ·  Server-Mute: "+("AKTIV" if self._server_mute else "AUS")+
+                "  ·  Server-Deaf: "+("AKTIV" if self._server_deaf else "AUS")
+            )
+            for box,val in ((self.self_mute,self._self_mute_active),
+                            (self.self_deaf,self._self_deaf_active)):
+                box.blockSignals(True)
+                box.setChecked(val)
+                box.blockSignals(False)
+        style=("color:#F2994A;font-weight:bold;"
+               if self._server_mute or self._server_deaf or
+               self._self_mute_active or self._self_deaf_active else "")
+        self.mumble_audio_state.setText(text)
+        self.mumble_audio_state.setStyleSheet(style)
+        self.mumble_audio_detail.setText(text)
+        self.mumble_audio_detail.setStyleSheet(style)
+        if self._self_mute_active or self._self_deaf_active or self._server_mute or self._server_deaf:
+            self.set_mumble_ptt(False)
 
     def _self_mute_changed(self,enabled):
         if not self.client.connected:
@@ -1182,10 +1233,12 @@ class MumbleNativePanel(QWidget):
         self.connect_btn.setEnabled(not on); self.disconnect_btn.setEnabled(on); self.ptt.setEnabled(on)
         self.chat_send.setEnabled(on)
         if on:
+            self._update_mumble_self_state()
             self._initial_channel_focus_pending=True
             self._refresh_channels()
             self._focus_current_channel_once()
         else:
+            self._update_mumble_self_state()
             self._initial_channel_focus_pending=False
             self._channel_rows=[]
             self._participant_rows=[]
@@ -1390,6 +1443,8 @@ class MumbleNativePanel(QWidget):
             walk(self.channels.topLevelItem(index))
 
     def _participants(self,rows):
+        self_row=next((row for row in rows if row.get("is_self")),None)
+        self._update_mumble_self_state(self_row)
         new_rows=list(rows or [])
         previous_structure={
             (row.get("session"),row.get("name"),row.get("channel_id"))
