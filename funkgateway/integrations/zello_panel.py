@@ -438,6 +438,7 @@ class ZelloPanel(QWidget):
                 self.channel_status.setText("Kanalstatus: "+label+(" – "+error if error else ""))
                 self.users_online.setText("Teilnehmer online: "+str(data.get("users_online","—")))
                 self.ptt_btn.setEnabled(bool(self.connected and self.channel_online))
+                self.pttStateChanged.emit(bool(self._tx_wanted))
                 if not self.channel_online:
                     self._stop_tx()
         elif self._tx_pending and data.get("seq") == self._tx_request_seq:
