@@ -343,9 +343,17 @@ class ZelloPanel(QWidget):
                 sender=next((str(data[key]).strip() for key in
                              ("from","sender","username","from_user")
                              if isinstance(data.get(key),str) and data[key].strip()),"")
+                # Some Zello clients emit contactName (without "from") for
+                # contact-directed audio. Treat it as a display label only.
+                contact_name=data.get("contactName")
+                contact_label=(contact_name.strip() if isinstance(contact_name,str) else "")
+                if not sender and contact_label:
+                    sender=contact_label
                 recipient=data.get("for")
-                target="gezielt" if isinstance(recipient,str) and recipient.strip() else "Kanal"
-                present=",".join(k for k in ("from","sender","username","from_user","for")
+                target=("gezielt/Kontakt" if "contactName" in data
+                        else "gezielt" if isinstance(recipient,str) and recipient.strip()
+                        else "Kanal")
+                present=",".join(k for k in ("from","sender","username","from_user","contactName","for")
                                  if k in data) or "keine"
                 self.rx_diagnostic.setText(
                     f"RX-Diagnose: {target} · Absenderfelder: {present} · "
@@ -359,7 +367,13 @@ class ZelloPanel(QWidget):
                 self._rx_event_details[stream_id]=event_details
                 self.rx_detail.setText(event_details)
                 self.rx_packets.setText(f"RX-Audio: Stream-ID {stream_id} · Pakete: 0 · Opus {rate} Hz")
-                if not sender:
+                if contact_label and not any(
+                        isinstance(data.get(k),str) and data[k].strip()
+                        for k in ("from","sender","username","from_user")):
+                    self.rx_diagnostic.setText(
+                        "RX-Diagnose: Kontaktübertragung · contactName vorhanden "
+                        "(Anzeigename, nicht verifizierter Benutzername)")
+                elif not sender:
                     self.rx_diagnostic.setText(
                         "RX-Diagnose: Absender nicht vom Server übermittelt "
                         "(Übertragungsart nicht sicher bestimmbar)")
@@ -535,7 +549,7 @@ class ZelloPanel(QWidget):
         if self.talker_name==name:
             return
         self.talker_name=name
-        if name and name!="Unbekannt" and name not in self._known_speakers:
+        if name and name not in ("Unbekannt","Sprecher nicht übermittelt") and name not in self._known_speakers:
             self._known_speakers.add(name)
             self.target_user.addItem(name)
         self.speaker.setText("Sprecher: "+(name or "—"))
