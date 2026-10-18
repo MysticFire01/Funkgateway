@@ -7,3 +7,4 @@ opuslib==3.0.1
 protobuf==3.20.3
 cryptography>=43,<46
 pymumble @ git+https://github.com/azlux/pymumble.git@8755c7d41b8f1f91402a6218c413121b64bdce33
+keyring>=24,<27
