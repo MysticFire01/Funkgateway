@@ -5,8 +5,54 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QKeySequence
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,
     QComboBox,QSpinBox,QCheckBox,QTabWidget,QTableWidget,QTableWidgetItem,QHeaderView,QPlainTextEdit,
-    QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit,QMenu)
+    QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit,QMenu,QDialog)
 from .frn_native import FrnNativeClient,FrnSystemExplorer,FrnConfig,MANAGERS,sd
+
+class FrnPrivateChat(QDialog):
+    """One conversation per FRN participant; closing never disconnects FRN."""
+
+    def __init__(self, user_id, display_name, send_message, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.display_name = display_name
+        self._send_message = send_message
+        self.setWindowTitle("FRN Privatnachricht – " + display_name)
+        self.resize(520, 420)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(self)
+        self.history = QPlainTextEdit()
+        self.history.setReadOnly(True)
+        layout.addWidget(self.history, 1)
+        line = QHBoxLayout()
+        self.entry = QLineEdit()
+        self.entry.setPlaceholderText("Private Nachricht an " + display_name)
+        self.entry.returnPressed.connect(self.send)
+        line.addWidget(self.entry, 1)
+        button = QPushButton("Senden")
+        button.clicked.connect(self.send)
+        line.addWidget(button)
+        layout.addLayout(line)
+        self.status = QLabel("Nachrichten werden an den Server gesendet; Zustellung nicht bestätigt.")
+        layout.addWidget(self.status)
+
+    def append_message(self, sender, message):
+        self.history.appendPlainText(
+            f"[{time.strftime('%H:%M:%S')}] {sender}: {message}"
+        )
+
+    def send(self):
+        message = self.entry.text().strip()
+        if not message:
+            return
+        try:
+            self._send_message(self.user_id, message)
+        except Exception as exc:
+            self.status.setText("Senden fehlgeschlagen: " + str(exc))
+            return
+        self.append_message("Ich", message)
+        self.entry.clear()
+        self.status.setText("An Server gesendet; Zustellung nicht bestätigt.")
+
 
 class HotkeyCaptureButton(QPushButton):
     hotkeyChanged=Signal(str)
@@ -97,6 +143,7 @@ class FrnPanel(QWidget):
         self._sm_protect_until=0.0
         self._sm_request_kind=None
         self._participants_with_ids=[]
+        self._private_chats={}
         self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._explorer_error)
         self._build(); self.refresh_audio_devices(); self._update_status()
         self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(self._sm_auto_interval_ms); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
@@ -305,24 +352,37 @@ class FrnPanel(QWidget):
         if (str(current.get("id") or "").strip()!=user_id or
             str(current.get("name") or "").strip()!=name):
             return
-        index=self.chat_recipient.findData(user_id)
-        if index<0:
-            return
-        self.chat_recipient.setCurrentIndex(index)
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i)=="Chat":
-                self.tabs.setCurrentIndex(i)
-                break
-        self.chat_status.setText(f"Private Nachricht an {name} ausgewählt (Zustellung serverabhängig).")
-        self.chat_input.setFocus()
+        self._open_private_chat(user_id, name)
+
+    def _send_private_message(self, user_id, message):
+        if not self.connected or not self.client:
+            raise ConnectionError("FRN ist getrennt.")
+        self.client.send_text_message(user_id, message)
+
+    def _open_private_chat(self, user_id, name):
+        chat = self._private_chats.get(user_id)
+        if chat is None:
+            chat = FrnPrivateChat(user_id, name, self._send_private_message, self)
+            self._private_chats[user_id] = chat
+            chat.finished.connect(lambda _code, uid=user_id: self._private_chats.pop(uid, None))
+        chat.show()
+        chat.raise_()
+        chat.activateWindow()
+        chat.entry.setFocus()
+        return chat
 
     def _receive_chat(self,event):
         sender=str(event.get("sender") or "FRN")[:100]
         message=str(event.get("message") or "")[:2000]
         if message:
-            self.chat_history.appendPlainText(
-                f"[{time.strftime('%H:%M:%S')}] {sender}: {message}"
-            )
+            sender_id=str(event.get("sender_id") or "").strip()
+            if event.get("private") and sender_id:
+                # Use the actual sender ID, never names, to keep conversations separate.
+                self._open_private_chat(sender_id, sender).append_message(sender, message)
+            else:
+                self.chat_history.appendPlainText(
+                    f"[{time.strftime('%H:%M:%S')}] {sender}: {message}"
+                )
 
     def _send_chat(self):
         if not self.connected or not self.client:
