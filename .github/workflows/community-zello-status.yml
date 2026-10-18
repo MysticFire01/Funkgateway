@@ -1,0 +1,39 @@
+name: Zello Community Channel Reachability
+
+on:
+  schedule:
+    - cron: '21 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zello-community-status
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install websocket checker
+        run: python -m pip install websocket-client==1.8.0
+      - name: Probe read-only channel connections
+        env:
+          ZELLO_AUTH_TOKEN: ${{ secrets.ZELLO_AUTH_TOKEN }}
+        run: python scripts/check_zello_channels.py
+      - name: Publish observed status
+        run: |
+          if git diff --quiet -- community/zello_status.json; then
+            echo "No observations changed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add community/zello_status.json
+          git commit -m "community: update Zello channel observations"
+          git push
