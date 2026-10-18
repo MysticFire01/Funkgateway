@@ -3647,6 +3647,7 @@ class MainWindow(QMainWindow):
     def _native_mumble_connection_changed(self,connected):
         if not connected:
             self._native_mumble_speakers=[]
+            self._native_mumble_last_channel=""
         self.update_start_status()
 
     def _native_mumble_speakers_changed(self,names):
@@ -3655,8 +3656,11 @@ class MainWindow(QMainWindow):
             self._native_mumble_speakers=updated
             self.update_start_status()
 
-    def _native_mumble_channel_changed(self,_channel):
-        self.update_start_status()
+    def _native_mumble_channel_changed(self,channel):
+        channel=str(channel or "")
+        if channel!=getattr(self,"_native_mumble_last_channel",""):
+            self._native_mumble_last_channel=channel
+            self.update_start_status()
 
     def _sync_mumble_ptt_ui(self,*_args):
         if not hasattr(self,"mumble_ptt_top_btn"):
