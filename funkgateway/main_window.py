@@ -41,6 +41,7 @@ from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
 from .integrations.mumble_native_panel import MumbleNativePanel
 from .integrations.frn_panel import FrnPanel
+from .integrations.zello_panel import ZelloPanel
 from .updates import fetch_latest_release, choose_asset, is_newer, download_and_prepare, launch_update_installer
 from .theme import apply_theme as apply_app_theme, SCHEMES, MODE_COLORS, contrast_text
 from .hotkeys import ModifierHoldWatcher, LocalPttHotkey
@@ -4347,6 +4348,11 @@ class MainWindow(QMainWindow):
         self.frn_panel.talkerChanged.connect(lambda _name:self._sync_frn_global_ui())
         self.frn_panel.pttStateChanged.connect(lambda _yes:self._sync_frn_global_ui())
         integration_tabs.addTab(self.frn_panel,"FRN · Alpha")
+
+        # --- Zello Friends & Family Channel API (Alpha) ---------------------
+        self.zello_panel = ZelloPanel(self)
+        self.zello_panel.connectedChanged.connect(lambda _connected: self.update_start_status())
+        integration_tabs.addTab(self.zello_panel, "Zello · Alpha")
 
         # --- TeamSpeak -----------------------------------------------------
         ts_page=QWidget(); f=QFormLayout(ts_page)
