@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import html
+import re
+from datetime import datetime
+
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QBrush
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
-    QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox
+    QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu
 )
 
 try:
@@ -30,7 +35,11 @@ class MumbleNativePanel(QWidget):
         self.client.inputLevel.connect(self._input_level)
         self.client.outputLevel.connect(self._output_level)
         self.client.error.connect(self._error)
+        self.client.chatReceived.connect(self._chat_received)
+        self.settings=QSettings('FunkGateway','LinuxNativeMumble')
+        self._user_volumes={}
         self._build()
+        self._load_settings()
 
     @staticmethod
     def _mouth_icon(kind):
@@ -94,7 +103,13 @@ class MumbleNativePanel(QWidget):
         self.in_level=QLabel("Mikrofon: < -60 dBFS"); self.out_level=QLabel("Mumble: < -60 dBFS")
         af.addRow("Mikrofon:",self.input); af.addRow("Lautsprecher:",self.output); af.addRow("",self.playback)
         af.addRow("",self.ptt_enabled); af.addRow("",self.ptt); af.addRow("",self.refresh_audio)
+        self.master_volume=QSpinBox()
+        self.master_volume.setRange(0,200)
+        self.master_volume.setValue(100)
+        self.master_volume.setSuffix(" %")
+        self.master_volume.valueChanged.connect(self._master_volume_changed)
         af.addRow("TX:",self.in_level); af.addRow("RX:",self.out_level)
+        af.addRow("Mumble-Empfang gesamt:",self.master_volume)
         v.addWidget(audio)
 
         cols=QHBoxLayout()
@@ -106,9 +121,34 @@ class MumbleNativePanel(QWidget):
         userbox=QGroupBox("Teilnehmer"); uv=QVBoxLayout(userbox)
         self.speaker=QLabel("Aktive Sprecher: —"); self.speaker.setWordWrap(True)
         self.users=QListWidget()
+        self.users.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.users.customContextMenuRequested.connect(self._user_context_menu)
         uv.addWidget(self.speaker); uv.addWidget(self.users)
         cols.addWidget(chbox,1); cols.addWidget(userbox,1)
         v.addLayout(cols,1)
+        chatbox=QGroupBox("Mumble Chat")
+        chatlayout=QVBoxLayout(chatbox)
+        self.chat_log=QPlainTextEdit()
+        self.chat_log.setReadOnly(True)
+        self.chat_log.document().setMaximumBlockCount(1000)
+        chatlayout.addWidget(self.chat_log)
+        targetrow=QHBoxLayout()
+        self.chat_target=QComboBox()
+        self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
+        targetrow.addWidget(QLabel("Empfänger:"))
+        targetrow.addWidget(self.chat_target,1)
+        chatlayout.addLayout(targetrow)
+        typerow=QHBoxLayout()
+        self.chat_input=QLineEdit()
+        self.chat_input.setPlaceholderText("Nachricht eingeben …")
+        self.chat_input.returnPressed.connect(self._send_chat)
+        self.chat_send=QPushButton("Senden")
+        self.chat_send.clicked.connect(self._send_chat)
+        self.chat_send.setEnabled(False)
+        typerow.addWidget(self.chat_input,1)
+        typerow.addWidget(self.chat_send)
+        chatlayout.addLayout(typerow)
+        v.addWidget(chatbox)
 
         self._refresh_audio()
         self._refresh_certs()
