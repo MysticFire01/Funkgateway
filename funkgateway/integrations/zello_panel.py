@@ -126,6 +126,10 @@ class ZelloPanel(QWidget):
         self.rx_detail.setWordWrap(True)
         self.rx_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         outer.addWidget(self.rx_detail)
+        self.rx_packets=QLabel("RX-Audio: noch keine Pakete")
+        self.rx_packets.setWordWrap(True)
+        self.rx_packets.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outer.addWidget(self.rx_packets)
         self.copy_rx_btn=QPushButton("RX-Diagnose kopieren")
         self.copy_rx_btn.clicked.connect(self._copy_rx_diagnostic)
         outer.addWidget(self.copy_rx_btn)
@@ -353,12 +357,13 @@ class ZelloPanel(QWidget):
                     f"RX-Details: Ereignis on_stream_start · Stream-ID {stream_id} · "
                     f"Felder: {fields} · Opus {rate} Hz / {frame_ms} ms")
                 self._rx_event_details[stream_id]=event_details
-                self.rx_detail.setText(event_details+" · Audiopakete: 0")
+                self.rx_detail.setText(event_details)
+                self.rx_packets.setText(f"RX-Audio: Stream-ID {stream_id} · Pakete: 0 · Opus {rate} Hz")
                 if not sender:
                     self.rx_diagnostic.setText(
                         "RX-Diagnose: Absender nicht vom Server übermittelt "
                         "(Übertragungsart nicht sicher bestimmbar)")
-                speaker=sender or "Unbekannt"
+                speaker=sender or "Sprecher nicht übermittelt"
                 self._streams[stream_id]=(decoder,rate,speaker)
                 self._last_packet=time.monotonic()
                 self._set_speaker(speaker)
@@ -371,7 +376,8 @@ class ZelloPanel(QWidget):
                 self._streams.pop(ended,None)
                 count=self._rx_packet_counts.pop(ended,0)
                 detail=self._rx_event_details.pop(ended,self.rx_detail.text())
-                self.rx_detail.setText(detail+f" · Stream beendet ({count} Pakete)")
+                self.rx_detail.setText(detail+" · Stream beendet")
+                self.rx_packets.setText(f"RX-Audio: Stream-ID {ended} · beendet · {count} Pakete")
             except (ValueError,TypeError,KeyError):
                 pass
             if not self._streams:
@@ -382,7 +388,7 @@ class ZelloPanel(QWidget):
         # Share only diagnostic labels, never credentials or raw server payloads.
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(
-            self.rx_diagnostic.text()+"\\n"+self.rx_detail.text())
+            self.rx_diagnostic.text()+"\\n"+self.rx_detail.text()+"\\n"+self.rx_packets.text())
 
     def _send_command(self, command, **kwargs):
         seq=self._tx_seq
@@ -549,10 +555,9 @@ class ZelloPanel(QWidget):
             self._rx_packet_counts[stream_id]=self._rx_packet_counts.get(stream_id,0)+1
             count=self._rx_packet_counts[stream_id]
             if count==1 or count%50==0:
-                self.rx_detail.setText(
-                    self._rx_event_details.get(stream_id,f"RX-Details: Stream-ID {stream_id}")
-                    +f" · Pakete: {count} · letzte Paket-ID: {packet_id}"
-                    +f" · Sprecher: {speaker}")
+                self.rx_packets.setText(
+                    f"RX-Audio: Stream-ID {stream_id} · Pakete: {count} · "
+                    f"letzte Paket-ID: {packet_id} · Sprecher: {speaker} · Opus {rate} Hz")
             self._last_packet=time.monotonic()
             self._set_speaker(speaker)
             try:
@@ -609,6 +614,8 @@ class ZelloPanel(QWidget):
                 break
         self._set_speaker("")
         self.rx_diagnostic.setText("RX-Diagnose: noch keine Übertragung")
+        self.rx_detail.setText("RX-Details: Noch kein Stream empfangen")
+        self.rx_packets.setText("RX-Audio: noch keine Pakete")
 
     def _check_audio_timeout(self):
         if self.talker_name and time.monotonic()-self._last_packet>2.5:
