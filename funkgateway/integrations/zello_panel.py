@@ -31,6 +31,16 @@ class ZelloPanel(QWidget):
         self._audio_stop = threading.Event()
         self._audio_thread = None
         self._last_packet = 0.0
+        self._tx_seq = 2
+        self._tx_pending = False
+        self._tx_wanted = False
+        self._tx_stream_id = None
+        self._tx_input = None
+        self._tx_encoder = None
+        self._tx_queue = queue.Queue(maxsize=40)
+        self._tx_timer = QTimer(self)
+        self._tx_timer.setInterval(20)
+        self._tx_timer.timeout.connect(self._flush_tx)
         self._rx_timer = QTimer(self)
         self._rx_timer.setInterval(350)
         self._rx_timer.timeout.connect(self._check_audio_timeout)
@@ -46,7 +56,7 @@ class ZelloPanel(QWidget):
         outer.addWidget(heading)
         info = QLabel("Nativer Kanal-Client (Alpha): offizielle Zello Channel API. "
                       "Diese Alpha-Version empfängt Opus-Sprache und zeigt den Sprecher an. "
-                      "Senden/PTT folgt später.")
+                      "Senden: PTT gedrückt halten, dann loslassen.")
         info.setWordWrap(True)
         outer.addWidget(info)
         group = QGroupBox("Kanalverbindung")
@@ -89,6 +99,14 @@ class ZelloPanel(QWidget):
         outer.addWidget(self.speaker)
         self.audio_status=QLabel("Audioempfang: bereit")
         outer.addWidget(self.audio_status)
+        self.ptt_btn=QPushButton("Zello PTT halten")
+        self.ptt_btn.setMinimumHeight(48)
+        self.ptt_btn.setEnabled(False)
+        self.ptt_btn.pressed.connect(lambda:self.set_ptt(True))
+        self.ptt_btn.released.connect(lambda:self.set_ptt(False))
+        outer.addWidget(self.ptt_btn)
+        self.tx_status=QLabel("Zello TX: bereit")
+        outer.addWidget(self.tx_status)
         help_label = QLabel('Token über https://developers.zello.com/ erstellen. '
                             'Zello unterstützt hier nur jeweils einen Friends-&-Family-Kanal. '
                             'Zugangsdaten bleiben in dieser Version nur im Arbeitsspeicher und '
@@ -153,12 +171,25 @@ class ZelloPanel(QWidget):
                 self._start_audio()
                 self.connect_btn.setEnabled(False)
                 self.disconnect_btn.setEnabled(True)
+                self.ptt_btn.setEnabled(True)
                 self._set_status("Verbunden mit " + self.channel.text().strip())
                 self.connectedChanged.emit(True)
             else:
                 self._set_status("Anmeldung fehlgeschlagen: " +
                                  str(data.get("error", "unbekannter Fehler")))
                 self._ws.close()
+        elif data.get("seq") == self._tx_seq - 1 and self._tx_pending:
+            self._tx_pending=False
+            if data.get("success") and "stream_id" in data:
+                self._tx_stream_id=int(data["stream_id"])
+                if self._tx_wanted:
+                    self._begin_microphone()
+                else:
+                    self._stop_tx()
+            else:
+                self._tx_wanted=False
+                self.tx_status.setText("Zello TX abgelehnt: "+str(data.get("error","unbekannt")))
+                self._update_ptt_ui()
         elif data.get("command") == "on_stream_start":
             try:
                 if data.get("codec") != "opus":
@@ -185,6 +216,107 @@ class ZelloPanel(QWidget):
             if not self._streams:
                 self._set_speaker("")
                 self.audio_status.setText("Audioempfang: bereit")
+
+    def _send_command(self, command, **kwargs):
+        seq=self._tx_seq
+        self._tx_seq+=1
+        self._ws.sendTextMessage(json.dumps(dict(command=command,seq=seq,**kwargs)))
+        return seq
+
+    def _update_ptt_ui(self):
+        active=bool(self._tx_wanted or self._tx_stream_id is not None)
+        self.ptt_btn.setText("Zello TX AKTIV" if active else "Zello PTT halten")
+        self.ptt_btn.setStyleSheet("background:#E58B22;color:black;font-weight:bold;" if active else "")
+
+    def set_ptt(self,active):
+        active=bool(active) and self.connected
+        if active:
+            if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
+                return
+            self._tx_wanted=True
+            try:
+                import opuslib
+                self._tx_encoder=opuslib.Encoder(16000,1,"voip")
+            except Exception as exc:
+                self._tx_wanted=False
+                self.tx_status.setText("Opus-Encoder fehlt: "+str(exc))
+                return
+            header=base64.b64encode(struct.pack("<HBB",16000,1,20)).decode("ascii")
+            self._tx_pending=True
+            self._send_command("start_stream",channel=self.channel.text().strip(),
+                               type="audio",codec="opus",codec_header=header,packet_duration=20)
+            self.tx_status.setText("Zello TX: Freigabe wird angefordert …")
+        else:
+            self._tx_wanted=False
+            if not self._tx_pending and self._tx_stream_id is not None:
+                self._stop_tx()
+        self._update_ptt_ui()
+
+    def _begin_microphone(self):
+        try:
+            import sounddevice as sd
+            def callback(indata,frames,time_info,status):
+                if not self._tx_wanted:
+                    return
+                try:
+                    self._tx_queue.put_nowait(bytes(indata))
+                except queue.Full:
+                    pass
+            self._tx_input=sd.RawInputStream(samplerate=16000,channels=1,
+                                             dtype="int16",blocksize=320,
+                                             callback=callback,latency="low")
+            self._tx_input.start()
+            self._tx_timer.start()
+            self.tx_status.setText("Zello TX: Mikrofon sendet")
+        except Exception as exc:
+            self.tx_status.setText("Zello Mikrofon: "+str(exc))
+            self._stop_tx()
+
+    def _flush_tx(self):
+        if not self._tx_wanted or self._tx_stream_id is None:
+            return
+        for _ in range(5):
+            try:
+                pcm=self._tx_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                packet=self._tx_encoder.encode(pcm,320)
+                self._ws.sendBinaryMessage(bytes([1])+struct.pack("!II",self._tx_stream_id,0)+packet)
+            except Exception as exc:
+                self.tx_status.setText("Zello TX-Fehler: "+str(exc))
+                self._stop_tx()
+                break
+
+    def _stop_tx(self):
+        self._tx_wanted=False
+        self._tx_timer.stop()
+        if self._tx_input is not None:
+            try:
+                self._tx_input.stop()
+                self._tx_input.close()
+            except Exception:
+                pass
+            self._tx_input=None
+        # Drain microphone samples before stop_stream for a complete last packet.
+        if self._tx_stream_id is not None and self.connected:
+            while not self._tx_queue.empty():
+                try:
+                    pcm=self._tx_queue.get_nowait()
+                    packet=self._tx_encoder.encode(pcm,320)
+                    self._ws.sendBinaryMessage(bytes([1])+struct.pack("!II",self._tx_stream_id,0)+packet)
+                except Exception:
+                    break
+            self._send_command("stop_stream",channel=self.channel.text().strip(),
+                               stream_id=self._tx_stream_id)
+        self._tx_stream_id=None
+        self._tx_pending=False
+        self._tx_encoder=None
+        while not self._tx_queue.empty():
+            try: self._tx_queue.get_nowait()
+            except queue.Empty: break
+        self._update_ptt_ui()
+        self.tx_status.setText("Zello TX: bereit")
 
     def _set_speaker(self,name):
         if self.talker_name==name:
@@ -267,6 +399,8 @@ class ZelloPanel(QWidget):
         self._set_status("Verbindungsfehler: " + self._ws.errorString())
 
     def _socket_disconnected(self):
+        self._stop_tx()
+        self.ptt_btn.setEnabled(False)
         self._clear_audio()
         was_connected = self.connected
         self.connected = False
@@ -280,6 +414,8 @@ class ZelloPanel(QWidget):
         self.talkerChanged.emit("")
 
     def disconnect_channel(self):
+        self._stop_tx()
+        self.ptt_btn.setEnabled(False)
         self._clear_audio()
         self._requested_disconnect = True
         self._ws.close()
