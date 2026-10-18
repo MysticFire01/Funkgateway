@@ -260,8 +260,8 @@ class MumbleNativePanel(QWidget):
         buttons.addWidget(self.locate_my_channel)
         buttons.addWidget(self.channel_mute_button)
         buttons.addWidget(self.channel_deaf_button)
-        chv.addWidget(self.channels,1)
         chv.addLayout(buttons)
+        chv.addWidget(self.channels,1)
         self.channel_hint=QLabel(
             "Doppelklick auf einen Channel wechselt den Raum. "
             "Die Teilnehmer stehen eingerückt darunter. Rechtsklick auf "
