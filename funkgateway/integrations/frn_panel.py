@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QKeySequence
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QPushButton,
     QComboBox,QSpinBox,QCheckBox,QTabWidget,QTableWidget,QTableWidgetItem,QHeaderView,QPlainTextEdit,
-    QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit)
+    QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit,QMenu)
 from .frn_native import FrnNativeClient,FrnSystemExplorer,FrnConfig,MANAGERS,sd
 
 class HotkeyCaptureButton(QPushButton):
@@ -96,6 +96,7 @@ class FrnPanel(QWidget):
         self._sm_consecutive_errors=0
         self._sm_protect_until=0.0
         self._sm_request_kind=None
+        self._participants_with_ids=[]
         self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._explorer_error)
         self._build(); self.refresh_audio_devices(); self._update_status()
         self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(self._sm_auto_interval_ms); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
@@ -112,7 +113,7 @@ class FrnPanel(QWidget):
         head=QHBoxLayout(); title=QLabel('<b>FRN Native</b>'); badge=QLabel('ALPHA'); badge.setStyleSheet('font-weight:800;padding:3px 8px;border:1px solid #F2994A;border-radius:5px;')
         self.state_label=QLabel('FRN: getrennt'); head.addWidget(title); head.addWidget(badge); head.addStretch(1); head.addWidget(self.state_label); v.addLayout(head)
         note=QLabel('Native FRN-Unterstützung ist noch Alpha. Server-/Raumlisten, Audio und Protokollverhalten werden weiter getestet.'); note.setWordWrap(True); v.addWidget(note)
-        tabs=QTabWidget(); v.addWidget(tabs)
+        tabs=QTabWidget(); self.tabs=tabs; v.addWidget(tabs)
         # Connection
         w=QWidget(); f=QFormLayout(w)
         self.manager=QComboBox(); [self.manager.addItem(x['label'],k) for k,x in MANAGERS.items()]
@@ -155,7 +156,15 @@ class FrnPanel(QWidget):
         quick.addWidget(self.participants_audio_status,1)
         vv.addLayout(quick)
         vv.addWidget(self.talker)
-        self.participants=QTableWidget(0,7); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort','Audio-Status']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.horizontalHeader().setSectionResizeMode(6,QHeaderView.ResizeToContents); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers); vv.addWidget(self.participants); tabs.addTab(w,'Teilnehmer')
+        self.participants=QTableWidget(0,7); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort','Audio-Status']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.horizontalHeader().setSectionResizeMode(6,QHeaderView.ResizeToContents); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.participants.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.participants.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.participants.customContextMenuRequested.connect(self._participant_context_menu)
+        vv.addWidget(self.participants)
+        self.frn_chat_id_status=QLabel("Chat-IDs: noch keine Teilnehmerliste empfangen.")
+        self.frn_chat_id_status.setWordWrap(True)
+        vv.addWidget(self.frn_chat_id_status)
+        tabs.addTab(w,'Teilnehmer')
         # audio/PTT
         w=QWidget(); f=QFormLayout(w)
         audio_intro=QLabel('<b>FRN-Audiogeräte</b>')
@@ -191,6 +200,35 @@ class FrnPanel(QWidget):
         f.addRow('',self.local_deaf)
         f.addRow('Eigener Audiostatus:',self.local_audio_status)
         f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('Hotkey-Bereich:',self.ptt_hotkey_scope); f.addRow('',self.ptt_hotkey_status); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
+        # FRN Chat
+        w=QWidget(); chat_layout=QVBoxLayout(w)
+        self.chat_history=QPlainTextEdit()
+        self.chat_history.setReadOnly(True)
+        self.chat_history.setPlaceholderText("FRN-Textnachrichten erscheinen hier.")
+        self.chat_history.document().setMaximumBlockCount(400)
+        chat_layout.addWidget(self.chat_history,1)
+        recipients=QHBoxLayout()
+        recipients.addWidget(QLabel("An:"))
+        self.chat_recipient=QComboBox()
+        self.chat_recipient.addItem("Alle im Raum (Test, ID 0)","0")
+        self.chat_recipient.setToolTip("ID 0: Gruppenversand ist serverabhängig und noch unbestätigt.")
+        recipients.addWidget(self.chat_recipient,1)
+        chat_layout.addLayout(recipients)
+        compose=QHBoxLayout()
+        self.chat_input=QLineEdit()
+        self.chat_input.setMaxLength(500)
+        self.chat_input.setPlaceholderText("Nachricht schreiben (max. 500 Zeichen)")
+        self.chat_input.returnPressed.connect(self._send_chat)
+        self.chat_send=QPushButton("Senden")
+        self.chat_send.setEnabled(False)
+        self.chat_send.clicked.connect(self._send_chat)
+        compose.addWidget(self.chat_input,1)
+        compose.addWidget(self.chat_send)
+        chat_layout.addLayout(compose)
+        self.chat_status=QLabel("Mit FRN verbinden, um Nachrichten zu senden.")
+        self.chat_status.setWordWrap(True)
+        chat_layout.addWidget(self.chat_status)
+        tabs.addTab(w,"Chat")
         # diag
         w=QWidget(); vv=QVBoxLayout(w); self.log=QPlainTextEdit(); self.log.setReadOnly(True); vv.addWidget(self.log); tabs.addTab(w,'Diagnose')
 
@@ -241,6 +279,86 @@ class FrnPanel(QWidget):
         pulse_input='funkgateway_rx_source' if radio_auto else None
         return FrnConfig(self.manager.currentData(),self.server.text().strip(),self.port.value(),self.email.text().strip(),self.password.text(),self.callsign.text().strip(),vx,client_type,band_channel,self.description.text().strip(),self.country.text().strip(),city_part,self.room.text().strip(),self.audio_in.currentData(),self.audio_out.currentData(),self.audio_enabled.isChecked(),pulse_input,self.main_password_fallback.isChecked())
 
+    def _participant_context_menu(self,pos):
+        row=self.participants.rowAt(pos.y())
+        if row<0 or row>=len(self._participants_with_ids):
+            return
+        participant=self._participants_with_ids[row]
+        name=str(participant.get("name") or "Teilnehmer").strip()
+        user_id=str(participant.get("id") or "").strip()
+        valid=bool(self.connected and self.client and user_id
+                   and self.chat_recipient.findData(user_id)>=0)
+        menu=QMenu(self.participants)
+        action=menu.addAction("Private Nachricht senden …")
+        action.setEnabled(valid)
+        if not valid:
+            reason=("Keine FRN-Verbindung." if not self.connected else
+                    "Keine Chat-ID übermittelt – private Nachricht nicht möglich."
+                    if not user_id else "Chat-ID als Empfänger nicht verfügbar.")
+            note=menu.addAction("Hinweis: "+reason)
+            note.setEnabled(False)
+        if menu.exec(self.participants.viewport().mapToGlobal(pos)) is not action or not valid:
+            return
+        if row>=len(self._participants_with_ids):
+            return
+        current=self._participants_with_ids[row]
+        if (str(current.get("id") or "").strip()!=user_id or
+            str(current.get("name") or "").strip()!=name):
+            return
+        index=self.chat_recipient.findData(user_id)
+        if index<0:
+            return
+        self.chat_recipient.setCurrentIndex(index)
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i)=="Chat":
+                self.tabs.setCurrentIndex(i)
+                break
+        self.chat_status.setText(f"Private Nachricht an {name} ausgewählt (Zustellung serverabhängig).")
+        self.chat_input.setFocus()
+
+    def _receive_chat(self,event):
+        sender=str(event.get("sender") or "FRN")[:100]
+        message=str(event.get("message") or "")[:2000]
+        if message:
+            self.chat_history.appendPlainText(
+                f"[{time.strftime('%H:%M:%S')}] {sender}: {message}"
+            )
+
+    def _send_chat(self):
+        if not self.connected or not self.client:
+            self.chat_status.setText("FRN-Chat: nicht verbunden.")
+            return
+        message=self.chat_input.text().strip()
+        if not message:
+            return
+        recipient=self.chat_recipient.currentData()
+        if recipient is None:
+            self.chat_status.setText("FRN-Chat: bitte Empfänger auswählen.")
+            return
+        try:
+            self.client.send_text_message(str(recipient),message)
+        except Exception as exc:
+            self.chat_status.setText("FRN-Chat: "+str(exc))
+            return
+        self.chat_history.appendPlainText(
+            f"[{time.strftime('%H:%M:%S')}] Ich → {self.chat_recipient.currentText()}: {message}"
+        )
+        self.chat_input.clear()
+        self.chat_status.setText("An Server gesendet; Zustellung noch nicht bestätigt.")
+
+    def _update_chat_recipients(self,parts):
+        selected=self.chat_recipient.currentData()
+        self.chat_recipient.clear()
+        self.chat_recipient.addItem("Alle im Raum (Test, ID 0)","0")
+        for participant in parts:
+            user_id=str(participant.get("id") or "").strip()
+            if user_id and len(user_id)<=128:
+                self.chat_recipient.addItem(
+                    str(participant.get("name") or "Teilnehmer")[:100],user_id
+                )
+        idx=self.chat_recipient.findData(selected)
+        self.chat_recipient.setCurrentIndex(max(0,idx))
+
     def connect_frn(self):
         try: cfg=self._cfg()
         except Exception as e: QMessageBox.warning(self,'FRN',str(e)); return
@@ -248,7 +366,7 @@ class FrnPanel(QWidget):
         self.client=FrnNativeClient(cfg)
         self.client.set_local_mute(self.local_mute.isChecked())
         self.client.set_local_deaf(self.local_deaf.isChecked())
-        s=self.client.signals; s.log.connect(self._log); s.state.connect(lambda _:self._update_status()); s.connected.connect(self._connected); s.participant_list.connect(self.update_participants); s.server_room_list.connect(self._direct_rooms); s.rx_talker.connect(self.update_talker); s.audio_level.connect(self._tx_level); s.rx_audio_level.connect(self._rx_level); s.tx_granted.connect(self._tx_granted); s.error.connect(lambda e:self._log('FEHLER: '+e)); self.connect_btn.setEnabled(False); self.client.start()
+        s=self.client.signals; s.log.connect(self._log); s.state.connect(lambda _:self._update_status()); s.connected.connect(self._connected); s.participant_list.connect(self.update_participants); s.text_message.connect(self._receive_chat); s.server_room_list.connect(self._direct_rooms); s.rx_talker.connect(self.update_talker); s.audio_level.connect(self._tx_level); s.rx_audio_level.connect(self._rx_level); s.tx_granted.connect(self._tx_granted); s.error.connect(lambda e:self._log('FEHLER: '+e)); self.connect_btn.setEnabled(False); self.client.start()
     def disconnect_frn(self, room_switch=False):
         self.ptt(False,force=True)
         if not room_switch:
@@ -271,6 +389,11 @@ class FrnPanel(QWidget):
         deliberately skips this reset because _pending_room is set in that case.
         """
         self.direct_rooms=[]
+        self._participants_with_ids=[]
+        if hasattr(self,'frn_chat_id_status'):
+            self.frn_chat_id_status.setText("Chat-IDs: getrennt – keine Teilnehmerliste vorhanden.")
+        if hasattr(self,'chat_recipient'):
+            self._update_chat_recipients([])
         self._active_room_count=None
         self.talker_name=''
         self.ptt_active=False
@@ -332,6 +455,12 @@ class FrnPanel(QWidget):
                 )
 
     def _connected(self,yes):
+        if hasattr(self,"chat_send"):
+            self.chat_send.setEnabled(bool(yes))
+            self.chat_status.setText(
+                "FRN-Chat bereit (Serverunterstützung noch zu testen)." if yes
+                else "FRN-Chat getrennt."
+            )
         self.connected=bool(yes); self.connect_btn.setEnabled(not yes); self.disconnect_btn.setEnabled(bool(yes)); self.connectedChanged.emit(bool(yes)); self._update_status()
         if yes:
             self._room_switch_active=False
@@ -637,7 +766,20 @@ class FrnPanel(QWidget):
             self.update_participants(parts)
 
     def update_participants(self,parts):
-        parts=list(parts or []); self._active_room_count=len(parts); self.populate_rooms(); self.participants.setRowCount(len(parts)); red=self._radio_icon('#D32F2F'); green=self._radio_icon('#2E7D32'); orange=self._radio_icon('#F57C00')
+        parts=list(parts or [])
+        self._participants_with_ids=[dict(part) for part in parts]
+        valid_ids=sum(1 for p in parts if 0<len(str(p.get('id') or '').strip())<=128)
+        total=len(parts)
+        if not total:
+            text="Chat-IDs: keine Teilnehmer gemeldet."
+        elif valid_ids==0:
+            text=(f"Chat-IDs: 0 von {total} Teilnehmern. Server übermittelt "
+                  "keine nutzbaren privaten Chat-IDs. Rechtsklick zeigt den Grund.")
+        else:
+            text=f"Chat-IDs: {valid_ids} von {total} Teilnehmern verfügbar."
+        self.frn_chat_id_status.setText(text)
+        self._update_chat_recipients(parts)
+        self._active_room_count=len(parts); self.populate_rooms(); self.participants.setRowCount(len(parts)); red=self._radio_icon('#D32F2F'); green=self._radio_icon('#2E7D32'); orange=self._radio_icon('#F57C00')
         own=self._own_name()
         for r,p in enumerate(parts):
             name=str(p.get('name','')); own_tx=bool(self.ptt_active and own and name==own); remote_tx=bool(name==self.talker_name and name and not own_tx)
@@ -654,7 +796,7 @@ class FrnPanel(QWidget):
                 self.participants.setItem(r,c,it)
         self._refresh_participants_quick_status()
     def update_talker(self,name):
-        self.talker_name=(name or '').strip(); self.talker.setText('FRN RX: '+(self.talker_name or '–')); self.talkerChanged.emit(self.talker_name); self.update_participants([{'name':self.participants.item(r,1).text() if self.participants.item(r,1) else '', 'type':self.participants.item(r,2).text() if self.participants.item(r,2) else '', 'band':self.participants.item(r,3).text() if self.participants.item(r,3) else '', 'country':self.participants.item(r,4).text() if self.participants.item(r,4) else '', 'city':self.participants.item(r,5).text() if self.participants.item(r,5) else ''} for r in range(self.participants.rowCount())])
+        self.talker_name=(name or '').strip(); self.talker.setText('FRN RX: '+(self.talker_name or '–')); self.talkerChanged.emit(self.talker_name); self.update_participants([{'name':self.participants.item(r,1).text() if self.participants.item(r,1) else '', 'type':self.participants.item(r,2).text() if self.participants.item(r,2) else '', 'band':self.participants.item(r,3).text() if self.participants.item(r,3) else '', 'country':self.participants.item(r,4).text() if self.participants.item(r,4) else '', 'city':self.participants.item(r,5).text() if self.participants.item(r,5) else '', 'id':self._participants_with_ids[r].get('id','') if r<len(self._participants_with_ids) else ''} for r in range(self.participants.rowCount())])
     def _level(self,db,meter,label,prefix): meter.setValue(max(0,min(60,int(db+60)))); label.setText(f'{prefix}: {db:.1f} dBFS' if db>=-60 else f'{prefix}: < -60 dBFS')
     def _tx_level(self,db): self.tx_db=float(db); self._level(self.tx_db,self.tx_meter,self.tx_label,'TX'); self.levelsChanged.emit(self.rx_db,self.tx_db)
     def _rx_level(self,db): self.rx_db=float(db); self._level(self.rx_db,self.rx_meter,self.rx_label,'RX'); self.levelsChanged.emit(self.rx_db,self.tx_db)
