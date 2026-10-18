@@ -578,8 +578,11 @@ class MumbleNativePanel(QWidget):
             stored=[]
         # The other three defaults are seeded once on first start, and stay
         # user-editable/deletable afterwards.
-        for item in (stored if self.settings.contains("favorites")
-                     else DEFAULT_MUMBLE_FAVORITES[1:]):
+        seed_defaults=not self.settings.contains("radio_favorites_seeded_v1")
+        # First upgrade adds the three radio servers to existing installations
+        # too. Later removal stays removed.
+        source=list(DEFAULT_MUMBLE_FAVORITES[1:])+stored if seed_defaults else stored
+        for item in source:
             if not isinstance(item,dict):
                 continue
             host=str(item.get("host") or "").strip()
@@ -599,6 +602,10 @@ class MumbleNativePanel(QWidget):
                 "username":str(item.get("username") or "").strip(),
                 "locked":False,
             })
+        if seed_defaults:
+            self.settings.setValue("radio_favorites_seeded_v1",True)
+            self.settings.setValue("favorites",json.dumps(self._favorites))
+            self.settings.sync()
         self._refresh_favorites()
 
     def _save_settings(self):
