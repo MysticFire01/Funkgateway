@@ -406,7 +406,7 @@ class ZelloPanel(QWidget):
         public_actions=QHBoxLayout()
         public_fav=QPushButton("Als Favorit speichern")
         public_fav.clicked.connect(self._public_save_favorite)
-        public_submit=QPushButton("Eigenen Favoriten als Public vorschlagen")
+        public_submit=QPushButton("Kanal öffentlich vorschlagen")
         public_submit.clicked.connect(self._public_submit)
         public_actions.addWidget(public_fav)
         public_actions.addWidget(public_submit)
@@ -1110,6 +1110,12 @@ class ZelloPanel(QWidget):
             return
         if len(name)>120 or "\n" in name or "\r" in name:
             self.public_status.setText("Ungültiger Kanalname.")
+            return
+        if any(entry["name"].strip().casefold()==name.casefold()
+               for entry in self._public_entries):
+            self.public_status.setText(
+                "Dieser Kanal ist bereits im öffentlichen Verzeichnis vorhanden. "
+                "Keine erneute Einreichung nötig.")
             return
         description=self.public_description.text().strip()
         url=("https://funkgateway-directory-api.xanadu97348.workers.dev/submit?"
