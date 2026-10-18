@@ -41,6 +41,7 @@ class ZelloPanel(QWidget):
         self._known_speakers = set()
         self._ptt_hotkey_setting = ""
         self._ptt_hotkey_scope = "local"
+        self._hotkey_applied=False
         self._channel_favorites = set()
         self._pending_channel_switch = ""
         self._tx_recipient = ""
@@ -251,7 +252,7 @@ class ZelloPanel(QWidget):
         self._global_hotkey=GlobalPttHotkey(self)
         self._local_hotkey.pressed.connect(lambda:self.set_ptt(True))
         self._local_hotkey.released.connect(lambda:self.set_ptt(False))
-        self._global_hotkey.pressed.connect(lambda:self.set_ptt(True))
+        self._global_hotkey.pressed.connect(lambda:self.set_ptt(True) if not self._capturing_hotkey else None)
         self._global_hotkey.released.connect(lambda:self.set_ptt(False))
         self._global_hotkey.statusChanged.connect(self.hotkey_status.setText)
         audio_controls=QHBoxLayout()
@@ -709,8 +710,8 @@ class ZelloPanel(QWidget):
             self._finish_hotkey_capture(None)
             return
         self._capturing_hotkey=True
-        self._global_hotkey.stop()
-        self._local_hotkey.set_hotkey("")
+        # Keep the existing listener alive during capture. A repeated F9 should
+        # not stop/restart pynput or block the Qt event loop.
         self.capture_hotkey_btn.setText("Abbrechen (Esc)")
         self.hotkey_status.setText("Jetzt Taste drücken; Esc bricht ab")
         QApplication.instance().installEventFilter(self)
@@ -756,13 +757,21 @@ class ZelloPanel(QWidget):
         return audioop.mul(pcm,2,factor)
 
     def _configure_hotkey(self, *_args, save=True):
-        self.set_ptt(False)
-        self._global_hotkey.stop()
-        self._local_hotkey.set_hotkey("")
         value=self.hotkey_edit.text().strip()
         scope=self.hotkey_scope.currentData() or "local"
+        old_value=self._ptt_hotkey_setting
+        old_scope=self._ptt_hotkey_scope
+        if value==old_value and scope==old_scope and self._hotkey_applied:
+            self.hotkey_status.setText("Zello-Hotkey unverändert – bereits aktiv" if value else "Zello-Hotkey: deaktiviert")
+            if save:
+                self._save_directory()
+            return
+        self.set_ptt(False)
+        self._local_hotkey.set_hotkey("")
+        self._global_hotkey.stop()
         self._ptt_hotkey_setting=value
         self._ptt_hotkey_scope=scope
+        self._hotkey_applied=True
         if not value:
             self.hotkey_status.setText("Zello-Hotkey: deaktiviert")
         elif scope=="global":
