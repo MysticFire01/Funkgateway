@@ -137,6 +137,34 @@ QComboBox QAbstractItemView::item:hover {{
     background-color: {p['panel_alt']};
     color: {p['text']};
 }}
+/* Explicit list/tree background and alternate rows: Gtk/Qt system palettes
+   must not insert light stripes into FunkGateway's dark theme. */
+QTreeWidget, QListWidget, QTableWidget {{
+    background-color: {p['panel']};
+    alternate-background-color: {p['panel_alt']};
+    color: {p['text']};
+    border: 1px solid {p['border']};
+    border-radius: 6px;
+    outline: 0;
+}}
+QTreeWidget::item, QListWidget::item, QTableWidget::item {{
+    color: {p['text']};
+    padding: 4px 5px;
+}}
+QTreeWidget::item:selected, QListWidget::item:selected,
+QTableWidget::item:selected {{
+    background-color: {p['accent']};
+    color: {p['accent_text']};
+}}
+QHeaderView::section {{
+    background-color: {p['panel_alt']};
+    color: {p['text']};
+    border: 0px;
+    border-right: 1px solid {p['border']};
+    border-bottom: 1px solid {p['border']};
+    padding: 6px 8px;
+    font-weight: 600;
+}}
 QCheckBox {{ spacing: 7px; }}
 QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 7px; background: {p['panel']}; }}
 QTabBar::tab {{ background: {p['panel_alt']}; color: {p['text']}; border: 1px solid {p['border']}; padding: 7px 11px; margin-right: 2px; }}
