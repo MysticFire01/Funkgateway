@@ -244,6 +244,7 @@ class ZelloPanel(QWidget):
         # Same compact tab layout concept as the other integrations.
         # Move existing widgets without reconnecting signals or recreating clients.
         tabs=QTabWidget(self)
+        self.zello_tabs=tabs
         pages={}
         for title in ("Verbindung","Kanäle","Buddys","Diagnose"):
             page=QWidget()
@@ -669,11 +670,20 @@ class ZelloPanel(QWidget):
         self._refresh_directories()
         self._save_directory()
 
-    def _choose_buddy(self, *_args):
-        item=self.buddy_list.currentItem()
-        if item is None: return
+    def _choose_buddy(self, item=None):
+        # QListWidget.itemDoubleClicked passes the clicked item; the button
+        # passes a bool. Handle both without relying on selection timing.
+        if item is None or isinstance(item,bool):
+            item=self.buddy_list.currentItem()
+        if item is None:
+            return
+        name=item.text().strip()
+        if not name:
+            return
         self.target_mode.setCurrentIndex(1)
-        self.target_user.setCurrentText(item.text())
+        self.target_user.setCurrentText(name)
+        self.zello_tabs.setCurrentIndex(1)
+        self.tx_status.setText("Zello-Ziel gewählt: "+name+" (im aktuellen Kanal)")
 
     def _add_favorite(self):
         name=self.channel_add.text().strip() or self.channel.text().strip()
