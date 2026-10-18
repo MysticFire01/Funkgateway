@@ -53,6 +53,7 @@ class MumbleNativeClient(QObject):
         self._keyfile = ""
         self._playback_volume = 1.0
         self._user_volumes = {}
+        self._local_muted_sessions = set()
         self._volume_server = ""
 
     @property
@@ -283,6 +284,50 @@ class MumbleNativeClient(QObject):
             if self._pc_ptt_enabled:
                 self._start_capture()
 
+    def set_self_mute(self, enabled):
+        if not self._connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        myself = self._mumble.users.myself
+        if enabled:
+            self._pc_ptt_active = False
+            myself.mute()
+        else:
+            myself.unmute()
+
+    def set_self_deaf(self, enabled):
+        if not self._connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        myself = self._mumble.users.myself
+        if enabled:
+            myself.deafen()
+        else:
+            myself.undeafen()
+
+    def set_local_user_mute(self, session, enabled):
+        session = int(session)
+        if enabled:
+            self._local_muted_sessions.add(session)
+        else:
+            self._local_muted_sessions.discard(session)
+
+    def set_server_user_mute(self, session, enabled):
+        if not self._connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        user = self._mumble.users[int(session)]
+        if enabled:
+            user.mute()
+        else:
+            user.unmute()
+
+    def set_server_user_deaf(self, session, enabled):
+        if not self._connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        user = self._mumble.users[int(session)]
+        if enabled:
+            user.deafen()
+        else:
+            user.undeafen()
+
     def set_pc_ptt(self, active):
         self._pc_ptt_active = bool(active) and self._pc_ptt_enabled and self._connected
         self._own_tx_active = self._pc_ptt_active
@@ -393,6 +438,12 @@ class MumbleNativeClient(QObject):
         with self._speaker_lock:
             self._speaker_times[name] = time.monotonic()
             self._speaker_modes[name] = mode
+        try:
+            session = int(self._prop(user, "session", -1))
+        except (TypeError, ValueError):
+            session = -1
+        if session in self._local_muted_sessions:
+            return
         pcm = bytes(getattr(soundchunk, "pcm", b""))
         if not pcm:
             return
@@ -453,6 +504,7 @@ class MumbleNativeClient(QObject):
                 "speech_mode": "normal" if is_self and self._own_tx_active else active.get(name, ""),
                 "is_self": is_self,
                 "current_channel": current_channel is not None and cid_i == current_channel,
+                "local_user_mute": int(self._prop(user, "session", session)) in self._local_muted_sessions,
                 "local_mute": bool(self._prop(user, "self_mute", False)),
                 "local_deaf": bool(self._prop(user, "self_deaf", False)),
                 "server_mute": bool(self._prop(user, "mute", False) or self._prop(user, "suppress", False)),
