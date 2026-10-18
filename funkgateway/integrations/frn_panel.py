@@ -155,7 +155,7 @@ class FrnPanel(QWidget):
         quick.addWidget(self.participants_audio_status,1)
         vv.addLayout(quick)
         vv.addWidget(self.talker)
-        self.participants=QTableWidget(0,6); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers); vv.addWidget(self.participants); tabs.addTab(w,'Teilnehmer')
+        self.participants=QTableWidget(0,7); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort','Audio-Status']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers); vv.addWidget(self.participants); tabs.addTab(w,'Teilnehmer')
         # audio/PTT
         w=QWidget(); f=QFormLayout(w)
         audio_intro=QLabel('<b>FRN-Audiogeräte</b>')
@@ -294,12 +294,39 @@ class FrnPanel(QWidget):
         self.pttStateChanged.emit(False)
 
     def _refresh_participants_quick_status(self):
+        # FRN CLIENT_LIST does not carry Mumble-style remote mute/deaf
+        # indicators; only our local client state can be reported truthfully.
         own=self._own_name()
+        muted=self.local_mute.isChecked()
+        deaf=self.local_deaf.isChecked()
         for row in range(self.participants.rowCount()):
-            item=self.participants.item(row,1)
-            if item is not None and own and item.text()==own:
-                item.setToolTip(
-                    'Eigener FRN-Client · '+self.participants_audio_status.text()
+            name_item=self.participants.item(row,1)
+            if name_item is None:
+                continue
+            own_row=bool(own and name_item.text()==own)
+            status=self.participants.item(row,6)
+            if status is None:
+                status=QTableWidgetItem()
+                self.participants.setItem(row,6,status)
+            if own_row:
+                parts=[]
+                if muted: parts.append("🔇 Mikrofon stumm")
+                if deaf: parts.append("🔕 Empfang taub")
+                if not parts: parts.append("🎙 Mikrofon frei · 🔊 Empfang an")
+                status.setText(" · ".join(parts))
+                status.setToolTip(
+                    "Eigene lokale FRN-Einstellungen, nicht vom Server übertragen."
+                )
+                name_item.setToolTip(
+                    "Eigener FRN-Client · "+self.participants_audio_status.text()
+                )
+                if muted or deaf:
+                    status.setForeground(QColor("#F2994A"))
+            else:
+                status.setText("—")
+                status.setToolTip(
+                    "FRN übermittelt für andere Teilnehmer keinen "
+                    "zuverlässigen Mute-/Deaf-Status."
                 )
 
     def _connected(self,yes):
@@ -623,6 +650,7 @@ class FrnPanel(QWidget):
                     status=self.participants_audio_status.text()
                     it.setToolTip("Eigener FRN-Client · "+status)
                 self.participants.setItem(r,c,it)
+        self._refresh_participants_quick_status()
     def update_talker(self,name):
         self.talker_name=(name or '').strip(); self.talker.setText('FRN RX: '+(self.talker_name or '–')); self.talkerChanged.emit(self.talker_name); self.update_participants([{'name':self.participants.item(r,1).text() if self.participants.item(r,1) else '', 'type':self.participants.item(r,2).text() if self.participants.item(r,2) else '', 'band':self.participants.item(r,3).text() if self.participants.item(r,3) else '', 'country':self.participants.item(r,4).text() if self.participants.item(r,4) else '', 'city':self.participants.item(r,5).text() if self.participants.item(r,5) else ''} for r in range(self.participants.rowCount())])
     def _level(self,db,meter,label,prefix): meter.setValue(max(0,min(60,int(db+60)))); label.setText(f'{prefix}: {db:.1f} dBFS' if db>=-60 else f'{prefix}: < -60 dBFS')
