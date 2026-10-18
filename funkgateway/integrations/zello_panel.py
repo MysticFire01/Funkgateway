@@ -16,7 +16,7 @@ from PySide6.QtWebSockets import QWebSocket
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget,QSlider
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget,QSlider)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
