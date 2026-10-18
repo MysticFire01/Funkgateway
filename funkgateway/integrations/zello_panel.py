@@ -422,6 +422,7 @@ class ZelloPanel(QWidget):
         public_layout.addWidget(self.public_updated)
         pages["Public Directory"].addWidget(public_box)
         self._public_entries=[]
+        self._public_states={}
         self._public_network=QNetworkAccessManager(self)
         self._public_busy=False
         self._public_reload_button=public_reload
@@ -1064,7 +1065,9 @@ class ZelloPanel(QWidget):
                 seen.add(name.casefold())
                 cleaned.append({"name":name,"description":str(entry.get("description",""))[:160]})
             self._public_entries=cleaned
+            self._public_states={}
             self._filter_public_directory()
+            self._load_public_status()
             self.public_updated.setText(
                 "Letzte erfolgreiche Aktualisierung: "+
                 QDateTime.currentDateTime().toString("dd.MM.yyyy HH:mm:ss"))
@@ -1079,13 +1082,61 @@ class ZelloPanel(QWidget):
             self._public_reload_button.setEnabled(True)
             reply.deleteLater()
 
+    def _load_public_status(self):
+        url=QUrl("https://raw.githubusercontent.com/MysticFire01/Funkgateway/main/community/zello_status.json")
+        query=QUrlQuery()
+        query.addQueryItem("_fg_refresh",str(QDateTime.currentMSecsSinceEpoch()))
+        url.setQuery(query)
+        request=QNetworkRequest(url)
+        request.setTransferTimeout(9000)
+        reply=self._public_network.get(request)
+        reply.finished.connect(lambda reply=reply:self._public_status_loaded(reply))
+
+    def _public_status_loaded(self,reply):
+        try:
+            if reply.error()!=QNetworkReply.NetworkError.NoError:
+                raise RuntimeError(reply.errorString())
+            raw=bytes(reply.readAll())
+            if len(raw)>1024*1024:
+                raise ValueError("Statusantwort zu groß")
+            payload=json.loads(raw.decode("utf-8"))
+            if payload.get("version")!=1 or not isinstance(payload.get("channels"),list):
+                raise ValueError("Unbekanntes Statusformat")
+            result={}
+            now=QDateTime.currentDateTimeUtc()
+            for entry in payload["channels"][:1000]:
+                if not isinstance(entry,dict):
+                    continue
+                name=entry.get("name")
+                stamp=entry.get("checked_at")
+                if not isinstance(name,str) or not isinstance(stamp,str):
+                    continue
+                checked=QDateTime.fromString(stamp,Qt.DateFormat.ISODate)
+                if not checked.isValid() or abs(checked.secsTo(now))>24*3600:
+                    continue
+                state=entry.get("status")
+                if state in ("reachable","unverified"):
+                    result[name.casefold()]={"status":state,"checked_at":stamp}
+            self._public_states=result
+            self._filter_public_directory()
+        except Exception:
+            # No new observation must never be represented as offline.
+            pass
+        finally:
+            reply.deleteLater()
+
     def _filter_public_directory(self,*_args):
         term=self.public_search.text().strip().casefold()
         self.public_results.clear()
         for entry in self._public_entries:
             if term in (entry["name"]+" "+entry["description"]).casefold():
+                observed=self._public_states.get(entry["name"].casefold(), {})
+                label=("✓ Geprüft erreichbar" if observed.get("status")=="reachable"
+                       else "Nicht bestätigt" if observed.get("status")=="unverified"
+                       else "Nicht geprüft")
                 item=QListWidgetItem(entry["name"]+
-                    (" — "+entry["description"] if entry["description"] else ""))
+                    (" — "+entry["description"] if entry["description"] else "")+
+                    "  ["+label+"]")
                 item.setData(Qt.ItemDataRole.UserRole,entry["name"])
                 self.public_results.addItem(item)
 
