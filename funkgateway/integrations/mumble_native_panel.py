@@ -198,7 +198,10 @@ class MumbleNativePanel(QWidget):
         self.host.setText(str(self.settings.value("host","voice.mumble-funk.de")))
         self.port.setValue(int(self.settings.value("port",64738)))
         self.nick.setText(str(self.settings.value("nickname","FunkGateway Linux")))
+        self.master_volume.blockSignals(True)
         self.master_volume.setValue(int(self.settings.value("master_volume",100)))
+        self.master_volume.blockSignals(False)
+        self.client.set_playback_volume(self.master_volume.value())
         try:
             values=json.loads(str(self.settings.value("user_volumes","{}")))
             if isinstance(values,dict):
