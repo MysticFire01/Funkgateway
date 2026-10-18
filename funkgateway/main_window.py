@@ -8777,7 +8777,32 @@ done"""
         if p:
             self.roger_wav.setText(p); self.save_cfg()
 
+    def _sync_native_mumble_radio_tx(self, active):
+        """Send validated RF RX to the integrated Mumble client in radio modes."""
+        panel = getattr(self, "mumble_native_panel", None)
+        if panel is None:
+            return
+        wanted = bool(
+            active and self._mode() in ("gateway", "radio_parrot")
+            and self.rx_detector is not None
+            and not self.protection_muted
+            and not self.return_guard_muted
+            and not self.return_guard_candidate
+            and not self.outgoing_audio_active
+            and not self.dtmf_control_rx_active
+            and not self.roger_busy
+            and not getattr(self, "parrot_playing", False)
+            and not getattr(self, "parrot_beacon_in_progress", False)
+            and panel.client.connected
+            and not panel.self_mute.isChecked()
+            and not panel.self_deaf.isChecked()
+            and not getattr(panel, "_server_mute", False)
+            and not getattr(panel, "_server_deaf", False)
+        )
+        panel.client.set_gateway_rx(wanted)
+
     def _set_big_rx_status(self,active,blocked=False):
+        self._sync_native_mumble_radio_tx(bool(active) and not blocked)
         # A protection state has priority over the ordinary RX/free display.
         # This avoids the misleading situation where the start page says
         # "FUNK KANAL FREI" although the gateway is intentionally still muted.
@@ -9948,6 +9973,7 @@ done"""
         except Exception as e: self.show_copyable_error("Start fehlgeschlagen",str(e))
 
     def stop_gateway(self,preserve_dtmf=False):
+        self._sync_native_mumble_radio_tx(False)
         self._stop_parrot_capture()
         self.ts_commander_wanted=False
         self._set_big_rx_status(False)
@@ -9972,6 +9998,7 @@ done"""
         self.log("Gateway gestoppt.")
 
     def emergency(self):
+        self._sync_native_mumble_radio_tx(False)
         self.ts_commander_wanted=False
         self._set_big_rx_status(False)
         if self.rx_detector: self.rx_detector.stop(); self.rx_detector=None
