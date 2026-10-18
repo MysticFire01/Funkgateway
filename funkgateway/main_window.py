@@ -907,6 +907,18 @@ class MainWindow(QMainWindow):
 
         view_box=QGroupBox("Ansicht")
         vf=QVBoxLayout(view_box)
+        self.view_level=QComboBox()
+        self.view_level.addItem("Vereinfacht – tägliche Bedienung","simple")
+        self.view_level.addItem("Voll – alle normalen Funktionen","full")
+        self.view_level.addItem("Entwickler – Diagnose und Administration","developer")
+        self.view_level.setCurrentIndex(1)
+        self.view_level.setToolTip(
+            "Vereinfacht: wichtigste Bedienung. Voll: alle Benutzerfunktionen. "
+            "Entwickler: zusätzliche technische Einstellungen und Administration."
+        )
+        self.view_level.currentIndexChanged.connect(self._view_level_changed)
+        vf.addWidget(QLabel("Umfang der Oberfläche:"))
+        vf.addWidget(self.view_level)
         self.advanced_ui=QCheckBox("Erweiterte Einstellungen anzeigen")
         self.advanced_ui.setChecked(False)
         self.advanced_ui.setToolTip(
@@ -919,7 +931,13 @@ class MainWindow(QMainWindow):
             "Erweiterte Werte bleiben erhalten und können jederzeit wieder eingeblendet werden."
         )
         advanced_note.setWordWrap(True)
-        vf.addWidget(self.advanced_ui)
+        # Retain the legacy flag for other existing subsystems, but control it
+        # exclusively through the new three-level display selector.
+        self.advanced_ui.setVisible(False)
+        advanced_note.setText(
+            "Der Ansichtsmodus ändert nur die angezeigten Bedienelemente. "
+            "Gespeicherte Konfigurationen bleiben vollständig erhalten."
+        )
         vf.addWidget(advanced_note)
         v.addWidget(view_box)
 
@@ -3339,7 +3357,7 @@ class MainWindow(QMainWindow):
         if self._is_pc_mode():
             return
 
-        show_advanced=bool(self.advanced_ui.isChecked())
+        show_advanced=self._view_level_value()!="simple"
 
         # These are tuning/detail controls. The operator-facing core controls
         # on the same pages stay visible in simple mode.
@@ -3384,6 +3402,43 @@ class MainWindow(QMainWindow):
             widget=getattr(self,name,None)
             if widget is not None:
                 self._set_form_field_visible(widget,show_advanced)
+
+    def _view_level_value(self):
+        if hasattr(self,"view_level"):
+            return str(self.view_level.currentData() or "full")
+        return "developer" if hasattr(self,"advanced_ui") and self.advanced_ui.isChecked() else "simple"
+
+    def _view_level_changed(self,*_args):
+        level=self._view_level_value()
+        if hasattr(self,"advanced_ui"):
+            self.advanced_ui.blockSignals(True)
+            self.advanced_ui.setChecked(level!="simple")
+            self.advanced_ui.blockSignals(False)
+        self._apply_operating_mode_ui()
+        self._apply_simple_widget_visibility()
+        self._apply_mumble_view_level()
+        if CFG_FILE.exists():
+            self.save_cfg()
+
+    def _apply_mumble_view_level(self):
+        panel=getattr(self,"mumble_native_panel",None)
+        if panel is None:
+            return
+        level=self._view_level_value()
+        tabs=panel.mumble_tabs
+        # The frequently used native tools are available at all levels.
+        # Identity management belongs to Full; advanced external
+        # administration and Ice/SSH only to Developer.
+        for i in range(tabs.count()):
+            title=tabs.tabText(i)
+            visible=(
+                title not in ("Zertifikate","Erweitert") if level=="simple"
+                else title!="Erweitert" if level=="full"
+                else True
+            )
+            tabs.setTabVisible(i,visible)
+        if not tabs.isTabVisible(tabs.currentIndex()):
+            tabs.setCurrentIndex(0)
 
     def _advanced_ui_toggled(self, *_args):
         self._apply_operating_mode_ui()
@@ -3507,7 +3562,7 @@ class MainWindow(QMainWindow):
             self._refresh_pc_hardware_ports()
             if self.pc_hw_port_enable.isChecked() and self.pc_hw_port_restore.isChecked():
                 self._apply_pc_hardware_port(log_result=False)
-        advanced=bool(hasattr(self,"advanced_ui") and self.advanced_ui.isChecked())
+        advanced=self._view_level_value()!="simple"
         mode_tabs={
             "pc":{"Start","Einrichtung","PC / TeamSpeak","Moderation","Integrationen","Darstellung","Updates","Protokoll","Hilfe"},
             "voip_parrot":{"Start","Einrichtung","VoIP-Papagei","Integrationen","Darstellung","Updates","Protokoll","Hilfe"},
@@ -4507,6 +4562,7 @@ class MainWindow(QMainWindow):
         self.mumble_native_panel.mumble_tabs.addTab(
             self.mumble_admin_tabs,"Erweitert"
         )
+        self._apply_mumble_view_level()
 
         integration_tabs.addTab(mumble_page,"Mumble")
 
@@ -10131,6 +10187,7 @@ done"""
         "theme_mode":self.theme_mode.currentText(),"color_scheme":self.color_scheme.currentText(),"mode_colors":self.mode_colors.isChecked(),
         "banner_enabled":self.banner_enabled.isChecked(),"banner_path":self.banner_path.text(),
         "advanced_ui":self.advanced_ui.isChecked(),
+        "view_level":self._view_level_value(),
         "pc_ts_commander_manual":self.pc_ts_commander_manual.isChecked(),
         "pc_parrot_input":self.pc_parrot_input.currentData(),"pc_parrot_output":self.pc_parrot_output.currentData(),
         "pc_hw_port_enable":self.pc_hw_port_enable.isChecked(),"pc_hw_port":self.pc_hw_port.currentData(),
@@ -10275,7 +10332,16 @@ done"""
                 self.start_banner.setVisible(bool(self.banner_enabled.isChecked() and not getattr(self,"_banner_original_pixmap",QPixmap()).isNull()))
                 if self.banner_enabled.isChecked():
                     QTimer.singleShot(0,self._update_banner_pixmap)
-            self.advanced_ui.setChecked(bool(d.get("advanced_ui",False)))
+            requested=str(d.get("view_level") or (
+                "developer" if d.get("advanced_ui",False) else "simple"
+            ))
+            level_index=self.view_level.findData(requested)
+            self.view_level.blockSignals(True)
+            self.view_level.setCurrentIndex(level_index if level_index>=0 else 1)
+            self.view_level.blockSignals(False)
+            self.advanced_ui.blockSignals(True)
+            self.advanced_ui.setChecked(self._view_level_value()!="simple")
+            self.advanced_ui.blockSignals(False)
             self.pc_ts_commander_manual.setChecked(bool(d.get("pc_ts_commander_manual",False)))
             self.pc_parrot_seconds.setValue(int(d.get("pc_parrot_seconds",5) or 5))
             self._wanted_pc_parrot_input=d.get("pc_parrot_input")
