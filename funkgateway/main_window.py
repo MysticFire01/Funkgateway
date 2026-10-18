@@ -4368,15 +4368,17 @@ class MainWindow(QMainWindow):
         mumble_outer=QVBoxLayout(mumble_page)
         mumble_title=QLabel("<b>Mumble-Integration</b>")
         mumble_note=QLabel(
-            "Lokaler Clientstatus und Server-Administration sind getrennt. "
-            "Ice/SSH wird nur für erweiterte Adminfunktionen benötigt."
+            "Integrierter Mumble-Client: Verbindung, Audio/PTT, Channels "
+            "und Serverliste. Externer Client und Administration liegen "
+            "gebündelt unter „Erweitert“."
         )
         mumble_note.setWordWrap(True)
         mumble_outer.addWidget(mumble_title)
         mumble_outer.addWidget(mumble_note)
 
+        # Legacy/external Mumble and Ice/SSH are only shown inside the
+        # native client's advanced tab, avoiding another visible tab tier.
         self.mumble_admin_tabs=QTabWidget()
-        mumble_outer.addWidget(self.mumble_admin_tabs,1)
 
         self.mumble_native_scroll=QScrollArea(self)
         self.mumble_native_scroll.setWidgetResizable(True)
@@ -4391,7 +4393,7 @@ class MainWindow(QMainWindow):
             self._sync_mumble_ptt_ui
         )
         self.mumble_native_scroll.setWidget(self.mumble_native_panel)
-        self.mumble_admin_tabs.addTab(self.mumble_native_scroll,"Native Client")
+        mumble_outer.addWidget(self.mumble_native_scroll,1)
 
         self.mumble_status=QLabel("Mumble: noch nicht geprüft")
         self.mumble_status.setWordWrap(True); self.mumble_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
@@ -4502,6 +4504,9 @@ class MainWindow(QMainWindow):
         pf.addRow(QLabel("<b>Bridge</b>")); pf.addRow(bridge_help); pf.addRow("Bridge-Adresse:",self.mumble_bridge_url); pf.addRow("Persönliches Token:",self.mumble_bridge_token)
         pf.addRow(test_bridge); pf.addRow(export_admin); pf.addRow("",self.mumble_bridge_status)
         self.mumble_admin_tabs.addTab(protect_page,"Schutz & Bridge")
+        self.mumble_native_panel.mumble_tabs.addTab(
+            self.mumble_admin_tabs,"Erweitert"
+        )
 
         integration_tabs.addTab(mumble_page,"Mumble")
 
