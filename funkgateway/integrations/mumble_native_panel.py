@@ -503,6 +503,23 @@ class MumbleNativePanel(QWidget):
         except (TypeError,ValueError):
             self._user_volumes={}
         self.client.set_user_volumes(self._user_volumes)
+        try:
+            stored=json.loads(str(self.settings.value("favorites","[]")))
+            if isinstance(stored,list):
+                self._favorites=[
+                    {
+                        "name":str(item.get("name") or item.get("host") or "").strip(),
+                        "host":str(item.get("host") or "").strip(),
+                        "port":int(item.get("port") or 64738),
+                        "username":str(item.get("username") or "").strip(),
+                    }
+                    for item in stored if isinstance(item,dict)
+                    and str(item.get("host") or "").strip()
+                    and 1<=int(item.get("port") or 64738)<=65535
+                ]
+        except (ValueError,TypeError):
+            self._favorites=[]
+        self._refresh_favorites()
 
     def _save_settings(self):
         import json
@@ -511,6 +528,7 @@ class MumbleNativePanel(QWidget):
         self.settings.setValue("nickname",self.nick.text().strip())
         self.settings.setValue("master_volume",self.master_volume.value())
         self.settings.setValue("user_volumes",json.dumps(self._user_volumes))
+        self.settings.setValue("favorites",json.dumps(self._favorites))
         self.settings.sync()
 
     def _master_volume_changed(self,value):
@@ -652,12 +670,21 @@ class MumbleNativePanel(QWidget):
 
     def _connect(self):
         self._save_settings()
+        favorite_index=self.favorite_select.currentData()
+        favorite=(self._favorites[favorite_index]
+                  if isinstance(favorite_index,int)
+                  and 0<=favorite_index<len(self._favorites) else None)
+        nickname=self.nick.text().strip()
+        if (favorite is not None
+                and favorite["host"].casefold()==self.host.text().strip().casefold()
+                and favorite["port"]==self.port.value()):
+            nickname=favorite.get("username") or nickname
         cert=self.cert.currentData()
         certfile=cert.get("cert_path","") if isinstance(cert,dict) else ""
         keyfile=cert.get("key_path","") if isinstance(cert,dict) else ""
         try:
             self.client.connect_async(
-                self.host.text().strip(),self.port.value(),self.nick.text().strip(),
+                self.host.text().strip(),self.port.value(),nickname,
                 self.password.text(),self.channel.text().strip(),
                 certfile=certfile,keyfile=keyfile,
                 playback=self.playback.isChecked(),
