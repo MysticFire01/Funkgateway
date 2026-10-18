@@ -359,6 +359,11 @@ class MainWindow(QMainWindow):
         )
         self.mumble_ptt_top_btn.setEnabled(False)
         controls_layout.addWidget(self.mumble_ptt_top_btn)
+        self.zello_ptt_top_btn=self.big("Zello PTT")
+        self.zello_ptt_top_btn.setMinimumHeight(48)
+        self.zello_ptt_top_btn.setEnabled(False)
+        self.zello_ptt_top_btn.setToolTip("Zello-PTT halten. Hotkey im Zello-Reiter wählbar.")
+        controls_layout.addWidget(self.zello_ptt_top_btn)
 
         self.start_main_btn.setToolTip("Gateway starten. Diese Hauptsteuerung bleibt in jedem Reiter sichtbar.")
         self.stop_main_btn.setToolTip("Gateway stoppen. Diese Hauptsteuerung bleibt in jedem Reiter sichtbar.")
@@ -3691,6 +3696,17 @@ class MainWindow(QMainWindow):
         if not enabled and panel is not None:
             panel.set_mumble_ptt(False)
 
+    def _sync_zello_ptt_ui(self,*_args):
+        if not hasattr(self,"zello_ptt_top_btn"):
+            return
+        panel=getattr(self,"zello_panel",None)
+        mode=self._mode() if hasattr(self,"operating_mode") else "pc"
+        active=bool(panel and (panel._tx_wanted or panel._tx_stream_id is not None))
+        self.zello_ptt_top_btn.setVisible(mode=="pc")
+        self.zello_ptt_top_btn.setEnabled(bool(panel and panel.connected and panel.channel_online and mode=="pc"))
+        self.zello_ptt_top_btn.setText("Zello TX AKTIV" if active else "Zello PTT")
+        self.zello_ptt_top_btn.setStyleSheet("font-weight:bold;"+("background:#E58B22;color:black;" if active else ""))
+
     def _sync_frn_global_ui(self):
         if not hasattr(self,"frn_ptt_btn"):
             return
@@ -3700,6 +3716,7 @@ class MainWindow(QMainWindow):
         manual=(mode=="pc")
         self.frn_ptt_btn.setVisible(manual)
         self._sync_mumble_ptt_ui()
+        self._sync_zello_ptt_ui()
         if panel is not None:
             panel.set_gateway_mode(mode in ("gateway","radio_parrot"))
             self.frn_ptt_btn.setEnabled(manual and panel.connected and panel.audio_enabled.isChecked())
@@ -4367,6 +4384,12 @@ class MainWindow(QMainWindow):
         self.zello_panel = ZelloPanel(self)
         self.zello_panel.connectedChanged.connect(lambda _connected: self.update_start_status())
         self.zello_panel.talkerChanged.connect(lambda _speaker: self.update_start_status())
+        self.zello_panel.pttStateChanged.connect(self._sync_zello_ptt_ui)
+        self.zello_panel.connectedChanged.connect(self._sync_zello_ptt_ui)
+        self.zello_ptt_top_btn.pressed.connect(lambda:self.zello_panel.set_ptt(True))
+        self.zello_ptt_top_btn.released.connect(lambda:self.zello_panel.set_ptt(False))
+        self.zello_panel.channel_status.textChanged.connect(self._sync_zello_ptt_ui)
+        self._sync_zello_ptt_ui()
         integration_tabs.addTab(self.zello_panel, "Zello · Alpha")
 
         # --- TeamSpeak -----------------------------------------------------
@@ -10815,6 +10838,8 @@ done"""
             step("globalen FRN-Hotkey stoppen",self.frn_global_hotkey.stop)
         if hasattr(self,"mumble_native_panel"):
             step("Mumble-Hotkeys stoppen",self.mumble_native_panel.stop_ptt_hotkeys)
+        if hasattr(self,"zello_panel"):
+            step("Zello-Hotkeys stoppen",self.zello_panel.stop_ptt_hotkeys)
 
         if self.ptt:
             step("PTT schließen",self.ptt.close)
