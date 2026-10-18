@@ -1,0 +1,70 @@
+name: Approve Community Zello Channel
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  approve:
+    if: ${{ github.event.label.name == 'approved' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate approver and publish channel
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const actor = context.actor;
+            const { owner, repo } = context.repo;
+            // Label assignment alone is not sufficient: verify actual write access.
+            const access = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner, repo, username: actor
+            });
+            if (!['admin', 'maintain', 'write'].includes(access.data.permission)) {
+              core.setFailed('Approver must have repository write access.');
+              return;
+            }
+            if (!issue.title.startsWith('[Community Directory] Zello: ')) {
+              core.info('Not a Zello channel submission.');
+              return;
+            }
+            const body = String(issue.body || '');
+            const platform = body.match(/^Plattform:\s*(.+)$/mi)?.[1]?.trim();
+            const name = body.match(/^Kanalname:\s*(.+)$/mi)?.[1]?.trim();
+            const description = body.match(/^Beschreibung:\s*(.*)$/mi)?.[1]?.trim() || '';
+            if (platform !== 'Zello' || !name ||
+                name.length > 120 || description.length > 160 ||
+                /[\r\n\x00-\x1f]/.test(name + description) ||
+                /https?:\/\/|(?:password|passwort|token|apikey)\s*[:=]/i.test(name + description)) {
+              core.setFailed('Invalid public submission; inspect and correct before approval.');
+              return;
+            }
+            const path = 'community/zello_channels.json';
+            const existing = await github.rest.repos.getContent({owner, repo, path, ref: context.payload.repository.default_branch});
+            if (Array.isArray(existing.data) || !existing.data.sha) throw Error('Unexpected directory file.');
+            const document = JSON.parse(Buffer.from(existing.data.content, 'base64').toString('utf8'));
+            if (document.version !== 1 || !Array.isArray(document.channels)) throw Error('Unknown format');
+            const duplicate = document.channels.some(c => c.platform === 'zello' &&
+              c.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
+            if (duplicate) {
+              await github.rest.issues.createComment({owner, repo, issue_number: issue.number,
+                body: 'Dieser Zello-Kanal ist bereits im Community Directory vorhanden. Das Issue wird geschlossen.'});
+              await github.rest.issues.update({owner,repo,issue_number:issue.number,state:'closed'});
+              return;
+            }
+            document.channels.push({platform:'zello', name, description});
+            document.channels.sort((a,b) => a.name.localeCompare(b.name,'de'));
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path, sha: existing.data.sha,
+              branch: context.payload.repository.default_branch,
+              message: 'community: approve Zello channel from issue #' + issue.number,
+              content: Buffer.from(JSON.stringify(document,null,2)+'\n').toString('base64')
+            });
+            await github.rest.issues.createComment({owner, repo, issue_number:issue.number,
+              body:'✅ Freigegeben und in `community/zello_channels.json` eingetragen. Der Kanal wird nach „Liste aktualisieren“ angezeigt.'});
+            await github.rest.issues.update({owner,repo,issue_number:issue.number,state:'closed'});
