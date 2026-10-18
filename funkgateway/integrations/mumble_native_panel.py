@@ -1597,10 +1597,24 @@ class MumbleNativePanel(QWidget):
                 self._render_channels()
             else:
                 self._update_speaker_icons()
-        previous=self.chat_target.currentData()
-        self.chat_target.blockSignals(True)
-        self.chat_target.clear()
-        self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
+        choices=[("Aktueller Channel (öffentlich)",None)]
+        choices.extend((str(row.get("name") or ""),row.get("session"))
+                       for row in rows if not row.get("is_self"))
+        current=[(self.chat_target.itemText(i),self.chat_target.itemData(i))
+                 for i in range(self.chat_target.count())]
+        if choices!=current:
+            previous=self.chat_target.currentData()
+            popup=self.chat_target.view().isVisible()
+            scroll=self.chat_target.view().verticalScrollBar().value() if popup else None
+            self.chat_target.blockSignals(True)
+            self.chat_target.clear()
+            for name,session in choices:
+                self.chat_target.addItem(name,session)
+            idx=self.chat_target.findData(previous)
+            self.chat_target.setCurrentIndex(idx if idx>=0 else 0)
+            self.chat_target.blockSignals(False)
+            if popup and scroll is not None:
+                self.chat_target.view().verticalScrollBar().setValue(scroll)
         self.users.clear()
         for row in rows:
             if row.get("talking"):
@@ -1610,11 +1624,6 @@ class MumbleNativePanel(QWidget):
             item=QListWidgetItem(self._mouth_icon(kind),f"{row.get('name','')} — {row.get('channel','')}")
             item.setData(Qt.UserRole,dict(row))
             self.users.addItem(item)
-            if not row.get("is_self"):
-                self.chat_target.addItem(str(row.get("name") or ""),row.get("session"))
-        idx=self.chat_target.findData(previous)
-        self.chat_target.setCurrentIndex(idx if idx>=0 else 0)
-        self.chat_target.blockSignals(False)
 
     def _speakers(self,names):
         self.speaker.setText("Aktive Sprecher: "+(", ".join(names) if names else "—"))
