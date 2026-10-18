@@ -19,6 +19,9 @@ except Exception:
 
 from .mumble_native import MumbleNativeClient
 from .mumble_public import MumblePublicServerLoader
+from .frn_panel import HotkeyCaptureButton
+from ..hotkeys import LocalPttHotkey
+from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import list_certificates, create_certificate
 
 
@@ -48,6 +51,13 @@ class MumbleNativePanel(QWidget):
         self.client.inputLevel.connect(self._input_level)
         self.client.outputLevel.connect(self._output_level)
         self.client.error.connect(self._error)
+        self.local_ptt_hotkey=LocalPttHotkey(self)
+        self.global_ptt_hotkey=GlobalPttHotkey(self)
+        self.local_ptt_hotkey.pressed.connect(self._hotkey_ptt_press)
+        self.local_ptt_hotkey.released.connect(self._hotkey_ptt_release)
+        self.global_ptt_hotkey.pressed.connect(self._hotkey_ptt_press)
+        self.global_ptt_hotkey.released.connect(self._hotkey_ptt_release)
+        self.global_ptt_hotkey.statusChanged.connect(self._hotkey_status)
         self.client.chatReceived.connect(self._chat_received)
         self.settings=QSettings('FunkGateway','LinuxNativeMumble')
         self._user_volumes={}
@@ -63,6 +73,7 @@ class MumbleNativePanel(QWidget):
         self._build()
         self._load_settings()
         self._refresh_favorites()
+        self._configure_ptt_hotkey()
 
     @staticmethod
     def _mouth_icon(kind):
@@ -147,8 +158,17 @@ class MumbleNativePanel(QWidget):
         self.self_deaf=QCheckBox("Eigenen Empfang taub schalten")
         self.self_deaf.toggled.connect(self._self_deaf_changed)
         self.ptt=QPushButton("Mumble PTT halten"); self.ptt.setMinimumHeight(42)
-        self.ptt.pressed.connect(lambda:self.client.set_pc_ptt(True))
-        self.ptt.released.connect(lambda:self.client.set_pc_ptt(False))
+        self.ptt.pressed.connect(lambda:self.set_mumble_ptt(True))
+        self.ptt.released.connect(lambda:self.set_mumble_ptt(False))
+        self.ptt_hotkey=HotkeyCaptureButton()
+        self.ptt_hotkey.set_hotkey("F10")
+        self.ptt_hotkey.hotkeyChanged.connect(self._configure_ptt_hotkey)
+        self.ptt_hotkey_scope=QComboBox()
+        self.ptt_hotkey_scope.addItem("Nur FunkGateway","local")
+        self.ptt_hotkey_scope.addItem("Systemweit (X11)","global")
+        self.ptt_hotkey_scope.currentIndexChanged.connect(self._configure_ptt_hotkey)
+        self.ptt_hotkey_status=QLabel("Mumble-Hotkey: lokal bereit")
+        self.ptt_hotkey_status.setWordWrap(True)
         self.in_level=QLabel("Mikrofon: < -60 dBFS"); self.out_level=QLabel("Mumble: < -60 dBFS")
         af.addRow("Mikrofon:",self.input); af.addRow("Lautsprecher:",self.output); af.addRow("",self.playback)
         af.addRow("",self.ptt_enabled); af.addRow("",self.ptt); af.addRow("",self.refresh_audio)
@@ -160,6 +180,9 @@ class MumbleNativePanel(QWidget):
         self.master_volume.valueChanged.connect(self._master_volume_changed)
         af.addRow("TX:",self.in_level); af.addRow("RX:",self.out_level)
         af.addRow("Mumble-Empfang gesamt:",self.master_volume)
+        af.addRow("Eigener Mumble-PTT-Hotkey:",self.ptt_hotkey)
+        af.addRow("Hotkey-Bereich:",self.ptt_hotkey_scope)
+        af.addRow("",self.ptt_hotkey_status)
         v.addWidget(audio)
 
         # Channel browser gets its own entire tab, not a cramped area between
@@ -589,6 +612,12 @@ class MumbleNativePanel(QWidget):
         self.master_volume.setValue(int(self.settings.value("master_volume",100)))
         self.master_volume.blockSignals(False)
         self.client.set_playback_volume(self.master_volume.value())
+        self.ptt_hotkey.set_hotkey(str(self.settings.value("ptt_hotkey","F10")))
+        scope=str(self.settings.value("ptt_hotkey_scope","local"))
+        idx=self.ptt_hotkey_scope.findData(scope)
+        self.ptt_hotkey_scope.blockSignals(True)
+        self.ptt_hotkey_scope.setCurrentIndex(idx if idx>=0 else 0)
+        self.ptt_hotkey_scope.blockSignals(False)
         try:
             values=json.loads(str(self.settings.value("user_volumes","{}")))
             if isinstance(values,dict):
@@ -646,6 +675,8 @@ class MumbleNativePanel(QWidget):
         self.settings.setValue("port",self.port.value())
         self.settings.setValue("nickname",self.nick.text().strip())
         self.settings.setValue("master_volume",self.master_volume.value())
+        self.settings.setValue("ptt_hotkey",self.ptt_hotkey.hotkey())
+        self.settings.setValue("ptt_hotkey_scope",self.ptt_hotkey_scope.currentData())
         self.settings.setValue("user_volumes",json.dumps(self._user_volumes))
         self.settings.setValue("favorites",json.dumps(self._favorites))
         self.settings.sync()
