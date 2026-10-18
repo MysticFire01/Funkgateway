@@ -9,13 +9,14 @@ import queue
 import time
 import webbrowser
 from datetime import datetime, timezone
-from PySide6.QtCore import QUrl, Signal, QTimer, Qt
+from PySide6.QtCore import QUrl, Signal, QTimer, Qt, QEvent
+from PySide6.QtGui import QKeySequence
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget,QSlider
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
@@ -233,10 +234,14 @@ class ZelloPanel(QWidget):
         self.hotkey_scope=QComboBox()
         self.hotkey_scope.addItem("Nur FunkGateway","local")
         self.hotkey_scope.addItem("Systemweit (X11)","global")
+        self.capture_hotkey_btn=QPushButton("Taste erfassen")
+        self.capture_hotkey_btn.clicked.connect(self._start_hotkey_capture)
+        self._capturing_hotkey=False
         self.hotkey_apply=QPushButton("Hotkey übernehmen")
         self.hotkey_apply.clicked.connect(self._configure_hotkey)
         hotkey_row.addWidget(QLabel("Zello-PTT-Hotkey:"))
         hotkey_row.addWidget(self.hotkey_edit)
+        hotkey_row.addWidget(self.capture_hotkey_btn)
         hotkey_row.addWidget(self.hotkey_scope)
         hotkey_row.addWidget(self.hotkey_apply)
         outer.addLayout(hotkey_row)
@@ -249,6 +254,24 @@ class ZelloPanel(QWidget):
         self._global_hotkey.pressed.connect(lambda:self.set_ptt(True))
         self._global_hotkey.released.connect(lambda:self.set_ptt(False))
         self._global_hotkey.statusChanged.connect(self.hotkey_status.setText)
+        audio_controls=QHBoxLayout()
+        self.mic_gain=QSlider(Qt.Orientation.Horizontal)
+        self.mic_gain.setRange(0,300)
+        self.mic_gain.setValue(100)
+        self.mic_gain_value=QLabel("100 %")
+        self.mic_gain.valueChanged.connect(lambda n:self.mic_gain_value.setText(f"{n} %"))
+        self.rx_volume=QSlider(Qt.Orientation.Horizontal)
+        self.rx_volume.setRange(0,200)
+        self.rx_volume.setValue(100)
+        self.rx_volume_value=QLabel("100 %")
+        self.rx_volume.valueChanged.connect(lambda n:self.rx_volume_value.setText(f"{n} %"))
+        audio_controls.addWidget(QLabel("Mikrofonverstärkung"))
+        audio_controls.addWidget(self.mic_gain,1)
+        audio_controls.addWidget(self.mic_gain_value)
+        audio_controls.addWidget(QLabel("Wiedergabe"))
+        audio_controls.addWidget(self.rx_volume,1)
+        audio_controls.addWidget(self.rx_volume_value)
+        outer.addLayout(audio_controls)
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
         self.ptt_btn.setEnabled(False)
@@ -312,7 +335,9 @@ class ZelloPanel(QWidget):
                 "known_speakers":sorted(self._known_speakers),
                 "channel_favorites":sorted(self._channel_favorites),
                 "ptt_hotkey":self._ptt_hotkey_setting,
-                "ptt_hotkey_scope":self._ptt_hotkey_scope}
+                "ptt_hotkey_scope":self._ptt_hotkey_scope,
+                "mic_gain":self.mic_gain.value(),
+                "rx_volume":self.rx_volume.value()}
 
     def load_config(self,data):
         if not isinstance(data,dict):
@@ -332,6 +357,8 @@ class ZelloPanel(QWidget):
         idx=self.hotkey_scope.findData(data.get("ptt_hotkey_scope","local"))
         self.hotkey_scope.setCurrentIndex(max(0,idx))
         self._configure_hotkey(save=False)
+        self.mic_gain.setValue(max(0,min(300,int(data.get("mic_gain",100)))))
+        self.rx_volume.setValue(max(0,min(200,int(data.get("rx_volume",100)))))
         try:
             import keyring
             values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
@@ -630,7 +657,7 @@ class ZelloPanel(QWidget):
             except queue.Empty:
                 break
             try:
-                packet=self._tx_encoder.encode(pcm,320)
+                packet=self._tx_encoder.encode(self._scale_pcm(pcm,self.mic_gain.value()/100),320)
                 self._ws.sendBinaryMessage(bytes([1])+struct.pack("!II",self._tx_stream_id,0)+packet)
             except Exception as exc:
                 self.tx_status.setText("Zello TX-Fehler: "+str(exc))
@@ -653,7 +680,7 @@ class ZelloPanel(QWidget):
             while not self._tx_queue.empty():
                 try:
                     pcm=self._tx_queue.get_nowait()
-                    packet=self._tx_encoder.encode(pcm,320)
+                    packet=self._tx_encoder.encode(self._scale_pcm(pcm,self.mic_gain.value()/100),320)
                     self._ws.sendBinaryMessage(bytes([1])+struct.pack("!II",self._tx_stream_id,0)+packet)
                 except Exception:
                     break
@@ -669,6 +696,48 @@ class ZelloPanel(QWidget):
             except queue.Empty: break
         self._update_ptt_ui()
         self.tx_status.setText("Zello TX: bereit")
+
+    def _start_hotkey_capture(self):
+        self._capturing_hotkey=True
+        self._global_hotkey.stop()
+        self._local_hotkey.set_hotkey("")
+        self.capture_hotkey_btn.setText("Jetzt Taste drücken …")
+        self.capture_hotkey_btn.setFocus()
+        self.hotkey_status.setText("Hotkey-Erfassung: Taste oder Kombination drücken")
+        self.grabKeyboard()
+
+    def keyPressEvent(self,event):
+        if not self._capturing_hotkey:
+            return super().keyPressEvent(event)
+        if event.isAutoRepeat():
+            return
+        key=event.key()
+        if key==Qt.Key.Key_Escape:
+            self._capturing_hotkey=False
+            self.releaseKeyboard()
+            self.capture_hotkey_btn.setText("Taste erfassen")
+            self._configure_hotkey(save=False)
+            return
+        pure={Qt.Key.Key_Control:"Ctrl",Qt.Key.Key_Alt:"Alt",
+              Qt.Key.Key_Shift:"Shift",Qt.Key.Key_Meta:"Meta"}
+        if key in pure:
+            text=pure[key]
+        else:
+            text=QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
+        if not text:
+            return
+        self._capturing_hotkey=False
+        self.releaseKeyboard()
+        self.capture_hotkey_btn.setText("Taste erfassen")
+        self.hotkey_edit.setText(text)
+        self._configure_hotkey()
+
+    @staticmethod
+    def _scale_pcm(pcm, factor):
+        import audioop
+        if factor==1.0:
+            return pcm
+        return audioop.mul(pcm,2,factor)
 
     def _configure_hotkey(self, *_args, save=True):
         self.set_ptt(False)
@@ -870,9 +939,12 @@ class ZelloPanel(QWidget):
                     if rate!=48000:
                         pcm,state=audioop.ratecv(pcm,2,1,rate,48000,state)
                     if pcm and not self._audio_stop.is_set():
-                        output.write(pcm)
+                        output.write(self._scale_pcm(pcm,self._rx_gain_factor))
         except Exception as exc:
             self.audioError.emit(str(exc))
+
+    def _set_rx_gain(self,value):
+        self._rx_gain_factor=value/100
 
     def _audio_error(self,message):
         self.audio_status.setText("Audioausgabe: "+message)
@@ -881,6 +953,8 @@ class ZelloPanel(QWidget):
         if self._audio_thread and self._audio_thread.is_alive():
             return
         self._audio_stop.clear()
+        self._rx_gain_factor=self.rx_volume.value()/100
+        self.rx_volume.valueChanged.connect(self._set_rx_gain)
         self._audio_thread=threading.Thread(target=self._audio_worker,daemon=True)
         self._audio_thread.start()
         self._rx_timer.start()
@@ -940,6 +1014,8 @@ class ZelloPanel(QWidget):
         self._ws.close()
 
     def closeEvent(self, event):
+        if self._capturing_hotkey:
+            self.releaseKeyboard()
         self.stop_ptt_hotkeys()
         self.disconnect_channel()
         super().closeEvent(event)
