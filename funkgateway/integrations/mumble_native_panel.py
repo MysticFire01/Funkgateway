@@ -4,12 +4,12 @@ import html
 import re
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QThread
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QBrush
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
     QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
-    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget
 )
 
 try:
@@ -18,6 +18,7 @@ except Exception:
     sd=None
 
 from .mumble_native import MumbleNativeClient
+from .mumble_public import MumblePublicServerLoader
 from ..mumble_certificates import list_certificates, create_certificate
 
 
@@ -38,8 +39,15 @@ class MumbleNativePanel(QWidget):
         self.client.chatReceived.connect(self._chat_received)
         self.settings=QSettings('FunkGateway','LinuxNativeMumble')
         self._user_volumes={}
+        self._favorites=[]
+        self._public_servers=[]
+        self._public_source=""
+        self._public_detail=""
+        self._public_thread=None
+        self._public_worker=None
         self._build()
         self._load_settings()
+        self._refresh_favorites()
 
     @staticmethod
     def _mouth_icon(kind):
@@ -74,6 +82,21 @@ class MumbleNativePanel(QWidget):
         self.nick=QLineEdit("FunkGateway Linux")
         self.password=QLineEdit(); self.password.setEchoMode(QLineEdit.Password)
         self.channel=QLineEdit(); self.channel.setPlaceholderText("optional: Channel/Pfad")
+        self.favorite_select=QComboBox()
+        self.favorite_select.addItem("Manueller Server",None)
+        self.favorite_select.currentIndexChanged.connect(self._favorite_selected)
+        self.favorite_add=QPushButton("Favorit hinzufügen")
+        self.favorite_edit=QPushButton("Bearbeiten")
+        self.favorite_delete=QPushButton("Löschen")
+        self.favorite_add.clicked.connect(self._favorite_add)
+        self.favorite_edit.clicked.connect(self._favorite_edit)
+        self.favorite_delete.clicked.connect(self._favorite_delete)
+        favrow=QHBoxLayout()
+        favrow.addWidget(self.favorite_select,1)
+        favrow.addWidget(self.favorite_add)
+        favrow.addWidget(self.favorite_edit)
+        favrow.addWidget(self.favorite_delete)
+        self.favorite_nick_label=QLabel("Favoriten-Nickname: allgemeiner Nickname")
         self.cert=QComboBox()
         self.refresh_cert=QPushButton("Zertifikate neu laden"); self.refresh_cert.clicked.connect(self._refresh_certs)
         self.create_cert=QPushButton("Neues Zertifikat"); self.create_cert.clicked.connect(self._create_cert)
@@ -87,6 +110,8 @@ class MumbleNativePanel(QWidget):
 
         self.status=QLabel("Native Mumble: getrennt"); self.status.setWordWrap(True)
         self.current_channel=QLabel("—")
+        f.addRow("Favoriten:",favrow)
+        f.addRow("",self.favorite_nick_label)
         f.addRow("Server:",self.host); f.addRow("Port:",self.port); f.addRow("Nickname:",self.nick)
         f.addRow("Passwort:",self.password); f.addRow("Start-Channel:",self.channel); f.addRow("Zertifikat:",certrow)
         f.addRow(buttons); f.addRow("Status:",self.status); f.addRow("Aktueller Channel:",self.current_channel)
@@ -154,6 +179,32 @@ class MumbleNativePanel(QWidget):
         typerow.addWidget(self.chat_send)
         chatlayout.addLayout(typerow)
         v.addWidget(chatbox)
+
+        publicbox=QGroupBox("Öffentliche Mumble-Serverliste")
+        publiclayout=QVBoxLayout(publicbox)
+        public_filters=QHBoxLayout()
+        self.public_search=QLineEdit()
+        self.public_search.setPlaceholderText("Name, Host oder Land suchen …")
+        self.public_search.textChanged.connect(self._render_public_servers)
+        self.public_country=QComboBox()
+        self.public_country.addItem("Alle Länder","")
+        self.public_country.currentIndexChanged.connect(self._render_public_servers)
+        self.public_refresh=QPushButton("Originalliste laden")
+        self.public_refresh.clicked.connect(self._load_public_servers)
+        public_filters.addWidget(self.public_search,2)
+        public_filters.addWidget(self.public_country,1)
+        public_filters.addWidget(self.public_refresh)
+        publiclayout.addLayout(public_filters)
+        self.public_status=QLabel("Noch nicht geladen – zuerst offizielle Mumble-Liste")
+        self.public_status.setWordWrap(True)
+        publiclayout.addWidget(self.public_status)
+        self.public_list=QListWidget()
+        self.public_list.itemDoubleClicked.connect(self._use_public_server)
+        publiclayout.addWidget(self.public_list)
+        self.public_use=QPushButton("Ausgewählten Server übernehmen")
+        self.public_use.clicked.connect(self._use_public_server)
+        publiclayout.addWidget(self.public_use)
+        v.addWidget(publicbox)
 
         self._refresh_audio()
         self._refresh_certs()
