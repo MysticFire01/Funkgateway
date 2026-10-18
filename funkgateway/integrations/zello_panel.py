@@ -13,7 +13,7 @@ from PySide6.QtCore import QUrl, Signal, QTimer, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
@@ -35,6 +35,7 @@ class ZelloPanel(QWidget):
         self._audio_thread = None
         self._last_packet = 0.0
         self._known_speakers = set()
+        self._channel_favorites = set()
         self._tx_recipient = ""
         self._tx_seq = 2
         self._tx_pending = False
@@ -158,6 +159,65 @@ class ZelloPanel(QWidget):
         note.setWordWrap(True)
         target_form.addRow("",note)
         outer.addWidget(target_box)
+        directory=QGroupBox("Buddyliste und Kanalfavoriten (lokal)")
+        directory_form=QVBoxLayout(directory)
+        directory_form.addWidget(QLabel("Buddys – bekannte Zello-Namen"))
+        buddy_row=QHBoxLayout()
+        self.buddy_search=QLineEdit()
+        self.buddy_search.setPlaceholderText("Buddys filtern")
+        self.buddy_search.textChanged.connect(self._refresh_directories)
+        buddy_row.addWidget(self.buddy_search)
+        self.buddy_add=QLineEdit()
+        self.buddy_add.setPlaceholderText("Buddy hinzufügen")
+        buddy_row.addWidget(self.buddy_add)
+        add_buddy=QPushButton("+")
+        add_buddy.clicked.connect(self._add_buddy)
+        buddy_row.addWidget(add_buddy)
+        directory_form.addLayout(buddy_row)
+        self.buddy_list=QListWidget()
+        self.buddy_list.setMaximumHeight(105)
+        self.buddy_list.itemDoubleClicked.connect(self._choose_buddy)
+        directory_form.addWidget(self.buddy_list)
+        buddy_actions=QHBoxLayout()
+        choose_buddy=QPushButton("Buddy als Kanalziel wählen")
+        choose_buddy.clicked.connect(self._choose_buddy)
+        remove_buddy=QPushButton("Buddy entfernen")
+        remove_buddy.clicked.connect(self._remove_buddy)
+        buddy_actions.addWidget(choose_buddy)
+        buddy_actions.addWidget(remove_buddy)
+        directory_form.addLayout(buddy_actions)
+        directory_form.addWidget(QLabel("Kanäle – gespeicherte Favoriten"))
+        channel_row=QHBoxLayout()
+        self.channel_search=QLineEdit()
+        self.channel_search.setPlaceholderText("Favoriten durchsuchen")
+        self.channel_search.textChanged.connect(self._refresh_directories)
+        channel_row.addWidget(self.channel_search)
+        self.channel_add=QLineEdit()
+        self.channel_add.setPlaceholderText("Kanalnamen eintragen")
+        channel_row.addWidget(self.channel_add)
+        add_channel=QPushButton("+")
+        add_channel.clicked.connect(self._add_favorite)
+        channel_row.addWidget(add_channel)
+        directory_form.addLayout(channel_row)
+        self.channel_list=QListWidget()
+        self.channel_list.setMaximumHeight(105)
+        self.channel_list.itemDoubleClicked.connect(self._choose_favorite)
+        directory_form.addWidget(self.channel_list)
+        channel_actions=QHBoxLayout()
+        choose_channel=QPushButton("Favorit als Kanal wählen")
+        choose_channel.clicked.connect(self._choose_favorite)
+        remove_channel=QPushButton("Favorit entfernen")
+        remove_channel.clicked.connect(self._remove_favorite)
+        channel_actions.addWidget(choose_channel)
+        channel_actions.addWidget(remove_channel)
+        directory_form.addLayout(channel_actions)
+        note=QLabel("Nur lokal gespeicherte Namen: keine Online-Kanalsuche und "
+                    "kein Zello-Kontaktbuch. Kanalwechsel erfordert erneutes Verbinden. "
+                    "Gezielte PTT ist nur innerhalb des verbundenen Kanals möglich.")
+        note.setWordWrap(True)
+        directory_form.addWidget(note)
+        outer.addWidget(directory)
+        self._refresh_directories()
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
         self.ptt_btn.setEnabled(False)
@@ -181,7 +241,8 @@ class ZelloPanel(QWidget):
     def to_config(self):
         return {"username":self.username.text().strip(),
                 "channel":self.channel.text().strip(),
-                "known_speakers":sorted(self._known_speakers)}
+                "known_speakers":sorted(self._known_speakers),
+                "channel_favorites":sorted(self._channel_favorites)}
 
     def load_config(self,data):
         if not isinstance(data,dict):
@@ -194,6 +255,9 @@ class ZelloPanel(QWidget):
         self.target_user.clear()
         self.target_user.addItems(sorted(self._known_speakers,key=str.casefold))
         self.target_user.setCurrentIndex(-1)
+        self._channel_favorites=set(str(x).strip() for x in data.get("channel_favorites",[])
+                                    if isinstance(x,str) and x.strip())
+        self._refresh_directories()
         try:
             import keyring
             values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
@@ -530,6 +594,71 @@ class ZelloPanel(QWidget):
         self._update_ptt_ui()
         self.tx_status.setText("Zello TX: bereit")
 
+    def _save_directory(self):
+        window=self.window()
+        if hasattr(window,"save_cfg"):
+            window.save_cfg()
+
+    def _refresh_directories(self, *_args):
+        buddy_filter=self.buddy_search.text().strip().casefold()
+        channel_filter=self.channel_search.text().strip().casefold()
+        self.buddy_list.clear()
+        self.buddy_list.addItems(sorted((x for x in self._known_speakers
+                                         if buddy_filter in x.casefold()),key=str.casefold))
+        self.channel_list.clear()
+        self.channel_list.addItems(sorted((x for x in self._channel_favorites
+                                           if channel_filter in x.casefold()),key=str.casefold))
+
+    def _add_buddy(self):
+        name=self.buddy_add.text().strip()
+        if not name: return
+        self._known_speakers.add(name)
+        if self.target_user.findText(name)<0:
+            self.target_user.addItem(name)
+        self.buddy_add.clear()
+        self._refresh_directories()
+        self._save_directory()
+
+    def _remove_buddy(self):
+        item=self.buddy_list.currentItem()
+        if item is None: return
+        name=item.text()
+        self._known_speakers.discard(name)
+        idx=self.target_user.findText(name)
+        if idx>=0: self.target_user.removeItem(idx)
+        self._refresh_directories()
+        self._save_directory()
+
+    def _choose_buddy(self, *_args):
+        item=self.buddy_list.currentItem()
+        if item is None: return
+        self.target_mode.setCurrentIndex(1)
+        self.target_user.setCurrentText(item.text())
+
+    def _add_favorite(self):
+        name=self.channel_add.text().strip() or self.channel.text().strip()
+        if not name: return
+        self._channel_favorites.add(name)
+        self.channel_add.clear()
+        self._refresh_directories()
+        self._save_directory()
+
+    def _remove_favorite(self):
+        item=self.channel_list.currentItem()
+        if item is None: return
+        self._channel_favorites.discard(item.text())
+        self._refresh_directories()
+        self._save_directory()
+
+    def _choose_favorite(self, *_args):
+        item=self.channel_list.currentItem()
+        if item is None: return
+        if self.connected or self._ws.state()!=QAbstractSocket.SocketState.UnconnectedState:
+            self._set_status("Für Kanalwechsel zuerst die Verbindung trennen")
+            return
+        self.channel.setText(item.text())
+        self._save_directory()
+
     def _target_mode_changed(self, *_args):
         self.target_user.setEnabled(self.target_mode.currentData()=="user")
 
@@ -541,6 +670,7 @@ class ZelloPanel(QWidget):
             self._known_speakers.add(name)
             self.target_user.addItem(name)
         self.target_user.setCurrentText(name)
+        self._refresh_directories()
         window=self.window()
         if hasattr(window,"save_cfg"):
             window.save_cfg()
@@ -552,6 +682,7 @@ class ZelloPanel(QWidget):
         if name and name not in ("Unbekannt","Sprecher nicht übermittelt") and name not in self._known_speakers:
             self._known_speakers.add(name)
             self.target_user.addItem(name)
+            self._refresh_directories()
         self.speaker.setText("Sprecher: "+(name or "—"))
         self.talkerChanged.emit(name)
 
