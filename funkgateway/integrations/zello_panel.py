@@ -150,6 +150,7 @@ class ZelloPanel(QWidget):
         if data.get("seq") == 1 and ("success" in data or "error" in data):
             if data.get("success"):
                 self.connected = True
+                self._start_audio()
                 self.connect_btn.setEnabled(False)
                 self.disconnect_btn.setEnabled(True)
                 self._set_status("Verbunden mit " + self.channel.text().strip())
@@ -159,19 +160,114 @@ class ZelloPanel(QWidget):
                                  str(data.get("error", "unbekannter Fehler")))
                 self._ws.close()
         elif data.get("command") == "on_stream_start":
-            sender = str(data.get("from", "") or data.get("username", "") or "Unbekannt")
-            self.talker_name = sender
-            self.speaker.setText("Sprecher: " + sender)
-            self.talkerChanged.emit(sender)
+            try:
+                if data.get("codec") != "opus":
+                    raise ValueError("Codec nicht Opus")
+                stream_id=int(data["stream_id"])
+                h=base64.b64decode(data["codec_header"],validate=True)
+                rate,frames,frame_ms=struct.unpack("<HBB",h)
+                if rate not in (8000,12000,16000,24000,48000) or frames not in (1,2):
+                    raise ValueError("Opus-Header nicht unterstützt")
+                import opuslib
+                decoder=opuslib.Decoder(rate,1)
+                speaker=str(data.get("from") or "Unbekannt")
+                self._streams[stream_id]=(decoder,rate,speaker)
+                self._last_packet=time.monotonic()
+                self._set_speaker(speaker)
+                self.audio_status.setText("Audioempfang: "+speaker)
+            except Exception as exc:
+                self.audio_status.setText("Opus-Startfehler: "+str(exc))
         elif data.get("command") == "on_stream_stop":
-            self.talker_name = ""
-            self.speaker.setText("Sprecher: —")
-            self.talkerChanged.emit("")
+            try:
+                self._streams.pop(int(data["stream_id"]),None)
+            except (ValueError,TypeError,KeyError):
+                pass
+            if not self._streams:
+                self._set_speaker("")
+                self.audio_status.setText("Audioempfang: bereit")
+
+    def _set_speaker(self,name):
+        if self.talker_name==name:
+            return
+        self.talker_name=name
+        self.speaker.setText("Sprecher: "+(name or "—"))
+        self.talkerChanged.emit(name)
+
+    def _binary_message(self,data):
+        raw=bytes(data)
+        if not self.connected or len(raw)<10 or raw[0]!=1:
+            return
+        stream_id,packet_id=struct.unpack("!II",raw[1:9])
+        stream=self._streams.get(stream_id)
+        if not stream:
+            return
+        decoder,rate,speaker=stream
+        try:
+            pcm=decoder.decode(raw[9:],int(rate*.12),False)
+            self._last_packet=time.monotonic()
+            self._set_speaker(speaker)
+            try:
+                self._audio_queue.put_nowait((rate,pcm))
+            except queue.Full:
+                self._audio_queue.get_nowait()
+                self._audio_queue.put_nowait((rate,pcm))
+        except Exception as exc:
+            self.audio_status.setText("Opus-Dekodierung: "+str(exc))
+
+    def _audio_worker(self):
+        try:
+            import sounddevice as sd
+            import audioop
+            with sd.RawOutputStream(samplerate=48000,channels=1,dtype="int16",latency="low") as output:
+                state=None
+                old_rate=None
+                while not self._audio_stop.is_set():
+                    try:
+                        rate,pcm=self._audio_queue.get(timeout=.15)
+                    except queue.Empty:
+                        continue
+                    if rate!=old_rate:
+                        state=None
+                        old_rate=rate
+                    if rate!=48000:
+                        pcm,state=audioop.ratecv(pcm,2,1,rate,48000,state)
+                    if pcm and not self._audio_stop.is_set():
+                        output.write(pcm)
+        except Exception as exc:
+            self.audioError.emit(str(exc))
+
+    def _audio_error(self,message):
+        self.audio_status.setText("Audioausgabe: "+message)
+
+    def _start_audio(self):
+        if self._audio_thread and self._audio_thread.is_alive():
+            return
+        self._audio_stop.clear()
+        self._audio_thread=threading.Thread(target=self._audio_worker,daemon=True)
+        self._audio_thread.start()
+        self._rx_timer.start()
+
+    def _clear_audio(self):
+        self._rx_timer.stop()
+        self._audio_stop.set()
+        self._streams.clear()
+        while True:
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._set_speaker("")
+
+    def _check_audio_timeout(self):
+        if self.talker_name and time.monotonic()-self._last_packet>2.5:
+            self._set_speaker("")
+            self.audio_status.setText("Audioempfang: wartet")
 
     def _socket_error(self, error):
         self._set_status("Verbindungsfehler: " + self._ws.errorString())
 
     def _socket_disconnected(self):
+        self._clear_audio()
         was_connected = self.connected
         self.connected = False
         self.talker_name = ""
@@ -184,6 +280,7 @@ class ZelloPanel(QWidget):
         self.talkerChanged.emit("")
 
     def disconnect_channel(self):
+        self._clear_audio()
         self._requested_disconnect = True
         self._ws.close()
 
