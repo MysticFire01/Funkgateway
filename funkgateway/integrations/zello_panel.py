@@ -10,6 +10,7 @@ import time
 import webbrowser
 import re
 from html import unescape
+from urllib.parse import urlencode
 from html.parser import HTMLParser
 from datetime import datetime, timezone
 from PySide6.QtCore import QUrl, Signal, QTimer, Qt, QEvent
@@ -305,7 +306,7 @@ class ZelloPanel(QWidget):
         tabs=QTabWidget(self)
         self.zello_tabs=tabs
         pages={}
-        for title in ("Verbindung","Kanäle","Entdecken","Buddys","Diagnose"):
+        for title in ("Verbindung","Kanäle","Entdecken","Public Directory","Buddys","Diagnose"):
             page=QWidget()
             layout=QVBoxLayout(page)
             layout.setContentsMargins(8,8,8,8)
@@ -383,6 +384,44 @@ class ZelloPanel(QWidget):
         self._discovery_replies=[]
         self._search_discovery()
         QTimer.singleShot(0,self._fetch_discovery)
+        public_box=QGroupBox("FunkGateway Community Directory · Zello")
+        public_layout=QVBoxLayout(public_box)
+        info=QLabel("Offene, von der Community eingereichte Kanäle. "
+                    "Nur freigegebene Einträge aus unserem GitHub-Verzeichnis werden angezeigt. "
+                    "Keine globale Zello-Suche und keine garantierte Erreichbarkeit.")
+        info.setWordWrap(True)
+        public_layout.addWidget(info)
+        public_row=QHBoxLayout()
+        self.public_search=QLineEdit()
+        self.public_search.setPlaceholderText("Öffentliche Kanäle durchsuchen")
+        self.public_search.textChanged.connect(self._filter_public_directory)
+        public_reload=QPushButton("Liste aktualisieren")
+        public_reload.clicked.connect(self._load_public_directory)
+        public_row.addWidget(self.public_search,1)
+        public_row.addWidget(public_reload)
+        public_layout.addLayout(public_row)
+        self.public_results=QListWidget()
+        self.public_results.itemDoubleClicked.connect(self._public_save_favorite)
+        public_layout.addWidget(self.public_results)
+        public_actions=QHBoxLayout()
+        public_fav=QPushButton("Als Favorit speichern")
+        public_fav.clicked.connect(self._public_save_favorite)
+        public_submit=QPushButton("Eigenen Favoriten als Public vorschlagen")
+        public_submit.clicked.connect(self._public_submit)
+        public_actions.addWidget(public_fav)
+        public_actions.addWidget(public_submit)
+        public_layout.addLayout(public_actions)
+        self.public_description=QLineEdit()
+        self.public_description.setMaxLength(160)
+        self.public_description.setPlaceholderText("Optionale öffentliche Beschreibung (keine Zugangsdaten)")
+        public_layout.addWidget(self.public_description)
+        self.public_status=QLabel("Öffentliches Verzeichnis noch nicht geladen.")
+        self.public_status.setWordWrap(True)
+        public_layout.addWidget(self.public_status)
+        pages["Public Directory"].addWidget(public_box)
+        self._public_entries=[]
+        self._public_network=QNetworkAccessManager(self)
+        QTimer.singleShot(0,self._load_public_directory)
         move_widget(directory,"Buddys")
         for widget in (self.rx_diagnostic,self.rx_detail,self.rx_packets,
                        self.copy_rx_btn,self.tx_diagnostic):
@@ -974,6 +1013,98 @@ class ZelloPanel(QWidget):
         else:
             self.channel.setText(name)
             self.connect_channel()
+
+    def _load_public_directory(self,*_args):
+        url="https://raw.githubusercontent.com/MysticFire01/Funkgateway/main/community/zello_channels.json"
+        request=QNetworkRequest(QUrl(url))
+        request.setTransferTimeout(12000)
+        request.setRawHeader(b"User-Agent",b"FunkGateway-CommunityDirectory")
+        self.public_status.setText("Lade freigegebenes Community-Verzeichnis …")
+        reply=self._public_network.get(request)
+        reply.finished.connect(lambda reply=reply:self._public_loaded(reply))
+
+    def _public_loaded(self,reply):
+        try:
+            if reply.error()!=QNetworkReply.NetworkError.NoError:
+                raise RuntimeError(reply.errorString())
+            raw=bytes(reply.readAll())
+            if len(raw)>1024*1024:
+                raise ValueError("Verzeichnis zu groß")
+            document=json.loads(raw.decode("utf-8"))
+            if document.get("version")!=1 or not isinstance(document.get("channels"),list):
+                raise ValueError("Unbekanntes Verzeichnisformat")
+            cleaned=[]
+            seen=set()
+            for entry in document["channels"][:1000]:
+                if not isinstance(entry,dict) or entry.get("platform")!="zello":
+                    continue
+                name=entry.get("name")
+                if not isinstance(name,str) or not (1<=len(name)<=120):
+                    continue
+                name=name.strip()
+                if not name or name.casefold() in seen:
+                    continue
+                seen.add(name.casefold())
+                cleaned.append({"name":name,"description":str(entry.get("description",""))[:160]})
+            self._public_entries=cleaned
+            self._filter_public_directory()
+            self.public_status.setText(
+                f"{len(cleaned)} freigegebene Community-Kanäle geladen. "
+                "Status nicht live überprüft.")
+        except Exception as exc:
+            self.public_status.setText(
+                "Community-Verzeichnis derzeit nicht verfügbar: "+str(exc))
+        finally:
+            reply.deleteLater()
+
+    def _filter_public_directory(self,*_args):
+        term=self.public_search.text().strip().casefold()
+        self.public_results.clear()
+        for entry in self._public_entries:
+            if term in (entry["name"]+" "+entry["description"]).casefold():
+                item=QListWidgetItem(entry["name"]+
+                    (" — "+entry["description"] if entry["description"] else ""))
+                item.setData(Qt.ItemDataRole.UserRole,entry["name"])
+                self.public_results.addItem(item)
+
+    def _public_save_favorite(self,*_args):
+        item=self.public_results.currentItem()
+        if item is None:
+            return
+        name=item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(name,str) or not name:
+            return
+        self._channel_favorites.add(name)
+        self._refresh_directories()
+        self._save_directory()
+        self.public_status.setText("Als Favorit gespeichert: "+name)
+
+    def _public_submit(self,*_args):
+        item=self.channel_list.currentItem()
+        name=item.text().strip() if item else ""
+        if not name:
+            self.public_status.setText(
+                "Bitte zuerst unter Kanäle einen eigenen Favoriten auswählen.")
+            return
+        if len(name)>120 or "\\n" in name:
+            self.public_status.setText("Ungültiger Kanalname.")
+            return
+        description=self.public_description.text().strip()
+        # GitHub Issue intake: no PAT, no credential upload, requires GitHub sign-in.
+        body=("Vorschlag für das FunkGateway Community Directory\\n\\n"
+              "Plattform: Zello\\n"
+              "Kanalname: "+name+"\\n"
+              "Beschreibung: "+description+"\\n\\n"
+              "Ich bestätige, dass der Kanal öffentlich gelistet werden darf "
+              "und keine privaten Zugangsdaten enthalten sind.\\n"
+              "Bitte vor Aufnahme prüfen: [ ]")
+        url=("https://github.com/MysticFire01/Funkgateway/issues/new?"
+             +urlencode({"title":"[Community Directory] Zello: "+name,
+                         "body":body}))
+        webbrowser.open(url)
+        self.public_status.setText(
+            "Vorschlag im Browser geöffnet (GitHub-Anmeldung nötig). "
+            "Es wurde noch nichts veröffentlicht.")
 
     def _refresh_directories(self, *_args):
         buddy_filter=self.buddy_search.text().strip().casefold()
