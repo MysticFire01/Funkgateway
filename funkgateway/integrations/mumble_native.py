@@ -29,6 +29,7 @@ class MumbleNativeClient(QObject):
     inputLevel = Signal(float)
     outputLevel = Signal(float)
     error = Signal(str)
+    chatReceived = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,6 +51,9 @@ class MumbleNativeClient(QObject):
         self._own_tx_active = False
         self._certfile = ""
         self._keyfile = ""
+        self._playback_volume = 1.0
+        self._user_volumes = {}
+        self._volume_server = ""
 
     @property
     def connected(self):
@@ -97,6 +101,7 @@ class MumbleNativeClient(QObject):
         if not nickname:
             raise RuntimeError("Mumble-Nickname fehlt.")
         self._stop.clear()
+        self._volume_server = f"{host.casefold()}:{int(port)}"
         self._certfile = str(certfile or "")
         self._keyfile = str(keyfile or "")
         self._playback_enabled = bool(playback)
@@ -118,7 +123,7 @@ class MumbleNativeClient(QObject):
                 host, nickname, port=port, password=password,
                 certfile=(self._certfile or None),
                 keyfile=(self._keyfile or None),
-                reconnect=True, stereo=False, debug=False,
+                reconnect=False, stereo=False, debug=False,
             )
             self._mumble = mumble
             try:
@@ -127,8 +132,19 @@ class MumbleNativeClient(QObject):
                 pass
             mumble.set_receive_sound(True)
             mumble.callbacks.set_callback(cb_sound, self._sound_received)
+            try:
+                from pymumble_py3.constants import PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
+            except ImportError:
+                from pymumble_py3.callbacks import PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
+            mumble.callbacks.set_callback(PYMUMBLE_CLBK_TEXTMESSAGERECEIVED, self._chat_received)
             mumble.start()
             mumble.is_ready()
+            state = int(getattr(mumble, "connected", 0))
+            session = getattr(mumble.users, "myself_session", None)
+            if state != 2 or session is None:
+                raise RuntimeError(
+                    f"Mumble-Anmeldung nicht abgeschlossen (Status={state}, Session={session})."
+                )
             if self._stop.is_set():
                 mumble.stop()
                 return
@@ -191,6 +207,72 @@ class MumbleNativeClient(QObject):
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=2.0)
         self._thread = None
+
+    def volume_key(self, name):
+        return f"{self._volume_server}|{str(name).strip().casefold()}"
+
+    def set_playback_volume(self, percent):
+        self._playback_volume = max(0.0, min(2.0, float(percent) / 100))
+
+    def set_user_volumes(self, values):
+        self._user_volumes = {
+            str(key): max(0.0, min(2.0, float(value) / 100))
+            for key, value in dict(values or {}).items()
+        }
+
+    def user_volume(self, name):
+        return int(round(100 * self._user_volumes.get(self.volume_key(name), 1.0)))
+
+    def set_user_volume(self, name, percent):
+        key = self.volume_key(name)
+        gain = max(0.0, min(2.0, float(percent) / 100))
+        if gain == 1.0:
+            self._user_volumes.pop(key, None)
+        else:
+            self._user_volumes[key] = gain
+
+    def _chat_received(self, message):
+        try:
+            actor = int(message.actor) if message.HasField("actor") else None
+            self.chatReceived.emit({
+                "actor": actor,
+                "sessions": [int(s) for s in message.session],
+                "channels": [int(c) for c in message.channel_id],
+                "message": str(message.message or ""),
+            })
+        except Exception as exc:
+            self.error.emit("Mumble Chat: " + str(exc))
+
+    def send_chat(self, message, session=None):
+        if not self._connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        from html import escape
+        message = str(message or "").strip()
+        if not message:
+            return None
+        if len(message) > 4000:
+            raise RuntimeError("Maximal 4000 Zeichen pro Nachricht.")
+        payload = escape(message)
+        if session is None:
+            channel = self._mumble.my_channel()
+            if channel is None:
+                raise RuntimeError("Kein aktueller Channel vorhanden.")
+            channel.send_text_message(payload)
+            return "Channel"
+        try:
+            user = self._mumble.users[int(session)]
+        except (ValueError, TypeError, KeyError) as exc:
+            raise RuntimeError("Empfänger nicht mehr verbunden.") from exc
+        user.send_text_message(payload)
+        return str(self._prop(user, "name", session))
+
+    def chat_sender_name(self, actor):
+        if actor is None:
+            return "Server"
+        try:
+            return str(self._prop(self._mumble.users[int(actor)], "name", actor))
+        except Exception:
+            return f"Session {actor}"
 
     def configure_audio(self, input_device=None, output_device=None, playback=True):
         self._capture_device = input_device
@@ -316,8 +398,12 @@ class MumbleNativeClient(QObject):
             return
         self.outputLevel.emit(self._dbfs(pcm))
         if self._playback_enabled:
+            gain = self._playback_volume * self._user_volumes.get(self.volume_key(name), 1.0)
+            if gain <= 0:
+                return
+            if gain != 1.0:
+                pcm = audioop.mul(pcm, 2, gain)
             try:
-                self._ensure_playback()
                 if self._playback_stream is not None:
                     self._playback_stream.write(pcm)
             except Exception as exc:
