@@ -780,6 +780,8 @@ class FrnNativeClient:
                     ), "") or "FRN"
                     self.signals.text_message.emit({
                         "sender": sender_name,
+                        "sender_id": sender_id,
+                        "private": True,
                         "message": message_text[:2000],
                     })
                     ordinary_entries = []
