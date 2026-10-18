@@ -3556,6 +3556,7 @@ class MainWindow(QMainWindow):
 
     def _apply_operating_mode_ui(self):
         mode=self._mode()
+        self._apply_mumble_view_level()
         self._update_setup_mode_content()
         self._update_start_mode_view()
         if mode=="pc" and hasattr(self,"pc_hw_port"):
