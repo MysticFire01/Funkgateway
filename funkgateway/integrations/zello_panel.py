@@ -9,7 +9,7 @@ import queue
 import time
 import webbrowser
 from datetime import datetime, timezone
-from PySide6.QtCore import QUrl, Signal, QTimer
+from PySide6.QtCore import QUrl, Signal, QTimer, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
