@@ -261,6 +261,230 @@ class MumbleNativePanel(QWidget):
         except Exception as exc:
             self._error("Zertifikat: "+str(exc))
 
+    def _refresh_favorites(self, selected=None):
+        self.favorite_select.blockSignals(True)
+        self.favorite_select.clear()
+        self.favorite_select.addItem("Manueller Server",None)
+        for index,fav in enumerate(self._favorites):
+            self.favorite_select.addItem(
+                f"{fav['name']} — {fav['host']}:{fav['port']}",index
+            )
+        if selected is not None and 0<=selected<len(self._favorites):
+            self.favorite_select.setCurrentIndex(selected+1)
+        self.favorite_select.blockSignals(False)
+        self._favorite_selected()
+
+    def _favorite_selected(self,*_args):
+        index=self.favorite_select.currentData()
+        valid=isinstance(index,int) and 0<=index<len(self._favorites)
+        self.favorite_edit.setEnabled(valid)
+        self.favorite_delete.setEnabled(valid)
+        if not valid:
+            self.favorite_nick_label.setText("Favoriten-Nickname: allgemeiner Nickname")
+            return
+        fav=self._favorites[index]
+        self.host.setText(fav["host"])
+        self.port.setValue(fav["port"])
+        self.favorite_nick_label.setText(
+            "Favoriten-Nickname: "+(fav.get("username") or "allgemeiner Nickname")
+        )
+
+    def _favorite_form(self,existing=None):
+        old=existing or {}
+        title="Mumble-Favorit"
+        values=[]
+        for field,label,default in (
+            ("name","Name:",old.get("name") or self.host.text().strip()),
+            ("host","Hostname:",old.get("host") or self.host.text().strip()),
+        ):
+            value,ok=QInputDialog.getText(self,title,label,text=str(default))
+            if not ok or not value.strip():
+                return None
+            values.append(value.strip())
+        port,ok=QInputDialog.getInt(
+            self,title,"Port:",int(old.get("port") or self.port.value()),1,65535,1
+        )
+        if not ok:
+            return None
+        username,ok=QInputDialog.getText(
+            self,title,"Nickname nur für diesen Server (leer = allgemein):",
+            text=str(old.get("username") or "")
+        )
+        if not ok:
+            return None
+        return {
+            "name":values[0],"host":values[1],
+            "port":int(port),"username":username.strip(),
+        }
+
+    def _favorite_add(self):
+        data=self._favorite_form()
+        if data is None:
+            return
+        self._favorites.append(data)
+        self._refresh_favorites(len(self._favorites)-1)
+        self._save_settings()
+
+    def _favorite_edit(self):
+        index=self.favorite_select.currentData()
+        if not isinstance(index,int) or not 0<=index<len(self._favorites):
+            return
+        data=self._favorite_form(self._favorites[index])
+        if data is None:
+            return
+        self._favorites[index]=data
+        self._refresh_favorites(index)
+        self._save_settings()
+
+    def _favorite_delete(self):
+        index=self.favorite_select.currentData()
+        if not isinstance(index,int) or not 0<=index<len(self._favorites):
+            return
+        fav=self._favorites[index]
+        answer=QMessageBox.question(
+            self,"Mumble-Favorit löschen",
+            f"Favorit {fav['name']} wirklich löschen?"
+        )
+        if answer!=QMessageBox.Yes:
+            return
+        del self._favorites[index]
+        self._refresh_favorites()
+        self._save_settings()
+
+    def _load_public_servers(self):
+        if self._public_thread is not None:
+            return
+        self.public_refresh.setEnabled(False)
+        self.public_status.setText("Lade vollständige offizielle Mumble-Serverliste …")
+        self._public_detail=""
+        self._public_source=""
+        worker=MumblePublicServerLoader()
+        thread=QThread(self)
+        self._public_thread=thread
+        self._public_worker=worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._public_loaded)
+        worker.error.connect(self._public_error)
+        worker.sourceChanged.connect(self._public_source_changed)
+        worker.sourceDetail.connect(self._public_source_detail)
+        worker.progress.connect(self._public_progress)
+        worker.loaded.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._public_finished)
+        thread.start()
+
+    def _public_source_detail(self,reason):
+        self._public_detail=str(reason or "")
+
+    def _public_source_changed(self,source,total):
+        self._public_source=str(source)
+        if source=="official":
+            self.public_status.setText(f"Offizielle Mumble-Liste: {total} Server")
+            self.public_status.setStyleSheet("")
+        else:
+            self.public_status.setText(
+                f"ACHTUNG: Fallback-Liste ({total} Server). "
+                "Originalliste fehlgeschlagen – Details im Tooltip."
+            )
+            self.public_status.setToolTip(self._public_detail)
+            self.public_status.setStyleSheet("color:#C77A14;font-weight:bold;")
+
+    def _public_progress(self,done,total):
+        if total:
+            source="Original" if self._public_source=="official" else "Fallback"
+            self.public_status.setText(
+                f"{source}: Live-Status {done}/{total} Server"
+            )
+
+    def _public_loaded(self,servers):
+        self._public_servers=list(servers or [])
+        countries=sorted({
+            str(row.get("country") or "Unbekannt")
+            for row in self._public_servers
+        },key=str.casefold)
+        previous=self.public_country.currentData() or ""
+        self.public_country.blockSignals(True)
+        self.public_country.clear()
+        self.public_country.addItem("Alle Länder","")
+        for country in countries:
+            self.public_country.addItem(country,country)
+        idx=self.public_country.findData(previous)
+        self.public_country.setCurrentIndex(idx if idx>=0 else 0)
+        self.public_country.blockSignals(False)
+        self._render_public_servers()
+
+    def _public_error(self,message):
+        self.public_status.setText("Mumble-Serverliste fehlgeschlagen: "+str(message))
+        self.public_status.setStyleSheet("color:#C77A14")
+        self.public_status.setToolTip(str(message))
+
+    def _public_finished(self):
+        self._public_thread=None
+        self._public_worker=None
+        self.public_refresh.setEnabled(True)
+
+    def _render_public_servers(self,*_args):
+        query=self.public_search.text().strip().casefold()
+        country=self.public_country.currentData() or ""
+        self.public_list.clear()
+        count=0
+        for row in sorted(
+            self._public_servers,
+            key=lambda x:(str(x.get("country") or "").casefold(),
+                          str(x.get("name") or "").casefold())
+        ):
+            if country and row.get("country")!=country:
+                continue
+            terms=" ".join(str(row.get(k) or "")
+                           for k in ("name","host","country","region","provider"))
+            if query and query not in terms.casefold():
+                continue
+            users=row.get("users")
+            usertext=str(users) if isinstance(users,int) else "?"
+            display=(
+                f"{row.get('country') or 'Unbekannt'} | "
+                f"{row.get('name') or row.get('host')} | "
+                f"{row.get('host')}:{row.get('port')} | {usertext} Nutzer"
+            )
+            item=QListWidgetItem(display)
+            item.setData(Qt.UserRole,dict(row))
+            self.public_list.addItem(item)
+            count+=1
+        source=("Offizielle Mumble-Liste" if self._public_source=="official"
+                else ("Fallback-Liste" if self._public_source else "Keine Quelle"))
+        self.public_status.setText(
+            f"{count} angezeigt / {len(self._public_servers)} insgesamt · {source}"
+        )
+        self.public_status.setToolTip(
+            "Grund für Fallback: "+self._public_detail
+            if self._public_source=="legacy-fallback" else ""
+        )
+
+    def _use_public_server(self,*_args):
+        item=self.public_list.currentItem()
+        if item is None:
+            return
+        row=item.data(Qt.UserRole)
+        if not isinstance(row,dict):
+            return
+        host=str(row.get("host") or "")
+        port=int(row.get("port") or 64738)
+        self.host.setText(host)
+        self.port.setValue(port)
+        matched=None
+        for index,fav in enumerate(self._favorites):
+            if fav["host"].casefold()==host.casefold() and fav["port"]==port:
+                matched=index
+                break
+        self._refresh_favorites(matched)
+        if matched is None:
+            self.host.setText(host)
+            self.port.setValue(port)
+        self._save_settings()
+
     def _load_settings(self):
         import json
         self.host.setText(str(self.settings.value("host","voice.mumble-funk.de")))
