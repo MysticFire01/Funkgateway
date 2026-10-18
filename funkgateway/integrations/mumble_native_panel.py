@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, 
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
     QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
-    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView
 )
 
 try:
@@ -57,6 +57,9 @@ class MumbleNativePanel(QWidget):
         self._public_detail=""
         self._public_thread=None
         self._public_worker=None
+        self._channel_rows=[]
+        self._participant_rows=[]
+        self._channel_expand_all=True
         self._build()
         self._load_settings()
         self._refresh_favorites()
@@ -159,14 +162,34 @@ class MumbleNativePanel(QWidget):
         af.addRow("Mumble-Empfang gesamt:",self.master_volume)
         v.addWidget(audio)
 
-        cols=QHBoxLayout()
-        chbox=QGroupBox("Channels"); chv=QVBoxLayout(chbox)
+        cols=QVBoxLayout()
+        chbox=QGroupBox("Channels und Benutzer"); chv=QVBoxLayout(chbox)
         self.channels=QTreeWidget()
-        self.channels.setHeaderLabels(["Mumble-Channel", "Teilnehmer"])
-        self.channels.setAlternatingRowColors(True)
+        self.channels.setHeaderLabels(["Channel / Benutzer", "Nutzer"])
+        self.channels.setAlternatingRowColors(False)
+        self.channels.setRootIsDecorated(True)
+        self.channels.setIndentation(24)
+        self.channels.setUniformRowHeights(True)
+        self.channels.setMinimumHeight(300)
+        self.channels.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.channels.header().setSectionResizeMode(0,QHeaderView.Stretch)
+        self.channels.header().setSectionResizeMode(1,QHeaderView.ResizeToContents)
         self.channels.itemDoubleClicked.connect(self._move_channel)
-        self.refresh_channels=QPushButton("Channel-Liste aktualisieren"); self.refresh_channels.clicked.connect(self._refresh_channels)
-        chv.addWidget(self.channels); chv.addWidget(self.refresh_channels)
+        self.refresh_channels=QPushButton("Channel-Liste aktualisieren")
+        self.refresh_channels.clicked.connect(self._refresh_channels)
+        self.expand_channels=QPushButton("Alle Räume aufklappen")
+        self.expand_channels.clicked.connect(self._toggle_channel_expand)
+        buttons=QHBoxLayout()
+        buttons.addWidget(self.refresh_channels)
+        buttons.addWidget(self.expand_channels)
+        chv.addWidget(self.channels,1)
+        chv.addLayout(buttons)
+        self.channel_hint=QLabel(
+            "Doppelklick auf einen Channel wechselt den Raum. "
+            "Die Teilnehmer stehen eingerückt darunter."
+        )
+        self.channel_hint.setWordWrap(True)
+        chv.addWidget(self.channel_hint)
 
         userbox=QGroupBox("Teilnehmer"); uv=QVBoxLayout(userbox)
         self.speaker=QLabel("Aktive Sprecher: —"); self.speaker.setWordWrap(True)
@@ -174,7 +197,7 @@ class MumbleNativePanel(QWidget):
         self.users.setContextMenuPolicy(Qt.CustomContextMenu)
         self.users.customContextMenuRequested.connect(self._user_context_menu)
         uv.addWidget(self.speaker); uv.addWidget(self.users)
-        cols.addWidget(chbox,1); cols.addWidget(userbox,1)
+        cols.addWidget(chbox,3); cols.addWidget(userbox,1)
         v.addLayout(cols,1)
         chatbox=QGroupBox("Mumble Chat")
         chatlayout=QVBoxLayout(chatbox)
@@ -802,52 +825,105 @@ class MumbleNativePanel(QWidget):
     def _channel_changed(self,name):
         self.current_channel.setText(str(name or "—"))
 
+    def _toggle_channel_expand(self):
+        self._channel_expand_all=not self._channel_expand_all
+        if self._channel_expand_all:
+            self.channels.expandAll()
+            self.expand_channels.setText("Alle Räume zuklappen")
+        else:
+            self.channels.collapseAll()
+            self.expand_channels.setText("Alle Räume aufklappen")
+
     def _refresh_channels(self):
-        channels=self.client.channel_snapshot()
-        expanded=set()
+        self._channel_rows=self.client.channel_snapshot()
+        self._render_channels()
+
+    def _render_channels(self):
+        channels=self._channel_rows
+        participants=self._participant_rows
+        old_selected=self.channels.currentItem()
+        selected=None
+        if old_selected is not None:
+            data=old_selected.data(0,Qt.UserRole)
+            if isinstance(data,dict):
+                selected=(data.get("kind"),data.get("id"),data.get("session"))
+        # Remember manual expansion state, including when the tree is updated
+        # every 0.5s as speakers join, leave or change channel.
+        expanded={}
         def remember(node):
-            if node.isExpanded():
-                row=node.data(0,Qt.UserRole)
-                if isinstance(row,dict):
-                    expanded.add(row["id"])
-            for index in range(node.childCount()):
-                remember(node.child(index))
-        for index in range(self.channels.topLevelItemCount()):
-            remember(self.channels.topLevelItem(index))
+            data=node.data(0,Qt.UserRole)
+            if isinstance(data,dict) and data.get("kind")=="channel":
+                expanded[data.get("id")]=node.isExpanded()
+            for i in range(node.childCount()):
+                remember(node.child(i))
+        for i in range(self.channels.topLevelItemCount()):
+            remember(self.channels.topLevelItem(i))
         self.channels.setUpdatesEnabled(False)
+        self.channels.blockSignals(True)
         try:
             self.channels.clear()
-            items={}
+            by_id={}
             for row in channels:
-                label=("▶ " if row.get("current") else "")+str(row.get("name") or "")
+                cid=row["id"]
+                label=("▶  " if row.get("current") else "📁  ")+str(row.get("name") or "")
                 item=QTreeWidgetItem([label,str(int(row.get("users") or 0))])
-                item.setData(0,Qt.UserRole,dict(row))
+                item.setData(0,Qt.UserRole,{"kind":"channel",**row})
+                item.setToolTip(0,"Doppelklick: Channel betreten")
                 if row.get("current"):
                     font=item.font(0)
                     font.setBold(True)
                     item.setFont(0,font)
-                items[row["id"]]=item
+                    item.setToolTip(0,"Aktueller Channel")
+                by_id[cid]=item
             for row in sorted(channels,key=lambda r:str(r.get("name") or "").casefold()):
+                cid=row["id"]
                 parent=row.get("parent")
-                item=items[row["id"]]
-                if parent in items and parent!=row["id"]:
-                    items[parent].addChild(item)
+                if parent in by_id and parent!=cid:
+                    by_id[parent].addChild(by_id[cid])
                 else:
-                    self.channels.addTopLevelItem(item)
-            for item in items.values():
-                data=item.data(0,Qt.UserRole)
-                if data["id"] in expanded or data.get("current"):
+                    self.channels.addTopLevelItem(by_id[cid])
+            for row in sorted(participants,key=lambda x:str(x.get("name") or "").casefold()):
+                cid=row.get("channel_id")
+                if cid not in by_id:
+                    continue
+                kind=("whisper" if row.get("speech_mode")=="whisper"
+                      else ("self" if row.get("is_self") else "talk")) if row.get("talking") else "idle"
+                name=str(row.get("name") or "")
+                user=QTreeWidgetItem(["  "+name,""])
+                user.setIcon(0,self._mouth_icon(kind))
+                user.setData(0,Qt.UserRole,{"kind":"user",**row})
+                user.setToolTip(0,"Teilnehmer – kein Channelwechsel")
+                by_id[cid].addChild(user)
+            for cid,item in by_id.items():
+                if cid in expanded:
+                    item.setExpanded(expanded[cid])
+                elif self._channel_expand_all or any(
+                    row.get("channel_id")==cid for row in participants
+                ):
                     item.setExpanded(True)
+                if item.data(0,Qt.UserRole).get("current"):
                     ancestor=item.parent()
                     while ancestor is not None:
                         ancestor.setExpanded(True)
                         ancestor=ancestor.parent()
+            if selected:
+                def restore(item):
+                    data=item.data(0,Qt.UserRole)
+                    if (isinstance(data,dict) and
+                        (data.get("kind"),data.get("id"),data.get("session"))==selected):
+                        self.channels.setCurrentItem(item)
+                        return True
+                    return any(restore(item.child(i)) for i in range(item.childCount()))
+                for i in range(self.channels.topLevelItemCount()):
+                    if restore(self.channels.topLevelItem(i)):
+                        break
         finally:
+            self.channels.blockSignals(False)
             self.channels.setUpdatesEnabled(True)
 
     def _move_channel(self,item,column=0):
         data=item.data(0,Qt.UserRole)
-        if not isinstance(data,dict):
+        if not isinstance(data,dict) or data.get("kind")!="channel":
             return
         path=dict(self.client.channel_paths()).get(data["id"],data.get("name",""))
         if self.client.move_to_path(path):
@@ -855,6 +931,8 @@ class MumbleNativePanel(QWidget):
             self._refresh_channels()
 
     def _participants(self,rows):
+        self._participant_rows=list(rows or [])
+        self._render_channels()
         previous=self.chat_target.currentData()
         self.chat_target.blockSignals(True)
         self.chat_target.clear()
