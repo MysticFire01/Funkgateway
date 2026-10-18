@@ -16,7 +16,7 @@ from PySide6.QtWebSockets import QWebSocket
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget,QSlider)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QListWidgetItem,QTabWidget,QSlider,QApplication)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
@@ -265,13 +265,18 @@ class ZelloPanel(QWidget):
         self.rx_volume.setValue(100)
         self.rx_volume_value=QLabel("100 %")
         self.rx_volume.valueChanged.connect(lambda n:self.rx_volume_value.setText(f"{n} %"))
+        self.rx_volume.valueChanged.connect(self._set_rx_gain)
         audio_controls.addWidget(QLabel("Mikrofonverstärkung"))
         audio_controls.addWidget(self.mic_gain,1)
         audio_controls.addWidget(self.mic_gain_value)
         audio_controls.addWidget(QLabel("Wiedergabe"))
         audio_controls.addWidget(self.rx_volume,1)
         audio_controls.addWidget(self.rx_volume_value)
-        outer.addLayout(audio_controls)
+        audio_box=QGroupBox("Zello Audio")
+        audio_box.setLayout(audio_controls)
+        outer.addWidget(audio_box)
+        self.mic_gain.valueChanged.connect(lambda _n:self._save_directory())
+        self.rx_volume.valueChanged.connect(lambda _n:self._save_directory())
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
         self.ptt_btn.setEnabled(False)
@@ -309,6 +314,7 @@ class ZelloPanel(QWidget):
         outer.removeItem(buttons)
         pages["Verbindung"].addLayout(buttons)
         move_widget(help_label,"Verbindung")
+        move_widget(audio_box,"Verbindung")
         # Compact side-by-side channel controls: target on the left,
         # saved favorites on the right. Preserve existing widget signals.
         channel_columns=QHBoxLayout()
@@ -698,39 +704,49 @@ class ZelloPanel(QWidget):
         self.tx_status.setText("Zello TX: bereit")
 
     def _start_hotkey_capture(self):
+        """Capture keys without a keyboard grab, so the UI cannot be locked."""
+        if self._capturing_hotkey:
+            self._finish_hotkey_capture(None)
+            return
         self._capturing_hotkey=True
         self._global_hotkey.stop()
         self._local_hotkey.set_hotkey("")
-        self.capture_hotkey_btn.setText("Jetzt Taste drücken …")
+        self.capture_hotkey_btn.setText("Abbrechen (Esc)")
+        self.hotkey_status.setText("Jetzt Taste drücken; Esc bricht ab")
+        QApplication.instance().installEventFilter(self)
         self.capture_hotkey_btn.setFocus()
-        self.hotkey_status.setText("Hotkey-Erfassung: Taste oder Kombination drücken")
-        self.grabKeyboard()
 
-    def keyPressEvent(self,event):
+    def eventFilter(self,obj,event):
         if not self._capturing_hotkey:
-            return super().keyPressEvent(event)
+            return super().eventFilter(obj,event)
+        if event.type()!=QEvent.Type.KeyPress:
+            return super().eventFilter(obj,event)
         if event.isAutoRepeat():
-            return
+            return True
         key=event.key()
         if key==Qt.Key.Key_Escape:
-            self._capturing_hotkey=False
-            self.releaseKeyboard()
-            self.capture_hotkey_btn.setText("Taste erfassen")
-            self._configure_hotkey(save=False)
-            return
-        pure={Qt.Key.Key_Control:"Ctrl",Qt.Key.Key_Alt:"Alt",
-              Qt.Key.Key_Shift:"Shift",Qt.Key.Key_Meta:"Meta"}
-        if key in pure:
-            text=pure[key]
+            self._finish_hotkey_capture(None)
+            return True
+        modifiers={Qt.Key.Key_Control:"Ctrl",Qt.Key.Key_Alt:"Alt",
+                   Qt.Key.Key_Shift:"Shift",Qt.Key.Key_Meta:"Meta"}
+        if key in modifiers:
+            name=modifiers[key]
         else:
-            text=QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
-        if not text:
+            name=QKeySequence(event.keyCombination()).toString(
+                QKeySequence.SequenceFormat.PortableText)
+        if name:
+            self._finish_hotkey_capture(name)
+        return True
+
+    def _finish_hotkey_capture(self,name):
+        if not self._capturing_hotkey:
             return
         self._capturing_hotkey=False
-        self.releaseKeyboard()
+        QApplication.instance().removeEventFilter(self)
         self.capture_hotkey_btn.setText("Taste erfassen")
-        self.hotkey_edit.setText(text)
-        self._configure_hotkey()
+        if name:
+            self.hotkey_edit.setText(name)
+        self._configure_hotkey(save=bool(name))
 
     @staticmethod
     def _scale_pcm(pcm, factor):
@@ -954,7 +970,6 @@ class ZelloPanel(QWidget):
             return
         self._audio_stop.clear()
         self._rx_gain_factor=self.rx_volume.value()/100
-        self.rx_volume.valueChanged.connect(self._set_rx_gain)
         self._audio_thread=threading.Thread(target=self._audio_worker,daemon=True)
         self._audio_thread.start()
         self._rx_timer.start()
@@ -1015,7 +1030,8 @@ class ZelloPanel(QWidget):
 
     def closeEvent(self, event):
         if self._capturing_hotkey:
-            self.releaseKeyboard()
+            self._capturing_hotkey=False
+            QApplication.instance().removeEventFilter(self)
         self.stop_ptt_hotkeys()
         self.disconnect_channel()
         super().closeEvent(event)
