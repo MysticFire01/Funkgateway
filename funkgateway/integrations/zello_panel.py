@@ -250,6 +250,14 @@ class ZelloPanel(QWidget):
                 self._tx_wanted=False
                 self.tx_status.setText("Zello TX abgelehnt: "+str(data.get("error","unbekannt")))
                 self._update_ptt_ui()
+        elif self._tx_pending and ("success" in data or "error" in data):
+            # Report unexpected response IDs, but never log arbitrary server
+            # payloads (which might contain sensitive fields).
+            self.tx_diagnostic.setText(
+                "PTT-Diagnose: Antwort mit unerwarteter seq=%s (erwartet %s), "
+                "success=%s, error=%s" %
+                (data.get("seq","—"), self._tx_request_seq,
+                 data.get("success","—"), data.get("error","—")))
         elif data.get("command") == "on_stream_start":
             try:
                 if data.get("codec") != "opus":
