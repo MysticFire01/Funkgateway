@@ -494,6 +494,13 @@ class MumbleNativeClient(QObject):
                 cid_i = -1
             is_self = myself_session is not None and int(self._prop(user, "session", session)) == myself_session
             talking = (is_self and self._own_tx_active) or name in active
+            # Mumble assigns nonnegative persistent user IDs to registrations;
+            # guests are normally -1. Unknown stays unknown, never guessed.
+            raw_uid = self._prop(user, "user_id", None)
+            try:
+                user_id = int(raw_uid) if raw_uid is not None else None
+            except (TypeError, ValueError):
+                user_id = None
             result.append({
                 "name": name,
                 "session": int(self._prop(user, "session", session)),
@@ -502,6 +509,8 @@ class MumbleNativeClient(QObject):
                 "talking": talking,
                 "speech_mode": "normal" if is_self and self._own_tx_active else active.get(name, ""),
                 "is_self": is_self,
+                "user_id": user_id,
+                "registered": None if user_id is None else user_id >= 0,
                 "current_channel": current_channel is not None and cid_i == current_channel,
                 "local_user_mute": int(self._prop(user, "session", session)) in self._local_muted_sessions,
                 "local_mute": bool(self._prop(user, "self_mute", False)),
