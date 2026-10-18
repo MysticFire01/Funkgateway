@@ -351,6 +351,13 @@ class MainWindow(QMainWindow):
         for b in (self.start_main_btn,self.stop_main_btn,self.emergency_main_btn,self.ident_main_btn,self.frn_ptt_btn):
             b.setMinimumHeight(48)
             controls_layout.addWidget(b)
+        self.mumble_ptt_top_btn=self.big("Mumble PTT")
+        self.mumble_ptt_top_btn.setMinimumHeight(48)
+        self.mumble_ptt_top_btn.setToolTip(
+            "Mumble-PTT gedrückt halten. Eigener Hotkey unter Integration → Mumble → Native Client."
+        )
+        self.mumble_ptt_top_btn.setEnabled(False)
+        controls_layout.addWidget(self.mumble_ptt_top_btn)
 
         self.start_main_btn.setToolTip("Gateway starten. Diese Hauptsteuerung bleibt in jedem Reiter sichtbar.")
         self.stop_main_btn.setToolTip("Gateway stoppen. Diese Hauptsteuerung bleibt in jedem Reiter sichtbar.")
@@ -3554,6 +3561,20 @@ class MainWindow(QMainWindow):
         self._sync_frn_global_ui()
         self.update_start_status()
 
+    def _sync_mumble_ptt_ui(self,*_args):
+        if not hasattr(self,"mumble_ptt_top_btn"):
+            return
+        panel=getattr(self,"mumble_native_panel",None)
+        mode=self._mode() if hasattr(self,"operating_mode") else "pc"
+        enabled=bool(
+            panel and panel.client.connected and panel.ptt_enabled.isChecked()
+            and mode=="pc"
+        )
+        self.mumble_ptt_top_btn.setVisible(mode=="pc")
+        self.mumble_ptt_top_btn.setEnabled(enabled)
+        if not enabled and panel is not None:
+            panel.set_mumble_ptt(False)
+
     def _sync_frn_global_ui(self):
         if not hasattr(self,"frn_ptt_btn"):
             return
@@ -3562,6 +3583,7 @@ class MainWindow(QMainWindow):
         # Keine manuelle FRN-PTT im Gatewaybetrieb.
         manual=(mode=="pc")
         self.frn_ptt_btn.setVisible(manual)
+        self._sync_mumble_ptt_ui()
         if panel is not None:
             panel.set_gateway_mode(mode in ("gateway","radio_parrot"))
             self.frn_ptt_btn.setEnabled(manual and panel.connected and panel.audio_enabled.isChecked())
@@ -4359,6 +4381,15 @@ class MainWindow(QMainWindow):
         self.mumble_native_scroll=QScrollArea(self)
         self.mumble_native_scroll.setWidgetResizable(True)
         self.mumble_native_panel=MumbleNativePanel(self.mumble_native_scroll)
+        self.mumble_ptt_top_btn.pressed.connect(
+            lambda:self.mumble_native_panel.set_mumble_ptt(True)
+        )
+        self.mumble_ptt_top_btn.released.connect(
+            lambda:self.mumble_native_panel.set_mumble_ptt(False)
+        )
+        self.mumble_native_panel.client.connectedChanged.connect(
+            self._sync_mumble_ptt_ui
+        )
         self.mumble_native_scroll.setWidget(self.mumble_native_panel)
         self.mumble_admin_tabs.addTab(self.mumble_native_scroll,"Native Client")
 
@@ -10593,6 +10624,8 @@ done"""
 
         if hasattr(self,"frn_global_hotkey"):
             step("globalen FRN-Hotkey stoppen",self.frn_global_hotkey.stop)
+        if hasattr(self,"mumble_native_panel"):
+            step("Mumble-Hotkeys stoppen",self.mumble_native_panel.stop_ptt_hotkeys)
 
         if self.ptt:
             step("PTT schließen",self.ptt.close)
