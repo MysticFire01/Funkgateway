@@ -159,19 +159,31 @@ class MumbleNativePanel(QWidget):
         self._refresh_certs()
 
     def _refresh_audio(self):
-        self.input.clear(); self.output.clear()
-        if sd is None:
-            return
-        try:
-            devices=sd.query_devices()
-            for idx,dev in enumerate(devices):
-                name=str(dev.get("name") or f"Gerät {idx}")
-                if int(dev.get("max_input_channels") or 0)>0:
-                    self.input.addItem(f"{idx}: {name}",idx)
-                if int(dev.get("max_output_channels") or 0)>0:
-                    self.output.addItem(f"{idx}: {name}",idx)
-        except Exception as exc:
-            self._error("Audiogeräte: "+str(exc))
+        # ALSA hardware devices are often already owned by PipeWire/PulseAudio.
+        # Offer PortAudio's default first, not device index 0 (often hw:0).
+        selected_input=self.input.currentData() if self.input.count() else None
+        selected_output=self.output.currentData() if self.output.count() else None
+        self.input.blockSignals(True)
+        self.output.blockSignals(True)
+        self.input.clear()
+        self.output.clear()
+        self.input.addItem("System-Standardmikrofon (empfohlen)",None)
+        self.output.addItem("System-Standardausgabe (empfohlen)",None)
+        if sd is not None:
+            try:
+                devices=sd.query_devices()
+                for idx,dev in enumerate(devices):
+                    name=str(dev.get("name") or f"Gerät {idx}")
+                    if int(dev.get("max_input_channels") or 0)>0:
+                        self.input.addItem(f"{idx}: {name}",idx)
+                    if int(dev.get("max_output_channels") or 0)>0:
+                        self.output.addItem(f"{idx}: {name}",idx)
+            except Exception as exc:
+                self._error("Audiogeräte: "+str(exc))
+        for combo,old in ((self.input,selected_input),(self.output,selected_output)):
+            idx=combo.findData(old)
+            combo.setCurrentIndex(idx if idx>=0 else 0)
+            combo.blockSignals(False)
 
     def _refresh_certs(self):
         current=self.cert.currentData() if self.cert.count() else None
