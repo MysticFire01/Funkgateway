@@ -760,15 +760,36 @@ class FrnNativeClient:
             self.signals.participant_list.emit(self._parsed_clients())
             self.signals.log.emit(f"FRN Clientliste: {len(items)} Teilnehmer.")
         elif kind == "TEXT_MESSAGE":
-            # FRN datatype 4: length-prefixed text list, as in Windows client.
+            # Some FRN servers send one private message as three list entries:
+            # UUID of sender, plain message text, and a trailing "P" marker.
+            # Recognize only this unambiguous structure; other server
+            # variants retain their established per-entry handling.
+            import uuid
+            if len(items) == 3 and str(items[2]).strip() == "P":
+                try:
+                    sender_id = str(uuid.UUID(str(items[0]).strip()))
+                except (ValueError, AttributeError):
+                    sender_id = None
+                message_text = html.unescape(str(items[1])).strip()
+                if sender_id and message_text and "<" not in message_text:
+                    sender_name = next((
+                        self._client_field(client, "ON")
+                        for client in self.client_list
+                        if self._client_field(client, "ID").casefold() == sender_id.casefold()
+                    ), "") or "FRN"
+                    self.signals.text_message.emit({
+                        "sender": sender_name,
+                        "message": message_text[:2000],
+                    })
+                    return
             for entry in items[:100]:
-                raw=str(entry)
-                if len(raw)>MAX_LINE:
+                raw = str(entry)
+                if len(raw) > MAX_LINE:
                     continue
-                sender=self._client_field(raw,"ON")
-                message=self._client_field(raw,"MS")
+                sender = self._client_field(raw, "ON")
+                message = self._client_field(raw, "MS")
                 if not message:
-                    message=html.unescape(raw).strip() if "<" not in raw else ""
+                    message = html.unescape(raw).strip() if "<" not in raw else ""
                 if message:
                     self.signals.text_message.emit({
                         "sender": sender or "FRN",
