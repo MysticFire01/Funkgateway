@@ -28,6 +28,7 @@ class ZelloPanel(QWidget):
         self.talker_name = ""
         self._requested_disconnect = False
         self._streams = {}
+        self._rx_packet_counts = {}
         self._audio_queue = queue.Queue(maxsize=120)
         self._audio_stop = threading.Event()
         self._audio_thread = None
@@ -120,6 +121,13 @@ class ZelloPanel(QWidget):
         self.rx_diagnostic.setWordWrap(True)
         self.rx_diagnostic.setTextInteractionFlags(Qt.TextSelectableByMouse)
         outer.addWidget(self.rx_diagnostic)
+        self.rx_detail=QLabel("RX-Details: Noch kein Stream empfangen")
+        self.rx_detail.setWordWrap(True)
+        self.rx_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outer.addWidget(self.rx_detail)
+        self.copy_rx_btn=QPushButton("RX-Diagnose kopieren")
+        self.copy_rx_btn.clicked.connect(self._copy_rx_diagnostic)
+        outer.addWidget(self.copy_rx_btn)
         target_box=QGroupBox("Zello – Gesprächsziel")
         target_form=QFormLayout(target_box)
         self.target_mode=QComboBox()
@@ -337,6 +345,17 @@ class ZelloPanel(QWidget):
                 self.rx_diagnostic.setText(
                     f"RX-Diagnose: {target} · Absenderfelder: {present} · "
                     +("Sprecher erkannt" if sender else "kein Absender übermittelt"))
+                # List field names only; never display the full inbound JSON.
+                fields=", ".join(sorted(str(key) for key in data.keys()))
+                self._rx_packet_counts[stream_id]=0
+                self.rx_detail.setText(
+                    f"RX-Details: Ereignis on_stream_start · Stream-ID {stream_id} · "
+                    f"Felder: {fields} · Opus {rate} Hz / {frame_ms} ms · "
+                    "Audiopakete: 0")
+                if not sender:
+                    self.rx_diagnostic.setText(
+                        "RX-Diagnose: Absender nicht vom Server übermittelt "
+                        "(Übertragungsart nicht sicher bestimmbar)")
                 speaker=sender or "Unbekannt"
                 self._streams[stream_id]=(decoder,rate,speaker)
                 self._last_packet=time.monotonic()
@@ -346,12 +365,21 @@ class ZelloPanel(QWidget):
                 self.audio_status.setText("Opus-Startfehler: "+str(exc))
         elif data.get("command") == "on_stream_stop":
             try:
-                self._streams.pop(int(data["stream_id"]),None)
+                ended=int(data["stream_id"])
+                self._streams.pop(ended,None)
+                count=self._rx_packet_counts.pop(ended,0)
+                self.rx_detail.setText(self.rx_detail.text()+f" · Stream beendet ({count} Pakete)")
             except (ValueError,TypeError,KeyError):
                 pass
             if not self._streams:
                 self._set_speaker("")
                 self.audio_status.setText("Audioempfang: bereit")
+
+    def _copy_rx_diagnostic(self):
+        # Share only diagnostic labels, never credentials or raw server payloads.
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(
+            self.rx_diagnostic.text()+"\\n"+self.rx_detail.text())
 
     def _send_command(self, command, **kwargs):
         seq=self._tx_seq
@@ -515,6 +543,12 @@ class ZelloPanel(QWidget):
         decoder,rate,speaker=stream
         try:
             pcm=decoder.decode(raw[9:],int(rate*.12),False)
+            self._rx_packet_counts[stream_id]=self._rx_packet_counts.get(stream_id,0)+1
+            count=self._rx_packet_counts[stream_id]
+            if count==1 or count%50==0:
+                self.rx_detail.setText(
+                    f"RX-Details: Stream-ID {stream_id} · Pakete: {count} · "
+                    f"letzte Paket-ID: {packet_id} · Sprecher: {speaker} · Opus {rate} Hz")
             self._last_packet=time.monotonic()
             self._set_speaker(speaker)
             try:
@@ -562,6 +596,7 @@ class ZelloPanel(QWidget):
         self._rx_timer.stop()
         self._audio_stop.set()
         self._streams.clear()
+        self._rx_packet_counts.clear()
         while True:
             try:
                 self._audio_queue.get_nowait()
