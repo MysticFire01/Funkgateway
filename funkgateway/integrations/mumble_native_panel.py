@@ -227,7 +227,7 @@ class MumbleNativePanel(QWidget):
         chbox=QGroupBox("Channel-Baum und Benutzer")
         chv=QVBoxLayout(chbox)
         self.channels=QTreeWidget()
-        self.channels.setHeaderLabels(["Channel / Benutzer", "Nutzer"])
+        self.channels.setHeaderLabels(["Channel / Benutzer", "Nutzer", "Status"])
         self.channels.setAlternatingRowColors(False)
         self.channels.setRootIsDecorated(True)
         self.channels.setIndentation(24)
@@ -236,6 +236,7 @@ class MumbleNativePanel(QWidget):
         self.channels.setSelectionMode(QAbstractItemView.SingleSelection)
         self.channels.header().setSectionResizeMode(0,QHeaderView.Stretch)
         self.channels.header().setSectionResizeMode(1,QHeaderView.ResizeToContents)
+        self.channels.header().setSectionResizeMode(2,QHeaderView.ResizeToContents)
         self.channels.itemDoubleClicked.connect(self._move_channel)
         self.channels.setContextMenuPolicy(Qt.CustomContextMenu)
         self.channels.customContextMenuRequested.connect(self._channel_context_menu)
@@ -1115,6 +1116,41 @@ class MumbleNativePanel(QWidget):
         except Exception as exc:
             self._error(str(exc))
 
+    @staticmethod
+    def _mumble_user_status(row):
+        tokens=[]
+        registered=row.get("registered")
+        if registered is True:
+            tokens.append("✓ Registriert")
+        elif registered is False:
+            tokens.append("○ Gast")
+        else:
+            tokens.append("? Identität")
+        if row.get("local_mute"):
+            tokens.append("🔇 Self-Mute")
+        if row.get("local_deaf"):
+            tokens.append("🔇 Self-Deaf")
+        if row.get("server_mute"):
+            tokens.append("🔒 Server-Mute")
+        if row.get("server_deaf"):
+            tokens.append("🔒 Server-Deaf")
+        if row.get("local_user_mute"):
+            tokens.append("🔇 Lokal stumm")
+        return "  ·  ".join(tokens)
+
+    @staticmethod
+    def _mumble_user_status_tooltip(row):
+        registration=(
+            "Am Server registriert (Benutzer-ID: "+str(row.get("user_id"))+")"
+            if row.get("registered") is True else
+            "Nicht registriert / Gast"
+            if row.get("registered") is False else
+            "Registrierungsstatus vom Server nicht verfügbar"
+        )
+        return str(row.get("name") or "")+"\n"+registration+"\n"+(
+            "Rechtsklick: lokale Audio-Einstellungen / Self-Mute und Self-Deaf"
+        )
+
     def _sync_quick_mumble_buttons(self,*_args):
         if not hasattr(self,"channel_mute_button"):
             return
@@ -1474,10 +1510,10 @@ class MumbleNativePanel(QWidget):
                 kind=("whisper" if row.get("speech_mode")=="whisper"
                       else ("self" if row.get("is_self") else "talk")) if row.get("talking") else "idle"
                 name=str(row.get("name") or "")
-                user=QTreeWidgetItem(["  "+name,""])
+                user=QTreeWidgetItem(["  "+name,"",self._mumble_user_status(row)])
                 user.setIcon(0,self._mouth_icon(kind))
                 user.setData(0,Qt.UserRole,{"kind":"user",**row})
-                user.setToolTip(0,"Teilnehmer – kein Channelwechsel")
+                user.setToolTip(0,self._mumble_user_status_tooltip(row))
                 by_id[cid].addChild(user)
             for cid,item in by_id.items():
                 if cid in expanded:
@@ -1532,6 +1568,9 @@ class MumbleNativePanel(QWidget):
                     if (data.get("talking")!=talking or
                             data.get("speech_mode")!=row.get("speech_mode")):
                         node.setIcon(0,self._mouth_icon(kind))
+                    if data!=dict({"kind":"user",**row}):
+                        node.setText(2,self._mumble_user_status(row))
+                        node.setToolTip(0,self._mumble_user_status_tooltip(row))
                         node.setData(0,Qt.UserRole,{"kind":"user",**row})
             for index in range(node.childCount()):
                 walk(node.child(index))
@@ -1541,6 +1580,7 @@ class MumbleNativePanel(QWidget):
     def _participants(self,rows):
         self_row=next((row for row in rows if row.get("is_self")),None)
         self._update_mumble_self_state(self_row)
+        self._sync_quick_mumble_buttons()
         new_rows=list(rows or [])
         previous_structure={
             (row.get("session"),row.get("name"),row.get("channel_id"))
