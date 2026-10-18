@@ -20,6 +20,7 @@ except Exception:
 from .mumble_native import MumbleNativeClient
 from .mumble_public import MumblePublicServerLoader
 from .frn_panel import HotkeyCaptureButton
+from .emoji_picker import emoji_button
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import (
@@ -302,6 +303,7 @@ class MumbleNativePanel(QWidget):
         self.chat_send.clicked.connect(self._send_chat)
         self.chat_send.setEnabled(False)
         typerow.addWidget(self.chat_input,1)
+        typerow.addWidget(emoji_button(self.chat_input, 'mumble', chat_page))
         typerow.addWidget(self.chat_send)
         chatlayout.addLayout(typerow)
         chat_page_layout.addWidget(chatbox,2)
