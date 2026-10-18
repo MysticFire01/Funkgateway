@@ -446,6 +446,7 @@ class MumbleNativeClient(QObject):
             talking = (is_self and self._own_tx_active) or name in active
             result.append({
                 "name": name,
+                "session": int(self._prop(user, "session", session)),
                 "channel_id": cid_i,
                 "channel": path_map.get(cid_i, ""),
                 "talking": talking,
