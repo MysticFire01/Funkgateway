@@ -13,7 +13,7 @@ from PySide6.QtCore import QUrl, Signal, QTimer, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
@@ -32,6 +32,8 @@ class ZelloPanel(QWidget):
         self._audio_stop = threading.Event()
         self._audio_thread = None
         self._last_packet = 0.0
+        self._known_speakers = set()
+        self._tx_recipient = ""
         self._tx_seq = 2
         self._tx_pending = False
         self._tx_request_seq = None
@@ -114,6 +116,31 @@ class ZelloPanel(QWidget):
         outer.addWidget(self.speaker)
         self.audio_status=QLabel("Audioempfang: bereit")
         outer.addWidget(self.audio_status)
+        target_box=QGroupBox("Zello – Gesprächsziel")
+        target_form=QFormLayout(target_box)
+        self.target_mode=QComboBox()
+        self.target_mode.addItem("An alle im Kanal","all")
+        self.target_mode.addItem("Bestimmten Kanalteilnehmer ansprechen","user")
+        self.target_user=QComboBox()
+        self.target_user.setEditable(True)
+        self.target_user.setInsertPolicy(QComboBox.NoInsert)
+        self.target_user.setPlaceholderText("Benutzername")
+        self.target_user.setEnabled(False)
+        self.target_mode.currentIndexChanged.connect(self._target_mode_changed)
+        self.add_contact_btn=QPushButton("Teilnehmer merken")
+        self.add_contact_btn.clicked.connect(self._remember_contact)
+        target_form.addRow("Sendeziel:",self.target_mode)
+        target_form.addRow("Kanalteilnehmer:",self.target_user)
+        target_form.addRow("",self.add_contact_btn)
+        self.users_online=QLabel("Teilnehmer online: —")
+        target_form.addRow("",self.users_online)
+        note=QLabel("Die Channel API liefert Teilnehmerzahlen, aber keine vollständige "
+                    "Namensliste. Bekannte Sprecher und manuell gemerkte Namen "
+                    "stehen zur Auswahl. Direktnachrichten funktionieren nur "
+                    "zu Teilnehmern desselben Kanals.")
+        note.setWordWrap(True)
+        target_form.addRow("",note)
+        outer.addWidget(target_box)
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
         self.ptt_btn.setEnabled(False)
@@ -136,13 +163,20 @@ class ZelloPanel(QWidget):
 
     def to_config(self):
         return {"username":self.username.text().strip(),
-                "channel":self.channel.text().strip()}
+                "channel":self.channel.text().strip(),
+                "known_speakers":sorted(self._known_speakers)}
 
     def load_config(self,data):
         if not isinstance(data,dict):
             data={}
         self.username.setText(str(data.get("username","") or ""))
         self.channel.setText(str(data.get("channel","") or ""))
+        self._known_speakers=set(
+            str(x).strip() for x in data.get("known_speakers",[])
+            if isinstance(x,str) and x.strip())
+        self.target_user.clear()
+        self.target_user.addItems(sorted(self._known_speakers,key=str.casefold))
+        self.target_user.setCurrentIndex(-1)
         try:
             import keyring
             values=json.loads(keyring.get_password("FunkGateway.Zello","credentials") or "{}")
@@ -247,6 +281,7 @@ class ZelloPanel(QWidget):
                 error=str(data.get("error") or "")
                 label="online" if self.channel_online else "offline"
                 self.channel_status.setText("Kanalstatus: "+label+(" – "+error if error else ""))
+                self.users_online.setText("Teilnehmer online: "+str(data.get("users_online","—")))
                 self.ptt_btn.setEnabled(bool(self.connected and self.channel_online))
                 if not self.channel_online:
                     self._stop_tx()
@@ -317,6 +352,11 @@ class ZelloPanel(QWidget):
         if active:
             if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
                 return
+            recipient=self.target_user.currentText().strip() if self.target_mode.currentData()=="user" else ""
+            if self.target_mode.currentData()=="user" and not recipient:
+                self.tx_status.setText("Zello TX: bitte Kanalteilnehmer auswählen")
+                return
+            self._tx_recipient=recipient
             self._tx_wanted=True
             try:
                 import opuslib
@@ -327,8 +367,11 @@ class ZelloPanel(QWidget):
                 return
             header=base64.b64encode(struct.pack("<HBB",16000,1,20)).decode("ascii")
             self._tx_pending=True
-            self._tx_request_seq=self._send_command("start_stream",channel=self.channel.text().strip(),
-                               type="audio",codec="opus",codec_header=header,packet_duration=20)
+            payload=dict(channel=self.channel.text().strip(),type="audio",codec="opus",
+                         codec_header=header,packet_duration=20)
+            if self._tx_recipient:
+                payload["for"]=self._tx_recipient
+            self._tx_request_seq=self._send_command("start_stream",**payload)
             self._tx_requested_at=time.monotonic()
             self.tx_diagnostic.setText("PTT-Diagnose: start_stream gesendet, seq="+str(self._tx_request_seq)+", Kanal="+self.channel.text().strip())
             self._tx_timeout.start(6000)
@@ -409,6 +452,7 @@ class ZelloPanel(QWidget):
             self._send_command("stop_stream",channel=self.channel.text().strip(),
                                stream_id=self._tx_stream_id)
         self._tx_stream_id=None
+        self._tx_recipient=""
         self._tx_pending=False
         self._tx_request_seq=None
         self._tx_encoder=None
@@ -418,10 +462,28 @@ class ZelloPanel(QWidget):
         self._update_ptt_ui()
         self.tx_status.setText("Zello TX: bereit")
 
+    def _target_mode_changed(self, *_args):
+        self.target_user.setEnabled(self.target_mode.currentData()=="user")
+
+    def _remember_contact(self):
+        name=self.target_user.currentText().strip()
+        if not name:
+            return
+        if name not in self._known_speakers:
+            self._known_speakers.add(name)
+            self.target_user.addItem(name)
+        self.target_user.setCurrentText(name)
+        window=self.window()
+        if hasattr(window,"save_cfg"):
+            window.save_cfg()
+
     def _set_speaker(self,name):
         if self.talker_name==name:
             return
         self.talker_name=name
+        if name and name not in self._known_speakers:
+            self._known_speakers.add(name)
+            self.target_user.addItem(name)
         self.speaker.setText("Sprecher: "+(name or "—"))
         self.talkerChanged.emit(name)
 
