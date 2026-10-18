@@ -287,7 +287,6 @@ class FrnPanel(QWidget):
         self.pttStateChanged.emit(False)
 
     def _refresh_participants_quick_status(self):
-        self._update_local_audio_status()
         own=self._own_name()
         for row in range(self.participants.rowCount()):
             item=self.participants.item(row,1)
@@ -356,6 +355,8 @@ class FrnPanel(QWidget):
             button.setText(caption+(' STUMM' if checked and button is self.participants_mute
                                    else ' TAUB' if checked else ' an'))
             button.blockSignals(False)
+        if hasattr(self,"participants"):
+            self._refresh_participants_quick_status()
 
     def ptt(self,on,force=False):
         if on and self.local_mute.isChecked():
@@ -611,6 +612,9 @@ class FrnPanel(QWidget):
                     it.setForeground(QColor('#F57C00')); f=it.font(); f.setBold(True); it.setFont(f)
                 elif remote_tx:
                     it.setForeground(QColor('#D32F2F')); f=it.font(); f.setBold(True); it.setFont(f)
+                if c==1 and own and name==own:
+                    status=self.participants_audio_status.text()
+                    it.setToolTip("Eigener FRN-Client · "+status)
                 self.participants.setItem(r,c,it)
     def update_talker(self,name):
         self.talker_name=(name or '').strip(); self.talker.setText('FRN RX: '+(self.talker_name or '–')); self.talkerChanged.emit(self.talker_name); self.update_participants([{'name':self.participants.item(r,1).text() if self.participants.item(r,1) else '', 'type':self.participants.item(r,2).text() if self.participants.item(r,2) else '', 'band':self.participants.item(r,3).text() if self.participants.item(r,3) else '', 'country':self.participants.item(r,4).text() if self.participants.item(r,4) else '', 'city':self.participants.item(r,5).text() if self.participants.item(r,5) else ''} for r in range(self.participants.rowCount())])
