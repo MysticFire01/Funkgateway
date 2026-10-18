@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, 
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
     QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
-    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem
 )
 
 try:
@@ -144,7 +144,10 @@ class MumbleNativePanel(QWidget):
 
         cols=QHBoxLayout()
         chbox=QGroupBox("Channels"); chv=QVBoxLayout(chbox)
-        self.channels=QListWidget(); self.channels.itemDoubleClicked.connect(self._move_channel)
+        self.channels=QTreeWidget()
+        self.channels.setHeaderLabels(["Mumble-Channel", "Teilnehmer"])
+        self.channels.setAlternatingRowColors(True)
+        self.channels.itemDoubleClicked.connect(self._move_channel)
         self.refresh_channels=QPushButton("Channel-Liste aktualisieren"); self.refresh_channels.clicked.connect(self._refresh_channels)
         chv.addWidget(self.channels); chv.addWidget(self.refresh_channels)
 
@@ -716,19 +719,55 @@ class MumbleNativePanel(QWidget):
         self.current_channel.setText(str(name or "—"))
 
     def _refresh_channels(self):
-        self.channels.clear()
-        for row in sorted(self.client.channel_snapshot(),key=lambda r:(r.get("parent") or -1,str(r.get("name") or "").casefold())):
-            marker="▶ " if row.get("current") else ""
-            item=QListWidgetItem(f"{marker}{row.get('name','')} ({int(row.get('users') or 0)})")
-            item.setData(Qt.UserRole,row)
-            self.channels.addItem(item)
+        channels=self.client.channel_snapshot()
+        expanded=set()
+        def remember(node):
+            if node.isExpanded():
+                row=node.data(0,Qt.UserRole)
+                if isinstance(row,dict):
+                    expanded.add(row["id"])
+            for index in range(node.childCount()):
+                remember(node.child(index))
+        for index in range(self.channels.topLevelItemCount()):
+            remember(self.channels.topLevelItem(index))
+        self.channels.setUpdatesEnabled(False)
+        try:
+            self.channels.clear()
+            items={}
+            for row in channels:
+                label=("▶ " if row.get("current") else "")+str(row.get("name") or "")
+                item=QTreeWidgetItem([label,str(int(row.get("users") or 0))])
+                item.setData(0,Qt.UserRole,dict(row))
+                if row.get("current"):
+                    font=item.font(0)
+                    font.setBold(True)
+                    item.setFont(0,font)
+                items[row["id"]]=item
+            for row in sorted(channels,key=lambda r:str(r.get("name") or "").casefold()):
+                parent=row.get("parent")
+                item=items[row["id"]]
+                if parent in items and parent!=row["id"]:
+                    items[parent].addChild(item)
+                else:
+                    self.channels.addTopLevelItem(item)
+            for item in items.values():
+                data=item.data(0,Qt.UserRole)
+                if data["id"] in expanded or data.get("current"):
+                    item.setExpanded(True)
+                    ancestor=item.parent()
+                    while ancestor is not None:
+                        ancestor.setExpanded(True)
+                        ancestor=ancestor.parent()
+        finally:
+            self.channels.setUpdatesEnabled(True)
 
-    def _move_channel(self,item):
-        data=item.data(Qt.UserRole)
-        if not isinstance(data,dict): return
-        wanted=str(data.get("name") or "")
-        if self.client.move_to_path(wanted):
-            self.channel.setText(wanted)
+    def _move_channel(self,item,column=0):
+        data=item.data(0,Qt.UserRole)
+        if not isinstance(data,dict):
+            return
+        path=dict(self.client.channel_paths()).get(data["id"],data.get("name",""))
+        if self.client.move_to_path(path):
+            self.channel.setText(path)
             self._refresh_channels()
 
     def _participants(self,rows):
