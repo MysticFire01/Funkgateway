@@ -1198,8 +1198,10 @@ class MumbleNativePanel(QWidget):
             self.expand_channels.setText("Alle Räume aufklappen")
 
     def _refresh_channels(self):
-        self._channel_rows=self.client.channel_snapshot()
-        self._render_channels()
+        snapshot=self.client.channel_snapshot()
+        if snapshot != self._channel_rows:
+            self._channel_rows=snapshot
+            self._render_channels()
 
     def _render_channels(self):
         channels=self._channel_rows
@@ -1221,6 +1223,12 @@ class MumbleNativePanel(QWidget):
                 remember(node.child(i))
         for i in range(self.channels.topLevelItemCount()):
             remember(self.channels.topLevelItem(i))
+        # Tree rebuilds must never bring the selected row back into view.
+        # Save scrollbars before Qt clears/reselects items.
+        vertical=self.channels.verticalScrollBar()
+        horizontal=self.channels.horizontalScrollBar()
+        vpos=vertical.value()
+        hpos=horizontal.value()
         self.channels.setUpdatesEnabled(False)
         self.channels.blockSignals(True)
         try:
@@ -1264,11 +1272,9 @@ class MumbleNativePanel(QWidget):
                     row.get("channel_id")==cid for row in participants
                 ):
                     item.setExpanded(True)
-                if item.data(0,Qt.UserRole).get("current"):
-                    ancestor=item.parent()
-                    while ancestor is not None:
-                        ancestor.setExpanded(True)
-                        ancestor=ancestor.parent()
+            # A selected item is remembered without automatically scrolling
+            # to it. Avoid setCurrentItem's EnsureVisible behavior by restoring
+            # the viewport position after selection below.
             if selected:
                 def restore(item):
                     data=item.data(0,Qt.UserRole)
@@ -1281,6 +1287,8 @@ class MumbleNativePanel(QWidget):
                     if restore(self.channels.topLevelItem(i)):
                         break
         finally:
+            vertical.setValue(min(vpos,vertical.maximum()))
+            horizontal.setValue(min(hpos,horizontal.maximum()))
             self.channels.blockSignals(False)
             self.channels.setUpdatesEnabled(True)
 
@@ -1294,8 +1302,10 @@ class MumbleNativePanel(QWidget):
             self._refresh_channels()
 
     def _participants(self,rows):
-        self._participant_rows=list(rows or [])
-        self._render_channels()
+        new_rows=list(rows or [])
+        if new_rows != self._participant_rows:
+            self._participant_rows=new_rows
+            self._refresh_channels()
         previous=self.chat_target.currentData()
         self.chat_target.blockSignals(True)
         self.chat_target.clear()
@@ -1314,7 +1324,6 @@ class MumbleNativePanel(QWidget):
         idx=self.chat_target.findData(previous)
         self.chat_target.setCurrentIndex(idx if idx>=0 else 0)
         self.chat_target.blockSignals(False)
-        self._refresh_channels()
 
     def _speakers(self,names):
         self.speaker.setText("Aktive Sprecher: "+(", ".join(names) if names else "—"))
