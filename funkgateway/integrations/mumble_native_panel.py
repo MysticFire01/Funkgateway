@@ -304,6 +304,7 @@ class MumbleNativePanel(QWidget):
             self._error(str(exc))
 
     def _connect(self):
+        self._save_settings()
         cert=self.cert.currentData()
         certfile=cert.get("cert_path","") if isinstance(cert,dict) else ""
         keyfile=cert.get("key_path","") if isinstance(cert,dict) else ""
@@ -322,10 +323,13 @@ class MumbleNativePanel(QWidget):
 
     def _connected(self,on):
         self.connect_btn.setEnabled(not on); self.disconnect_btn.setEnabled(on); self.ptt.setEnabled(on)
+        self.chat_send.setEnabled(on)
         if on:
             self._refresh_channels()
         else:
             self.channels.clear(); self.users.clear(); self.current_channel.setText("—")
+            self.chat_target.clear()
+            self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
 
     def _status(self,text):
         self.status.setText(str(text))
@@ -350,6 +354,10 @@ class MumbleNativePanel(QWidget):
             self._refresh_channels()
 
     def _participants(self,rows):
+        previous=self.chat_target.currentData()
+        self.chat_target.blockSignals(True)
+        self.chat_target.clear()
+        self.chat_target.addItem("Aktueller Channel (öffentlich)",None)
         self.users.clear()
         for row in rows:
             if row.get("talking"):
@@ -357,7 +365,13 @@ class MumbleNativePanel(QWidget):
             else:
                 kind="idle"
             item=QListWidgetItem(self._mouth_icon(kind),f"{row.get('name','')} — {row.get('channel','')}")
+            item.setData(Qt.UserRole,dict(row))
             self.users.addItem(item)
+            if not row.get("is_self"):
+                self.chat_target.addItem(str(row.get("name") or ""),row.get("session"))
+        idx=self.chat_target.findData(previous)
+        self.chat_target.setCurrentIndex(idx if idx>=0 else 0)
+        self.chat_target.blockSignals(False)
         self._refresh_channels()
 
     def _speakers(self,names):
