@@ -161,9 +161,8 @@ class MumbleNativeClient(QObject):
                         break
                     time.sleep(0.15)
 
-            if self._pc_ptt_enabled:
-                self._start_capture()
-
+            # Open the microphone only when PTT is first pressed.
+            # This avoids holding a physical ALSA device unnecessarily.
             while not self._stop.is_set():
                 self._emit_participants()
                 try:
@@ -547,7 +546,7 @@ class MumbleNativeClient(QObject):
 
     def _start_capture(self):
         self._stop_capture()
-        if sd is None or not self._pc_ptt_enabled or self._capture_device is None:
+        if sd is None or not self._pc_ptt_enabled:
             return
         self._capture_stop.clear()
         self._capture_thread = threading.Thread(target=self._capture_worker, daemon=True)
@@ -586,7 +585,14 @@ class MumbleNativeClient(QObject):
                     if mumble is not None and self._connected and raw:
                         mumble.sound_output.add_sound(raw)
         except Exception as exc:
-            self.error.emit("Mumble Mikrofon/PTT: " + str(exc))
+            self._pc_ptt_active = False
+            self._own_tx_active = False
+            self.error.emit(
+                "Mumble Mikrofon/PTT: " + str(exc)
+                + " – Das Eingabegerät ist möglicherweise belegt oder nicht verfügbar. "
+                "Unter Mumble → Native Client das System-Standardmikrofon "
+                "oder einen PulseAudio/PipeWire-Eingang auswählen und neu verbinden."
+            )
         finally:
             self.inputLevel.emit(-120.0)
 
