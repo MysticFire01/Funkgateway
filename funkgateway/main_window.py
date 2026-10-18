@@ -5258,9 +5258,15 @@ class MainWindow(QMainWindow):
             self.gateway_state_big.setText("FUNK-GATEWAY\nAKTIV")
 
     def _refresh_rx_forward_mute(self):
+        native_mumble=getattr(self,"mumble_native_panel",None)
+        mumble_radio_active=bool(
+            native_mumble and native_mumble.client.connected
+            and self._mode()=="radio_parrot"
+        )
         parrot_muted=bool(
             hasattr(self,"parrot_enabled") and self.parrot_enabled.isChecked()
             and hasattr(self,"parrot_mute_voip") and self.parrot_mute_voip.isChecked()
+            and not mumble_radio_active
         )
         dtmf_muted=bool(getattr(self,"dtmf_session_muted",False))
         muted=bool(self.protection_muted or self.return_guard_muted or parrot_muted or dtmf_muted)
@@ -8800,6 +8806,10 @@ done"""
             and not getattr(panel, "_server_deaf", False)
         )
         panel.client.set_gateway_rx(wanted)
+        # Papagei normally silences RX forwarding. Native Mumble needs
+        # the RX virtual source to carry audio; other protection mutes remain.
+        if self._mode()=="radio_parrot" and self.rx_detector is not None:
+            self._refresh_rx_forward_mute()
 
     def _set_big_rx_status(self,active,blocked=False):
         self._sync_native_mumble_radio_tx(bool(active) and not blocked)
