@@ -74,6 +74,7 @@ class MumbleNativePanel(QWidget):
         self._channel_rows=[]
         self._participant_rows=[]
         self._channel_expand_all=True
+        self._initial_channel_focus_pending=False
         self._build()
         self._load_settings()
         self._refresh_favorites()
@@ -100,6 +101,7 @@ class MumbleNativePanel(QWidget):
         outer=QVBoxLayout(self)
         self.mumble_tabs=QTabWidget(self)
         outer.addWidget(self.mumble_tabs)
+        self.mumble_tabs.currentChanged.connect(self._mumble_tab_changed)
         client_page=QWidget(self.mumble_tabs)
         v=QVBoxLayout(client_page)
         self.mumble_tabs.addTab(client_page,"Mumble-Client")
@@ -1170,8 +1172,11 @@ class MumbleNativePanel(QWidget):
         self.connect_btn.setEnabled(not on); self.disconnect_btn.setEnabled(on); self.ptt.setEnabled(on)
         self.chat_send.setEnabled(on)
         if on:
+            self._initial_channel_focus_pending=True
             self._refresh_channels()
+            self._focus_current_channel_once()
         else:
+            self._initial_channel_focus_pending=False
             self._channel_rows=[]
             self._participant_rows=[]
             self.channels.clear(); self.users.clear(); self.current_channel.setText("—")
@@ -1187,6 +1192,56 @@ class MumbleNativePanel(QWidget):
 
     def _channel_changed(self,name):
         self.current_channel.setText(str(name or "—"))
+
+    def _mumble_tab_changed(self,index):
+        if self.mumble_tabs.tabText(index)=="Channels":
+            # Channel details may arrive after the connected signal.
+            self._refresh_channels()
+            self._focus_current_channel_once()
+
+    def _focus_current_channel_once(self):
+        """Locate our channel only on first visit after connecting.
+
+        Normal participant/speaker updates must never steal scroll position.
+        """
+        if not self._initial_channel_focus_pending:
+            return
+        if self.mumble_tabs.tabText(self.mumble_tabs.currentIndex())!="Channels":
+            return
+        current=next(
+            (row for row in self._channel_rows if row.get("current")),
+            None
+        )
+        if current is None:
+            return  # Wait for the server's own channel to be reported.
+        target_id=current.get("id")
+        def find(node):
+            data=node.data(0,Qt.UserRole)
+            if (isinstance(data,dict) and data.get("kind")=="channel"
+                    and data.get("id")==target_id):
+                return node
+            for i in range(node.childCount()):
+                hit=find(node.child(i))
+                if hit is not None:
+                    return hit
+            return None
+        item=None
+        for i in range(self.channels.topLevelItemCount()):
+            item=find(self.channels.topLevelItem(i))
+            if item is not None:
+                break
+        if item is None:
+            return
+        parent=item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent=parent.parent()
+        item.setExpanded(True)
+        self.channels.setCurrentItem(item)
+        self.channels.scrollToItem(
+            item,QAbstractItemView.ScrollHint.PositionAtCenter
+        )
+        self._initial_channel_focus_pending=False
 
     def _toggle_channel_expand(self):
         self._channel_expand_all=not self._channel_expand_all
@@ -1291,6 +1346,7 @@ class MumbleNativePanel(QWidget):
             horizontal.setValue(min(hpos,horizontal.maximum()))
             self.channels.blockSignals(False)
             self.channels.setUpdatesEnabled(True)
+        self._focus_current_channel_once()
 
     def _move_channel(self,item,column=0):
         data=item.data(0,Qt.UserRole)
