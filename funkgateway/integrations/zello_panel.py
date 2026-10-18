@@ -34,6 +34,7 @@ class ZelloPanel(QWidget):
         self._tx_seq = 2
         self._tx_pending = False
         self._tx_request_seq = None
+        self._tx_requested_at = 0.0
         self._tx_timeout = QTimer(self)
         self._tx_timeout.setSingleShot(True)
         self._tx_timeout.timeout.connect(self._tx_request_timeout)
@@ -117,6 +118,10 @@ class ZelloPanel(QWidget):
         outer.addWidget(self.ptt_btn)
         self.tx_status=QLabel("Zello TX: bereit")
         outer.addWidget(self.tx_status)
+        self.tx_diagnostic=QLabel("PTT-Diagnose: noch kein Sendeversuch")
+        self.tx_diagnostic.setWordWrap(True)
+        self.tx_diagnostic.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outer.addWidget(self.tx_diagnostic)
         help_label = QLabel('Token über https://developers.zello.com/ erstellen. '
                             'Zello unterstützt hier nur jeweils einen Friends-&-Family-Kanal. '
                             'Zugangsdaten bleiben in dieser Version nur im Arbeitsspeicher und '
@@ -230,6 +235,8 @@ class ZelloPanel(QWidget):
                                  str(data.get("error", "unbekannter Fehler")))
                 self._ws.close()
         elif self._tx_pending and data.get("seq") == self._tx_request_seq:
+            elapsed=time.monotonic()-self._tx_requested_at
+            self.tx_diagnostic.setText("PTT-Diagnose: Serverantwort nach %.2f s: success=%s, stream_id=%s, error=%s" % (elapsed, data.get("success"), data.get("stream_id","—"), data.get("error","—")))
             self._tx_pending=False
             self._tx_timeout.stop()
             self._tx_request_seq=None
@@ -298,6 +305,8 @@ class ZelloPanel(QWidget):
             self._tx_pending=True
             self._tx_request_seq=self._send_command("start_stream",channel=self.channel.text().strip(),
                                type="audio",codec="opus",codec_header=header,packet_duration=20)
+            self._tx_requested_at=time.monotonic()
+            self.tx_diagnostic.setText("PTT-Diagnose: start_stream gesendet, seq="+str(self._tx_request_seq)+", Kanal="+self.channel.text().strip())
             self._tx_timeout.start(6000)
             self.tx_status.setText("Zello TX: Freigabe wird angefordert …")
         else:
@@ -314,6 +323,7 @@ class ZelloPanel(QWidget):
         self._tx_request_seq=None
         self._tx_encoder=None
         self.tx_status.setText("Zello TX: keine Antwort vom Server innerhalb von 6 Sekunden")
+        self.tx_diagnostic.setText("PTT-Diagnose: Timeout ohne passende Antwort auf start_stream")
         self._update_ptt_ui()
 
     def _begin_microphone(self):
