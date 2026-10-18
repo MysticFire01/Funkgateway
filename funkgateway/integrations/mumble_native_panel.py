@@ -162,15 +162,21 @@ class MumbleNativePanel(QWidget):
         af.addRow("Mumble-Empfang gesamt:",self.master_volume)
         v.addWidget(audio)
 
-        cols=QVBoxLayout()
-        chbox=QGroupBox("Channels und Benutzer"); chv=QVBoxLayout(chbox)
+        # Channel browser gets its own entire tab, not a cramped area between
+        # the connection settings and chat on the main client tab.
+        channel_page=QWidget(self.mumble_tabs)
+        channel_layout=QVBoxLayout(channel_page)
+        channel_title=QLabel("<b>Channels des verbundenen Mumble-Servers</b>")
+        channel_layout.addWidget(channel_title)
+        chbox=QGroupBox("Channel-Baum und Benutzer")
+        chv=QVBoxLayout(chbox)
         self.channels=QTreeWidget()
         self.channels.setHeaderLabels(["Channel / Benutzer", "Nutzer"])
         self.channels.setAlternatingRowColors(False)
         self.channels.setRootIsDecorated(True)
         self.channels.setIndentation(24)
         self.channels.setUniformRowHeights(True)
-        self.channels.setMinimumHeight(300)
+        self.channels.setMinimumHeight(420)
         self.channels.setSelectionMode(QAbstractItemView.SingleSelection)
         self.channels.header().setSectionResizeMode(0,QHeaderView.Stretch)
         self.channels.header().setSectionResizeMode(1,QHeaderView.ResizeToContents)
@@ -197,8 +203,11 @@ class MumbleNativePanel(QWidget):
         self.users.setContextMenuPolicy(Qt.CustomContextMenu)
         self.users.customContextMenuRequested.connect(self._user_context_menu)
         uv.addWidget(self.speaker); uv.addWidget(self.users)
-        cols.addWidget(chbox,3); cols.addWidget(userbox,1)
-        v.addLayout(cols,1)
+        channel_layout.addWidget(chbox,1)
+        self.mumble_tabs.addTab(channel_page,"Channels")
+        # Keep the participant list (including its right-click actions) on
+        # the client tab. The Channel tree also shows users under each room.
+        v.addWidget(userbox)
         chatbox=QGroupBox("Mumble Chat")
         chatlayout=QVBoxLayout(chatbox)
         self.chat_log=QPlainTextEdit()
