@@ -4388,7 +4388,6 @@ class MainWindow(QMainWindow):
         self.zello_panel.connectedChanged.connect(self._sync_zello_ptt_ui)
         self.zello_ptt_top_btn.pressed.connect(lambda:self.zello_panel.set_ptt(True))
         self.zello_ptt_top_btn.released.connect(lambda:self.zello_panel.set_ptt(False))
-        self.zello_panel.channel_status.textChanged.connect(self._sync_zello_ptt_ui)
         self._sync_zello_ptt_ui()
         integration_tabs.addTab(self.zello_panel, "Zello · Alpha")
 
