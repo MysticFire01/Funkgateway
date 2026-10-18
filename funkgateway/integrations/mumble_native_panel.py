@@ -358,30 +358,230 @@ class MumbleNativePanel(QWidget):
             combo.setCurrentIndex(idx if idx>=0 else 0)
             combo.blockSignals(False)
 
-    def _refresh_certs(self):
-        current=self.cert.currentData() if self.cert.count() else None
-        current_id=current.get("id") if isinstance(current,dict) else ""
-        self.cert.clear(); self.cert.addItem("Kein Zertifikat",None)
-        for info in list_certificates():
-            self.cert.addItem(info.get("name") or info["id"],info)
-        if current_id:
-            for i in range(self.cert.count()):
-                data=self.cert.itemData(i)
-                if isinstance(data,dict) and data.get("id")==current_id:
-                    self.cert.setCurrentIndex(i); break
+    def _selected_cert(self):
+        value=self.cert.currentData()
+        return value if isinstance(value,dict) else None
 
-    def _create_cert(self):
-        name,ok=QInputDialog.getText(self,"Mumble Zertifikat","Name:",text=self.nick.text().strip() or "FunkGateway Linux")
-        if not ok or not name.strip(): return
+    def _open_cert_tab(self):
+        for i in range(self.mumble_tabs.count()):
+            if self.mumble_tabs.tabText(i)=="Zertifikate":
+                self.mumble_tabs.setCurrentIndex(i)
+                break
+
+    def _cert_changed(self,*_args):
+        info=self._selected_cert()
+        wanted=str(info.get("id") or "") if info else ""
+        self.cert_manager.blockSignals(True)
+        idx=next(
+            (i for i in range(self.cert_manager.count())
+             if isinstance(self.cert_manager.itemData(i),dict)
+             and str(self.cert_manager.itemData(i).get("id") or "")==wanted),
+            0
+        )
+        self.cert_manager.setCurrentIndex(idx)
+        self.cert_manager.blockSignals(False)
+        if info:
+            self.cert_info.setText(
+                "Name: "+str(info.get("name") or "")+"\n"+
+                "Subjekt: "+str(info.get("subject") or "")+"\n"+
+                "SHA-256: "+str(info.get("fingerprint") or "")+"\n"+
+                "Gültig bis: "+str(info.get("not_after") or "")
+            )
+        else:
+            self.cert_info.setText("Kein Zertifikat ausgewählt")
+        self.settings.setValue("certificate_id",wanted)
+
+    def _manager_cert_changed(self,*_args):
+        data=self.cert_manager.currentData()
+        selected=str(data.get("id") or "") if isinstance(data,dict) else ""
+        index=next(
+            (i for i in range(self.cert.count())
+             if isinstance(self.cert.itemData(i),dict)
+             and str(self.cert.itemData(i).get("id") or "")==selected),
+            0
+        )
+        self.cert.setCurrentIndex(index)
+
+    def _refresh_certs(self,*_args,select_id=None):
+        previous=self._selected_cert()
+        current_id=(select_id if select_id is not None
+                    else (previous.get("id") if previous
+                          else str(self.settings.value("certificate_id",""))))
+        try:
+            certs=list_certificates()
+        except Exception as exc:
+            self._error("Zertifikate konnten nicht gelesen werden: "+str(exc))
+            return
+        self.cert.blockSignals(True)
+        self.cert_manager.blockSignals(True)
+        self.cert.clear()
+        self.cert_manager.clear()
+        for combo in (self.cert,self.cert_manager):
+            combo.addItem("Kein Zertifikat",None)
+            for info in certs:
+                combo.addItem(str(info.get("name") or info["id"]),dict(info))
+            idx=next(
+                (i for i in range(combo.count())
+                 if isinstance(combo.itemData(i),dict)
+                 and combo.itemData(i).get("id")==current_id),
+                0
+            )
+            combo.setCurrentIndex(idx)
+        self.cert.blockSignals(False)
+        self.cert_manager.blockSignals(False)
+        self._cert_changed()
+
+    def _create_cert(self,*_args):
+        name,ok=QInputDialog.getText(
+            self,"Mumble-Zertifikat erstellen","Name der Identität:",
+            text=self.nick.text().strip() or "FunkGateway Linux"
+        )
+        if not ok or not name.strip():
+            return
         try:
             info=create_certificate(name.strip())
-            self._refresh_certs()
-            for i in range(self.cert.count()):
-                data=self.cert.itemData(i)
-                if isinstance(data,dict) and data.get("id")==info.get("id"):
-                    self.cert.setCurrentIndex(i); break
+            self._refresh_certs(select_id=info["id"])
         except Exception as exc:
-            self._error("Zertifikat: "+str(exc))
+            QMessageBox.warning(self,"Mumble-Zertifikat",str(exc))
+
+    def _test_cert_backend(self,*_args):
+        result=certificate_backend_status()
+        if result.get("ok"):
+            self.cert_backend_label.setText(
+                "Zertifikatsmodul: OK (cryptography "+
+                str(result.get("version") or "")+")"
+            )
+        else:
+            self.cert_backend_label.setText(
+                "Zertifikatsmodul: Fehler – "+str(result.get("error") or "")
+            )
+
+    def _import_cert_p12(self):
+        filename,_=QFileDialog.getOpenFileName(
+            self,"Mumble-Zertifikat (P12/PFX) importieren","",
+            "PKCS#12 (*.p12 *.pfx);;Alle Dateien (*)"
+        )
+        if not filename:
+            return
+        password,ok=QInputDialog.getText(
+            self,"P12/PFX-Passwort",
+            "Passwort (bei ungeschützten Dateien leer lassen):",
+            QLineEdit.Password
+        )
+        if not ok:
+            return
+        try:
+            info=import_pkcs12(filename,password or None)
+            self._refresh_certs(select_id=info["id"])
+        except Exception as exc:
+            QMessageBox.warning(self,"Zertifikat importieren",str(exc))
+
+    def _import_cert_pem(self):
+        cert,_=QFileDialog.getOpenFileName(
+            self,"PEM-Zertifikat auswählen","",
+            "Zertifikate (*.pem *.crt *.cer);;Alle Dateien (*)"
+        )
+        if not cert:
+            return
+        key,_=QFileDialog.getOpenFileName(
+            self,"Zugehörigen privaten PEM-Schlüssel auswählen","",
+            "Private Schlüssel (*.pem *.key);;Alle Dateien (*)"
+        )
+        if not key:
+            return
+        try:
+            info=import_pem(cert,key)
+            self._refresh_certs(select_id=info["id"])
+        except Exception as exc:
+            QMessageBox.warning(self,"Zertifikat importieren",str(exc))
+
+    def _cert_export_dir(self):
+        CERT_DIR.mkdir(parents=True,exist_ok=True)
+        return QFileDialog.getExistingDirectory(
+            self,"Zielordner für Mumble-Zertifikat wählen",str(CERT_DIR),
+            QFileDialog.ShowDirsOnly
+        )
+
+    def _export_cert_p12(self):
+        info=self._selected_cert()
+        if not info:
+            QMessageBox.information(self,"Mumble-Zertifikate",
+                                    "Bitte zuerst ein Zertifikat auswählen.")
+            return
+        folder=self._cert_export_dir()
+        if not folder:
+            return
+        password,ok=QInputDialog.getText(
+            self,"P12/PFX exportieren",
+            "Export-Passwort (empfohlen, schützt den privaten Schlüssel):",
+            QLineEdit.Password
+        )
+        if not ok:
+            return
+        if not password and QMessageBox.question(
+            self,"Ungeschützter Export",
+            "Ohne Passwort kann jeder mit Zugriff auf die P12-Datei Ihre "
+            "Mumble-Identität verwenden. Trotzdem exportieren?",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        )!=QMessageBox.Yes:
+            return
+        try:
+            path=export_pkcs12(info["id"],folder,password or None)
+            QMessageBox.information(self,"Zertifikat exportiert",
+                                    "Export gespeichert:\n"+path)
+        except Exception as exc:
+            QMessageBox.warning(self,"Zertifikat exportieren",str(exc))
+
+    def _export_cert_pem(self):
+        info=self._selected_cert()
+        if not info:
+            QMessageBox.information(self,"Mumble-Zertifikate",
+                                    "Bitte zuerst ein Zertifikat auswählen.")
+            return
+        folder=self._cert_export_dir()
+        if not folder:
+            return
+        if QMessageBox.question(
+            self,"Privater Schlüssel",
+            "Beim PEM-Export wird auch der unverschlüsselte private Schlüssel "
+            "gespeichert. Sicher verwahren! Fortfahren?",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        )!=QMessageBox.Yes:
+            return
+        try:
+            result=export_pem(info["id"],folder)
+            QMessageBox.information(
+                self,"Zertifikat exportiert",
+                "Dateien:\n"+str(result["cert_path"])+
+                "\n"+str(result["key_path"])
+            )
+        except Exception as exc:
+            QMessageBox.warning(self,"Zertifikat exportieren",str(exc))
+
+    def _delete_cert(self):
+        info=self._selected_cert()
+        if not info:
+            return
+        if self.client.connected:
+            QMessageBox.warning(
+                self,"Mumble-Zertifikat",
+                "Bitte zuerst die Mumble-Verbindung trennen, "
+                "bevor das aktive Zertifikat gelöscht wird."
+            )
+            return
+        if QMessageBox.question(
+            self,"Mumble-Zertifikat löschen",
+            "Identität „"+str(info.get("name") or "")+"“ inklusive "
+            "privatem Schlüssel unwiderruflich löschen?",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No
+        )!=QMessageBox.Yes:
+            return
+        try:
+            delete_certificate(info["id"])
+            self.settings.setValue("certificate_id","")
+            self._refresh_certs(select_id="")
+        except Exception as exc:
+            QMessageBox.warning(self,"Zertifikat löschen",str(exc))
 
     def _refresh_favorites(self, selected=None):
         # Fixed favorite always first. Manual entry is the last option.
