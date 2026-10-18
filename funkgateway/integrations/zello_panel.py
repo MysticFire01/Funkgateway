@@ -866,7 +866,7 @@ class ZelloPanel(QWidget):
         text=re.sub(r"\\s+"," ",text)
         found=re.findall(
             r"Digital Funk Kanal\\s+(?:0[1-9]|[1-7][0-9]|80)\\s*"
-            r"(?:\\([^)]{2,75}\\))?",text,flags=re.IGNORECASE)
+            r"\\([^)]{2,75}\\)",text,flags=re.IGNORECASE)
         return sorted(set(n.strip() for n in found),key=str.casefold)
 
     def _fetch_discovery(self,*_args):
