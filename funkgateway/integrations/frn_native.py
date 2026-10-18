@@ -765,6 +765,7 @@ class FrnNativeClient:
             # Recognize only this unambiguous structure; other server
             # variants retain their established per-entry handling.
             import uuid
+            ordinary_entries = items
             if len(items) == 3 and str(items[2]).strip() == "P":
                 try:
                     sender_id = str(uuid.UUID(str(items[0]).strip()))
@@ -781,8 +782,8 @@ class FrnNativeClient:
                         "sender": sender_name,
                         "message": message_text[:2000],
                     })
-                    return
-            for entry in items[:100]:
+                    ordinary_entries = []
+            for entry in ordinary_entries[:100]:
                 raw = str(entry)
                 if len(raw) > MAX_LINE:
                     continue
