@@ -1,0 +1,286 @@
+name: Release FunkGateway UI 0.6.77
+# Native Mumble: chat, per-user volume and moderation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release-0.6.77.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Validate Python
+        run: python3 -m compileall -q funkgateway main.py
+
+      - name: Build bundled German default WAVs
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y espeak ffmpeg
+          rm -rf default_wavs
+          mkdir -p default_wavs
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          out=Path("default_wavs")
+          slots=[
+              ("01_rogerbeep.wav","Rohdscher."),
+              ("02_rufzeichenbake.wav","Hier ist das Funk-Gäitwäi."),
+              ("03_papageibake.wav","Papagei aktiv. Bitte sprechen Sie nach dem Signal."),
+              ("04_auth_erfolgreich.wav","Authentifizierung erfolgreich."),
+              ("05_auth_erforderlich.wav","Authentifizierung erforderlich."),
+              ("06_auth_fehlgeschlagen.wav","Authentifizierung fehlgeschlagen."),
+              ("07_papagei_aktiv.wav","Papagei aktiv."),
+              ("08_gateway_aktiv.wav","Gäitwäi-Betrieb aktiv."),
+              ("09_befehl_ausgefuehrt.wav","Befehl ausgeführt."),
+              ("10_gateway_stummgeschaltet.wav","Gäitwäi vorübergehend stummgeschaltet."),
+              ("11_stoerungsraum.wav","Gäitwäi befindet sich im Störungsraum."),
+              ("12_gateway_wieder_aktiv.wav","Gäitwäi wieder aktiviert."),
+              ("13_durchgang_nicht_uebertragen.wav","Ihr Funkdurchgang konnte nicht übertragen werden. Bitte wiederholen."),
+          ]
+          for name,text in slots:
+              raw=out/(name+".raw.wav")
+              final=out/name
+              subprocess.run(["espeak","-v","de","-s","145","-p","42","-a","180","-w",str(raw),text],check=True)
+              subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(raw),
+                              "-af","highpass=f=120,lowpass=f=7000,dynaudnorm=f=150:g=7,adelay=250,apad=pad_dur=0.35",
+                              "-ar","48000","-ac","1","-c:a","pcm_s16le",str(final)],check=True)
+              raw.unlink()
+          (out/"ZUORDNUNG.txt").write_text(
+              "FunkGateway UI 0.6.77 – generische deutsche Standard-WAVs\n"
+              "Diese Dateien werden nur für leere WAV-Slots automatisch verwendet.\n"
+              "Eigene bereits hinterlegte Ansagen werden nicht überschrieben.\n", encoding="utf-8")
+          PY
+
+      - name: Build distribution ZIPs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, zipfile, hashlib
+          version="0.6.77"
+          root=Path.cwd(); work=root/"_release_build"; dist=root/"dist"
+          shutil.rmtree(work,ignore_errors=True); shutil.rmtree(dist,ignore_errors=True)
+          work.mkdir(); dist.mkdir()
+          targets=[
+              ("Generic-Linux",None,None,"Generic Linux"),
+              ("Ubuntu22.04-LTS","ubuntu","22.04","Ubuntu 22.04 LTS"),
+              ("Ubuntu24.04-LTS","ubuntu","24.04","Ubuntu 24.04 LTS"),
+              ("Ubuntu26.04-LTS","ubuntu","26.04","Ubuntu 26.04 LTS"),
+              ("Debian12","debian","12","Debian 12"),
+              ("Debian13","debian","13","Debian 13"),
+          ]
+          def copy_source(dst):
+              for item in root.iterdir():
+                  if item.name in {".git",".github","_release_build","dist"}: continue
+                  target=dst/item.name
+                  shutil.copytree(item,target) if item.is_dir() else shutil.copy2(item,target)
+          def distro_installer(target_id,target_version,label,alias):
+              return f'''#!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          APP_VERSION="{version}"
+          TARGET_ID="{target_id}"
+          TARGET_VERSION="{target_version}"
+          TARGET_LABEL="{label}"
+          echo "FunkGateway UI $APP_VERSION - $TARGET_LABEL"
+          if [[ -r /etc/os-release ]]; then
+            . /etc/os-release
+            if [[ "$ID" != "$TARGET_ID" || "$VERSION_ID" != "$TARGET_VERSION" ]]; then
+              echo "HINWEIS: Paket fuer $TARGET_LABEL; erkannt: $PRETTY_NAME"
+            fi
+          fi
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv python3-pip python3-serial pulseaudio-utils libportaudio2 libsndfile1 libgsm1 libopus0 libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 qrencode
+          sudo apt-get install -y python3-zeroc-ice zeroc-ice-slice openssh-client gpiod python3-libgpiod || true
+          if [[ ! -d .venv ]]; then python3 -m venv --system-site-packages .venv; fi
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel
+          .venv/bin/python -m pip install "PySide6>=6.5,<6.9" "sounddevice>=0.4,<0.6" "soundfile>=0.12,<0.14" "pyserial>=3.5,<4" "pynput>=1.7,<2" "opuslib==3.0.1" "protobuf==3.20.3" "cryptography>=43,<46" "git+https://github.com/azlux/pymumble.git@8755c7d41b8f1f91402a6218c413121b64bdce33"
+          for cmd in pactl parec pacat paplay; do command -v "$cmd" >/dev/null 2>&1 || {{ echo "FEHLER: $cmd fehlt."; exit 1; }}; done
+          chmod +x start.sh install.sh "{alias}" install-desktop.sh repair-venv.sh
+          mkdir -p "$HOME/.config/funkgateway-ui"
+          echo "Installation abgeschlossen. Start: ./start.sh"
+          '''
+          generic=(root/"install-linux.sh").read_text(encoding="utf-8")
+          all_sha=[]
+          for name,target_id,target_ver,label in targets:
+              dirname=f"FunkGateway-UI-{version}-{name}"; pkg=work/dirname; pkg.mkdir(); copy_source(pkg)
+              for p in list(pkg.glob("install-ubuntu-*.sh"))+list(pkg.glob("install-debian-*.sh")): p.unlink()
+              for p in list(pkg.glob("README-UBUNTU*.md"))+list(pkg.glob("README-DEBIAN*.md")): p.unlink()
+              if name=="Generic-Linux":
+                  installer_name="install-linux.sh"; readme_name="README-GENERIC-LINUX.md"
+                  (pkg/"install-linux.sh").write_text(generic,encoding="utf-8")
+                  (pkg/"install.sh").write_text(generic,encoding="utf-8")
+              else:
+                  if target_id=="ubuntu": installer_name=f"install-ubuntu-{target_ver}.sh"; readme_name=f"README-UBUNTU{target_ver}-LTS.md"
+                  else: installer_name=f"install-debian-{target_ver}.sh"; readme_name=f"README-DEBIAN{target_ver}.md"
+                  script=distro_installer(target_id,target_ver,label,installer_name)
+                  (pkg/installer_name).write_text(script,encoding="utf-8"); (pkg/"install.sh").write_text(script,encoding="utf-8")
+              (pkg/readme_name).write_text(f"# FunkGateway UI {version} – {label}\n\nInstallation: `./{installer_name}`\n\nDanach: `./start.sh`\n",encoding="utf-8")
+              for sh in pkg.glob("*.sh"): sh.chmod(0o755)
+              zp=dist/f"{dirname}.zip"
+              with zipfile.ZipFile(zp,"w",zipfile.ZIP_DEFLATED) as z:
+                  for p in pkg.rglob("*"):
+                      if p.is_file() and "__pycache__" not in p.parts:
+                          z.write(p,Path(dirname)/p.relative_to(pkg))
+              with zipfile.ZipFile(zp) as z:
+                  bad=z.testzip()
+                  if bad: raise RuntimeError(f"ZIP integrity error: {bad}")
+              sha=hashlib.sha256(zp.read_bytes()).hexdigest()
+              (dist/f"{zp.name}.sha256").write_text(f"{sha}  {zp.name}\n",encoding="utf-8")
+              all_sha.append(f"{sha}  {zp.name}")
+          (dist/f"FunkGateway-UI-{version}-ALL-SHA256.txt").write_text("\n".join(all_sha)+"\n",encoding="utf-8")
+          shutil.copy2(root/"CHANGELOG.md",dist/f"CHANGELOG-FunkGateway-{version}.md")
+          PY
+
+      - name: Prepare release notes
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          # FunkGateway UI 0.6.77
+
+          Linux erhält einen nativen integrierten Mumble-Client direkt in FunkGateway.
+
+          ## Highlights
+          - Globale Statusleiste berücksichtigt integrierten Mumble-Client unabhängig vom externen Client
+          - Externen und integrierten Mumble-Status klar unterscheiden
+          - Aktueller Mumble-Channel und bis zu drei aktive Sprecher in der oberen Statusleiste anzeigen
+          - Bei Trennung den integrierten Sprecherstatus zurücksetzen und bei unverändertem Channel unnötige UI-Updates vermeiden
+          - FRN Teilnehmer: eigene Mute-/Deaf-Zustände direkt in neuer Audio-Status-Spalte anzeigen
+          - Status aktualisiert sich sofort bei Bedienung der Schnellschalter
+          - Fremde Teilnehmer: kein erfundener Mute-/Deaf-Status, da FRN-Teilnehmerliste ihn nicht zuverlässig überträgt
+          - FRN: Audio aktiv, Mikrofoneingang, Audioausgang und Geräteaktualisierung nur unter Audio / PTT
+          - FRN: Verbindungsreiter fokussiert auf Server, Zugangsdaten und Verbinden/Trennen
+          - Vorhandene Audiogeräte-Einstellungen und Verbindungslogik bleiben erhalten
+          - Mumble: Rechtsklick auf Benutzer im Channelbaum für Lautstärke (0–200 %) und lokale Stummschaltung
+          - Mumble: Rechtsklick auf eigenen Benutzer für Self-Mute/Self-Deaf; serverseitige Sperren nur informativ
+          - Mumble Channels: Schnellschalter für Mikrofon, Empfang und eigenen Raum direkt über dem Baum
+          - Mumble: Registriert/Gast/Unbekannt aus Benutzer-ID und Mute/Deaf-Status je Benutzer anzeigen
+          - FRN Teilnehmer: lokale Mute-/Deaf-Schnellschalter und Anzeige des eigenen Audiostatus
+          - FRN: eigener Mikrofon-Mute und Empfangs-Deaf unter Audio / PTT, unabhängig schaltbar und gespeichert
+          - FRN-Mute sperrt PTT und beendet laufende TX; FRN-Deaf unterdrückt lokale Empfangswiedergabe
+          - Mumble: klare Self-Mute/Self-Deaf und Server-Mute/Server-Deaf Statusanzeige in Verbindung und Audio/PTT
+          - Mumble: Schalter mit Serverstatus synchronisiert; bei aktiver Mute/Deaf-Sperre kein PTT
+          - Drei Ansichtsmodi in Einrichtung: Vereinfacht, Voll und Entwickler
+          - Vereinfachte Mumble-Ansicht mit Verbindung, Audio/PTT, Channels, Chat und Serverliste
+          - Vollansicht ergänzt Zertifikatsverwaltung; Entwickler zusätzlich Status, Ice/SSH und Administration unter Erweitert
+          - Ansicht wird gespeichert und beim Laden von Konfigurationen und beim Betriebsartwechsel angewendet
+          - Mumble: äußere Native-Client-Reiter-Ebene entfernt, Bedienung vereinfacht
+          - Eigener Reiter Audio / PTT für Mikrofon, Lautsprecher und separaten Mumble-Hotkey
+          - Direkte Reiter Verbindung, Channels, Chat / Teilnehmer, Serverliste und Zertifikate
+          - Externen Mumble-Client sowie Ice/SSH, Schutz/Bridge und Adminfunktionen unter Erweitert gebündelt
+          - Mumble Channels: bei erstem Öffnen nach Connect eigenen Raum automatisch aufklappen, auswählen und zentrieren
+          - Auf verzögert eintreffende Channel-Daten warten; danach kein automatisches Zurückspringen mehr
+          - Mumble: Mundsymbol beim eigenen Senden orange und bei fremden Sprechern rot
+          - Sprecherstatus direkt im Channel-Baum aktualisieren ohne Neuaufbau oder Scrollsprünge
+          - Linux Dropdown-Popups: keine weißen nativen Hintergründe mehr, Palette explizit an Themes angepasst
+          - Dezente dünne Dropdown-Rahmen, weniger Innenabstand, kontrastreiche Auswahl
+          - Mumble Channels: Scrollposition bleibt beim Aktualisieren erhalten
+          - Markierte Channels zwingen die Ansicht nicht mehr zum Zurückspringen
+          - Baum nur bei tatsächlichen Änderungen neu aufbauen; manuelle Aufklappzustände behalten
+          - Mumble: eigener vollflächiger Reiter Channels mit Baumstruktur, Teilnehmern und Doppelklick-Raumwechsel
+          - Mumble PTT mit separatem frei einstellbarem Hotkey, lokal oder systemweit unter X11
+          - Mumble PTT-Taste stets oben in der Hauptleiste im PC-User-Modus
+          - Eigener Mumble-Zertifikate-Reiter mit Erstellen, Auswahl, P12/PFX- und PEM-Import/Export und Löschen
+          - Synchronisierte Zertifikatauswahl, Details, Sicherheitsabfragen und Registrierung des aktuellen Benutzers
+          - Private Schlüssel unter Linux mit eingeschränkten Dateiberechtigungen
+          - Native Mumble: Channel-Baum in voller Breite mit verschachtelten Räumen und Benutzern
+          - Doppelklick auf Channel wechselt Raum; eigener Channel hervorgehoben
+          - Auf-/Zuklappen und Auswahl bleiben bei Live-Updates erhalten
+          - Einheitliche dunkle Baum- und Listenhintergründe statt heller Streifen
+          - Alle Linux-Dropdowns: kontrastreiche Popup-Listen passend zum gewählten Theme
+          - Einheitliche Dropdown-Abstände und bessere Lesbarkeit in Hell und Dunkel
+          - Mumble-Funk Hauptserver als unveränderbarer erster Favorit mit Schlosssymbol
+          - Drei weitere Funkserver standardmäßig: FreiesFunkNetz, RadioBunker / DN9LO und QSO4YOU
+          - Zusätzliche Funkfavoriten einmalig für bestehende Installationen ergänzen; eigene Favoriten erhalten
+          - Native Mumble: öffentliche Serverliste in eigenem Unterreiter
+          - Doppelklick auf einen öffentlichen Server übernimmt Host/Port und verbindet direkt
+          - Verbindung mit passendem Favoriten-Nickname; fremdes Serverpasswort/Startchannel wird zurückgesetzt
+          - Mumble: verschachtelte, aufklappbare Channel-Baumansicht mit Doppelklick zum Raumwechsel
+          - Aktiver Channel hervorgehoben und aufgeklappte Räume bleiben erhalten
+          - Mumble: öffentliche Originalliste direkt von publist.mumble.info ohne 50er-Limit
+          - Offizielle Liste hat Vorrang: erst QtNetwork, curl und urllib, dann klar gekennzeichneter Fallback
+          - Länderfilter und Serversuche, vollständige Anzahl und Nutzerzahlen aus separatem UDP-Ping
+          - Eigene Mumble-Favoriten mit Nickname je Server; Host und Port werden abgeglichen
+          - Linux Mumble PTT: System-Standardmikrofon als sichere Vorauswahl statt ALSA Hardwareindex 0
+          - Mikrofon wird erst beim ersten PTT-Druck geöffnet und nicht bereits beim Mumble-Login
+          - Verständlichere Diagnose bei PortAudio Device unavailable (-9985)
+          - Mumble Chat: Channel-Nachrichten und private Nachrichten im nativen Linux-Client
+          - Mumble Einzelbenutzer-Lautstärke im Kontextmenü, 0–200 %, Schieberegler und Direkteingabe
+          - Mumble Gesamt-Empfangslautstärke und per Server gespeicherte individuelle Lautstärken
+          - Self-Mute, Self-Deaf und lokale bzw. serverseitige Teilnehmer-Stummschaltung
+          - Scrollbarer Linux-Mumble-Reiter und verbesserte Prüfung der Mumble-Anmeldung
+          - nativer Mumble-Client direkt in FunkGateway Linux
+          - Mumble-Verbindung ohne externen Desktop-Client
+          - direkte Wiedergabe und PC-User-Mikrofon-PTT
+          - Channel-Liste mit Nutzerzahlen und Teilnehmer-/Sprechstatus
+          - Mumble-Client-Zertifikate direkt erzeugbar
+          - bisherige D-Bus/Ice/Bridge-Funktionen bleiben erhalten
+          - Linux-Abschlussfehler behoben: Fenster wird vor Backend-Cleanup sofort ausgeblendet
+          - Qt-Timer werden beim Shutdown gestoppt
+          - einzelne Shutdown-Schritte werden mit Laufzeit protokolliert
+          - Mumble-SSH/Ice-Tunnel blockiert den GUI-Thread beim Exit nicht mehr durch synchrones Warten
+          - pynput wird in allen Release-Paketinstallern direkt in der virtuellen Umgebung installiert
+          - Generic Installer für apt, dnf, pacman und zypper gehärtet
+          - X11/XTest-, Audio- und GSM-Abhängigkeiten distributionsabhängig ergänzt
+          - dnf/pacman/zypper installieren Pakete einzeln, damit ein fehlender Paketname nicht alle übrigen blockiert
+          - Python-venv und zentrale Python-Abhängigkeiten werden explizit geprüft
+          - Versionsmetadaten auf 0.6.77 synchronisiert
+          - ergonomisches Mumble-Adminpanel mit Benutzer- und Raumliste nebeneinander
+          - frei wählbarer FRN-PTT-Hotkey im PC-User-Modus
+          - verbundene Mumble-Benutzer über Ice anzeigen und gezielt in Channels verschieben
+          - Mumble-Verbindung bleibt erkannt, auch wenn optionale D-Bus-Zusatzdaten ausfallen
+          - kein dauerhaftes "Mumble prüft …" mehr bei lokalen Abfragefehlern
+          - Hauptpasswort-Fallback standardmäßig aus, optional bewusst aktivierbar
+          - manuelle SystemManager-Fehler lösen keinen Auto-Backoff/Schutzpause aus
+          - klare Diagnosepräfixe für SYSTEMMANAGER, FRN-SERVER, BLOCK und FRN-PROTOKOLL
+          - FRN Login-1 toleriert führende NUL-/C0-Steuerbytes bei klassischer Serverkennung
+          - einstellbare SystemManager-Schutzpause: aktiv/deaktivierbar, 1–120 Minuten
+          - manuelles Serverliste-Laden bleibt auch während der Schutzpause möglich
+          - FRN-SystemManager-Hintergrundabfragen nur noch etwa alle 3 Minuten
+          - automatischer Backoff bei Reset/Refused: 1, 2, 5 und 10 Minuten
+          - im Hintergrund nur ein passender SystemManager statt "Alle"
+          - Funk → FRN folgt in Funk-Gateway und Funk-Papagei automatisch dem Funk-RX/VOX
+          - FRN-TX liest in Funkmodi direkt aus FunkGateway_RX_Input
+          - sichere Rückkehr auf RX0 nach Funkende und bei abgebrochener TX-Anforderung
+          - Native FRN-Integration direkt in FunkGateway UI
+          - FRN-SystemManager für DE Alternative, DE Original und Russland
+          - Server-/Raumlisten, manuelle Raumeingabe und direkte NET_NAMES-Raumliste
+          - Teilnehmerliste mit grün/rot/orange Funkstatus
+          - FRN RX/TX-Audio mit GSM 06.10 WAV49
+          - globale FRN-PTT im PC-User-Modus
+          - automatischer Gateway-TX im Funk-Gateway-Modus
+          - Raumwechsel und Login-Kompatibilität für unterschiedliche FRN-Servervarianten verbessert
+          - aktive Raumbelegung sofort aktuell; andere Räume werden regelmäßig nachgeführt
+          - Default-VX 20261016
+          - libgsm1 für Debian/Ubuntu-Pakete
+          - SHA256-Prüfsummen für alle Release-Pakete
+
+          ## Pakete
+          - Generic Linux
+          - Ubuntu 22.04 LTS
+          - Ubuntu 24.04 LTS
+          - Ubuntu 26.04 LTS
+          - Debian 12
+          - Debian 13
+
+          Vollständige Details stehen im CHANGELOG.
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v0.6.77" >/dev/null 2>&1; then
+            echo "Release v0.6.77 existiert bereits."
+            exit 0
+          fi
+          gh release create "v0.6.77" dist/* --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "FunkGateway UI 0.6.77" --notes-file RELEASE_NOTES.md
