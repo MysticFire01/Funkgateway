@@ -237,18 +237,34 @@ class MumbleNativePanel(QWidget):
         self.channels.header().setSectionResizeMode(0,QHeaderView.Stretch)
         self.channels.header().setSectionResizeMode(1,QHeaderView.ResizeToContents)
         self.channels.itemDoubleClicked.connect(self._move_channel)
+        self.channels.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channels.customContextMenuRequested.connect(self._channel_context_menu)
         self.refresh_channels=QPushButton("Channel-Liste aktualisieren")
         self.refresh_channels.clicked.connect(self._refresh_channels)
         self.expand_channels=QPushButton("Alle Räume aufklappen")
         self.expand_channels.clicked.connect(self._toggle_channel_expand)
         buttons=QHBoxLayout()
+        self.locate_my_channel=QPushButton("⌖ Mein Raum")
+        self.locate_my_channel.clicked.connect(self._locate_my_channel)
+        self.channel_mute_button=QPushButton("Mikrofon stumm")
+        self.channel_mute_button.setCheckable(True)
+        self.channel_mute_button.toggled.connect(self.self_mute.setChecked)
+        self.channel_deaf_button=QPushButton("Empfang taub")
+        self.channel_deaf_button.setCheckable(True)
+        self.channel_deaf_button.toggled.connect(self.self_deaf.setChecked)
+        self.self_mute.toggled.connect(self._sync_quick_mumble_buttons)
+        self.self_deaf.toggled.connect(self._sync_quick_mumble_buttons)
         buttons.addWidget(self.refresh_channels)
         buttons.addWidget(self.expand_channels)
+        buttons.addWidget(self.locate_my_channel)
+        buttons.addWidget(self.channel_mute_button)
+        buttons.addWidget(self.channel_deaf_button)
         chv.addWidget(self.channels,1)
         chv.addLayout(buttons)
         self.channel_hint=QLabel(
             "Doppelklick auf einen Channel wechselt den Raum. "
-            "Die Teilnehmer stehen eingerückt darunter."
+            "Die Teilnehmer stehen eingerückt darunter. Rechtsklick auf "
+            "einen Teilnehmer öffnet seine Audio-Einstellungen."
         )
         self.channel_hint.setWordWrap(True)
         chv.addWidget(self.channel_hint)
@@ -1096,6 +1112,86 @@ class MumbleNativePanel(QWidget):
             return
         try:
             self.client.set_self_deaf(enabled)
+        except Exception as exc:
+            self._error(str(exc))
+
+    def _sync_quick_mumble_buttons(self,*_args):
+        if not hasattr(self,"channel_mute_button"):
+            return
+        for button,checked,label in (
+            (self.channel_mute_button,self.self_mute.isChecked(),"Mikrofon"),
+            (self.channel_deaf_button,self.self_deaf.isChecked(),"Empfang"),
+        ):
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.setText(label+(" STUMM" if button is self.channel_mute_button and checked
+                                  else " TAUB" if checked else " an"))
+            button.blockSignals(False)
+
+    def _locate_my_channel(self):
+        self._initial_channel_focus_pending=True
+        self._refresh_channels()
+        self._focus_current_channel_once()
+
+    def _channel_context_menu(self,pos):
+        item=self.channels.itemAt(pos)
+        if item is None:
+            return
+        data=item.data(0,Qt.UserRole)
+        if not isinstance(data,dict) or data.get("kind")!="user":
+            return
+        self._show_mumble_user_menu(
+            data,self.channels.viewport().mapToGlobal(pos)
+        )
+
+    def _show_mumble_user_menu(self,data,global_pos):
+        # Never offer server moderation through ordinary right-click.
+        if not self.client.connected:
+            return
+        menu=QMenu(self)
+        if data.get("is_self"):
+            mute=menu.addAction(
+                "🔇 Eigenes Mikrofon wieder einschalten" if self.self_mute.isChecked()
+                else "🔇 Eigenes Mikrofon stummschalten"
+            )
+            deaf=menu.addAction(
+                "🔈 Eigenen Empfang wieder einschalten" if self.self_deaf.isChecked()
+                else "🔇 Eigenen Empfang taub schalten"
+            )
+            server_mute=bool(data.get("server_mute"))
+            server_deaf=bool(data.get("server_deaf"))
+            if server_mute or server_deaf:
+                menu.addSeparator()
+                status=menu.addAction(
+                    "🔒 Server-Mute: "+("AN" if server_mute else "AUS")+
+                    " · Server-Deaf: "+("AN" if server_deaf else "AUS")
+                )
+                status.setEnabled(False)
+            chosen=menu.exec(global_pos)
+            if chosen==mute:
+                self.self_mute.setChecked(not self.self_mute.isChecked())
+            elif chosen==deaf:
+                self.self_deaf.setChecked(not self.self_deaf.isChecked())
+            return
+
+        name=str(data.get("name") or "")
+        volume=menu.addAction(
+            f"🔊 Lautstärke einstellen … ({self.client.user_volume(name)} %)"
+        )
+        local=menu.addAction(
+            "🔈 Lokale Stummschaltung aufheben" if data.get("local_user_mute")
+            else "🔇 Diesen Teilnehmer nur für mich stummschalten"
+        )
+        chosen=menu.exec(global_pos)
+        try:
+            if chosen==volume:
+                self._user_volume_popup(name)
+            elif chosen==local:
+                self.client.set_local_user_mute(
+                    data["session"],not data.get("local_user_mute")
+                )
+                # Local muting is not a server state; show immediately.
+                self._participants(self.client.participants())
         except Exception as exc:
             self._error(str(exc))
 
