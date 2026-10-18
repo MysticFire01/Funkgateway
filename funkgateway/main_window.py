@@ -10406,6 +10406,8 @@ done"""
         "parrot_beacon_lead_ms":self.parrot_beacon_lead_ms.value(),"parrot_beacon_tail_ms":self.parrot_beacon_tail_ms.value()}
         if hasattr(self,"frn_panel"):
             data["frn"]=self.frn_panel.to_config()
+        if hasattr(self,"zello_panel"):
+            data["zello"]=self.zello_panel.to_config()
         CFG_FILE.write_text(json.dumps(data,indent=2),encoding="utf-8")
         try: CFG_FILE.chmod(0o600)
         except Exception: pass
@@ -10638,6 +10640,8 @@ done"""
             self.protection_ts_rooms=rooms if isinstance(rooms,dict) else {}
             if hasattr(self,"frn_panel"):
                 self.frn_panel.load_config(d.get("frn",{}))
+            if hasattr(self,"zello_panel"):
+                self.zello_panel.load_config(d.get("zello",{}))
         except Exception as e: self.log(f"Konfiguration konnte nicht vollständig geladen werden: {e}")
 
 
