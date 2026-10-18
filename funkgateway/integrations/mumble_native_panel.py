@@ -22,6 +22,18 @@ from .mumble_public import MumblePublicServerLoader
 from ..mumble_certificates import list_certificates, create_certificate
 
 
+DEFAULT_MUMBLE_FAVORITES = [
+    {"name":"Mumble-Funk Hauptserver","host":"voice.mumble-funk.de","port":64738,
+     "username":"","locked":True},
+    {"name":"FreiesFunkNetz","host":"mumble.freiesfunknetz.com","port":64738,
+     "username":"","locked":False},
+    {"name":"RadioBunker / DN9LO","host":"dn9lo.de","port":64738,
+     "username":"","locked":False},
+    {"name":"QSO4YOU","host":"mumble.qso4you.com","port":64738,
+     "username":"","locked":False},
+]
+
+
 class MumbleNativePanel(QWidget):
     """Compact native Mumble client UI for Linux."""
 
@@ -270,23 +282,37 @@ class MumbleNativePanel(QWidget):
             self._error("Zertifikat: "+str(exc))
 
     def _refresh_favorites(self, selected=None):
+        # Fixed favorite always first. Manual entry is the last option.
+        old_host=self.host.text().strip().casefold()
+        old_port=self.port.value()
         self.favorite_select.blockSignals(True)
         self.favorite_select.clear()
-        self.favorite_select.addItem("Manueller Server",None)
         for index,fav in enumerate(self._favorites):
-            self.favorite_select.addItem(
-                f"{fav['name']} — {fav['host']}:{fav['port']}",index
-            )
+            label=f"{fav['name']} — {fav['host']}:{fav['port']}"
+            if fav.get("locked"):
+                label+=" 🔒"
+            self.favorite_select.addItem(label,index)
+        self.favorite_select.addItem("Manueller Server",None)
         if selected is not None and 0<=selected<len(self._favorites):
-            self.favorite_select.setCurrentIndex(selected+1)
+            idx=selected
+        elif selected is None:
+            idx=next(
+                (i for i,fav in enumerate(self._favorites)
+                 if fav["host"].casefold()==old_host and fav["port"]==old_port),
+                self.favorite_select.count()-1
+            )
+        else:
+            idx=self.favorite_select.count()-1
+        self.favorite_select.setCurrentIndex(idx)
         self.favorite_select.blockSignals(False)
         self._favorite_selected()
 
     def _favorite_selected(self,*_args):
         index=self.favorite_select.currentData()
         valid=isinstance(index,int) and 0<=index<len(self._favorites)
-        self.favorite_edit.setEnabled(valid)
-        self.favorite_delete.setEnabled(valid)
+        can_edit=valid and not self._favorites[index].get("locked")
+        self.favorite_edit.setEnabled(can_edit)
+        self.favorite_delete.setEnabled(can_edit)
         if not valid:
             self.favorite_nick_label.setText("Favoriten-Nickname: allgemeiner Nickname")
             return
@@ -329,13 +355,19 @@ class MumbleNativePanel(QWidget):
         data=self._favorite_form()
         if data is None:
             return
+        if any(f["host"].casefold()==data["host"].casefold()
+               and f["port"]==data["port"] for f in self._favorites):
+            QMessageBox.information(self,"Mumble-Favoriten",
+                "Für diesen Server ist bereits ein Favorit vorhanden.")
+            return
         self._favorites.append(data)
         self._refresh_favorites(len(self._favorites)-1)
         self._save_settings()
 
     def _favorite_edit(self):
         index=self.favorite_select.currentData()
-        if not isinstance(index,int) or not 0<=index<len(self._favorites):
+        if (not isinstance(index,int) or not 0<=index<len(self._favorites)
+                or self._favorites[index].get("locked")):
             return
         data=self._favorite_form(self._favorites[index])
         if data is None:
@@ -346,7 +378,8 @@ class MumbleNativePanel(QWidget):
 
     def _favorite_delete(self):
         index=self.favorite_select.currentData()
-        if not isinstance(index,int) or not 0<=index<len(self._favorites):
+        if (not isinstance(index,int) or not 0<=index<len(self._favorites)
+                or self._favorites[index].get("locked")):
             return
         fav=self._favorites[index]
         answer=QMessageBox.question(
@@ -533,22 +566,39 @@ class MumbleNativePanel(QWidget):
         except (TypeError,ValueError):
             self._user_volumes={}
         self.client.set_user_volumes(self._user_volumes)
+        # Preserve existing favorites. Restore the permanent server even if a
+        # previous configuration removed or modified its entry.
+        self._favorites=[dict(DEFAULT_MUMBLE_FAVORITES[0])]
+        seen={(self._favorites[0]["host"].casefold(),self._favorites[0]["port"])}
         try:
             stored=json.loads(str(self.settings.value("favorites","[]")))
-            if isinstance(stored,list):
-                self._favorites=[
-                    {
-                        "name":str(item.get("name") or item.get("host") or "").strip(),
-                        "host":str(item.get("host") or "").strip(),
-                        "port":int(item.get("port") or 64738),
-                        "username":str(item.get("username") or "").strip(),
-                    }
-                    for item in stored if isinstance(item,dict)
-                    and str(item.get("host") or "").strip()
-                    and 1<=int(item.get("port") or 64738)<=65535
-                ]
-        except (ValueError,TypeError):
-            self._favorites=[]
+            if not isinstance(stored,list):
+                stored=[]
+        except (TypeError,ValueError):
+            stored=[]
+        # The other three defaults are seeded once on first start, and stay
+        # user-editable/deletable afterwards.
+        for item in (stored if self.settings.contains("favorites")
+                     else DEFAULT_MUMBLE_FAVORITES[1:]):
+            if not isinstance(item,dict):
+                continue
+            host=str(item.get("host") or "").strip()
+            try:
+                port=int(item.get("port") or 64738)
+            except (TypeError,ValueError):
+                continue
+            if not host or not 1<=port<=65535:
+                continue
+            key=(host.casefold(),port)
+            if key in seen:
+                continue
+            seen.add(key)
+            self._favorites.append({
+                "name":str(item.get("name") or host).strip() or host,
+                "host":host,"port":port,
+                "username":str(item.get("username") or "").strip(),
+                "locked":False,
+            })
         self._refresh_favorites()
 
     def _save_settings(self):
