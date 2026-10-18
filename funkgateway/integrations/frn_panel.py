@@ -144,6 +144,12 @@ class FrnPanel(QWidget):
         # audio/PTT
         w=QWidget(); f=QFormLayout(w); self.rx_meter=QProgressBar(); self.tx_meter=QProgressBar(); self.rx_meter.setRange(0,60); self.tx_meter.setRange(0,60); self.rx_label=QLabel('RX: < -60 dBFS'); self.tx_label=QLabel('TX: < -60 dBFS'); f.addRow('FRN Empfang:',self.rx_meter); f.addRow('',self.rx_label); f.addRow('FRN Senden:',self.tx_meter); f.addRow('',self.tx_label)
         self.ptt_mode=QComboBox(); self.ptt_mode.addItem('Halten zum Senden','hold'); self.ptt_mode.addItem('Klick zum Verriegeln','latch')
+        self.local_mute=QCheckBox('Mute – eigenes FRN-Mikrofon stumm')
+        self.local_deaf=QCheckBox('Deaf – FRN-Empfang stumm')
+        self.local_mute.toggled.connect(self._frn_mute_changed)
+        self.local_deaf.toggled.connect(self._frn_deaf_changed)
+        self.local_audio_status=QLabel('FRN: Mikrofon frei · Empfang an')
+        self.local_audio_status.setWordWrap(True)
         self.ptt_limit_enabled=QCheckBox('Automatische TX-Abschaltung'); self.ptt_limit_enabled.setChecked(True)
         self.ptt_limit=QSpinBox(); self.ptt_limit.setRange(1,1800); self.ptt_limit.setValue(180); self.ptt_limit.setSuffix(' s')
         self.ptt_hotkey=HotkeyCaptureButton()
@@ -157,6 +163,9 @@ class FrnPanel(QWidget):
         self.ptt_hotkey_status=QLabel('Hotkey-Status: lokal bereit')
         self.ptt_hotkey_status.setWordWrap(True)
         self.ptt_hint=QLabel('Standard ist „Nur in FunkGateway“. So löst eine Taste, die du in anderen Programmen benutzt, dort keine FRN-PTT aus. Bei „Systemweit“ zeigt der Status direkt an, ob der Linux-Backend-Listener wirklich läuft.'); self.ptt_hint.setWordWrap(True)
+        f.addRow('',self.local_mute)
+        f.addRow('',self.local_deaf)
+        f.addRow('Eigener Audiostatus:',self.local_audio_status)
         f.addRow('Manuelle PTT:',self.ptt_mode); f.addRow('PTT-Hotkey:',self.ptt_hotkey); f.addRow('Hotkey-Bereich:',self.ptt_hotkey_scope); f.addRow('',self.ptt_hotkey_status); f.addRow('',self.ptt_limit_enabled); f.addRow('Max. Sendedauer:',self.ptt_limit); f.addRow('',self.ptt_hint); tabs.addTab(w,'Audio / PTT')
         # diag
         w=QWidget(); vv=QVBoxLayout(w); self.log=QPlainTextEdit(); self.log.setReadOnly(True); vv.addWidget(self.log); tabs.addTab(w,'Diagnose')
@@ -212,7 +221,10 @@ class FrnPanel(QWidget):
         try: cfg=self._cfg()
         except Exception as e: QMessageBox.warning(self,'FRN',str(e)); return
         if self.client:self.client.stop()
-        self.client=FrnNativeClient(cfg); s=self.client.signals; s.log.connect(self._log); s.state.connect(lambda _:self._update_status()); s.connected.connect(self._connected); s.participant_list.connect(self.update_participants); s.server_room_list.connect(self._direct_rooms); s.rx_talker.connect(self.update_talker); s.audio_level.connect(self._tx_level); s.rx_audio_level.connect(self._rx_level); s.tx_granted.connect(self._tx_granted); s.error.connect(lambda e:self._log('FEHLER: '+e)); self.connect_btn.setEnabled(False); self.client.start()
+        self.client=FrnNativeClient(cfg)
+        self.client.set_local_mute(self.local_mute.isChecked())
+        self.client.set_local_deaf(self.local_deaf.isChecked())
+        s=self.client.signals; s.log.connect(self._log); s.state.connect(lambda _:self._update_status()); s.connected.connect(self._connected); s.participant_list.connect(self.update_participants); s.server_room_list.connect(self._direct_rooms); s.rx_talker.connect(self.update_talker); s.audio_level.connect(self._tx_level); s.rx_audio_level.connect(self._rx_level); s.tx_granted.connect(self._tx_granted); s.error.connect(lambda e:self._log('FEHLER: '+e)); self.connect_btn.setEnabled(False); self.client.start()
     def disconnect_frn(self, room_switch=False):
         self.ptt(False,force=True)
         if not room_switch:
@@ -286,7 +298,33 @@ class FrnPanel(QWidget):
         self.connect_frn()
     def _tx_granted(self,yes):
         self.ptt_active=bool(yes); self.pttStateChanged.emit(self.ptt_active); self._refresh_participant_tx_state(); self._update_status()
+    def _frn_mute_changed(self,enabled):
+        if self.client:
+            self.client.set_local_mute(enabled)
+        if enabled and self.ptt_active:
+            self.ptt(False,force=True)
+        self._update_local_audio_status()
+
+    def _frn_deaf_changed(self,enabled):
+        if self.client:
+            self.client.set_local_deaf(enabled)
+        self._update_local_audio_status()
+
+    def _update_local_audio_status(self):
+        muted=self.local_mute.isChecked()
+        deaf=self.local_deaf.isChecked()
+        self.local_audio_status.setText(
+            'FRN Mikrofon: '+('STUMM' if muted else 'frei')+
+            ' · FRN Empfang: '+('TAUB' if deaf else 'an')
+        )
+        self.local_audio_status.setStyleSheet(
+            'color:#F2994A;font-weight:bold;' if muted or deaf else ''
+        )
+
     def ptt(self,on,force=False):
+        if on and self.local_mute.isChecked():
+            if not force:self._log('FRN PTT: Eigenes Mikrofon ist stumm.')
+            return
         if not self.client or not self.connected:
             if on and not force:self._log('PTT: FRN ist nicht verbunden.')
             return
@@ -553,12 +591,15 @@ class FrnPanel(QWidget):
         t=f'FRN: {state}{extra}{tx}'; self.state_label.setText(t); self.statusChanged.emit(t)
     def _log(self,t): self.log.appendPlainText(str(t))
     def to_config(self):
-        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'ptt_hotkey':self.ptt_hotkey_text(),'ptt_hotkey_scope':self.ptt_hotkey_scope_value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value(),'main_password_fallback':self.main_password_fallback.isChecked()}
+        return {'manager':self.manager.currentData(),'server':self.server.text(),'port':self.port.value(),'room':self.room.text(),'email':self.email.text(),'password':self.password.text(),'callsign':self.callsign.text(),'description':self.description.text(),'band':self.band.text(),'country':self.country.text(),'city':self.city.text(),'audio_enabled':self.audio_enabled.isChecked(),'audio_input':self.audio_in.currentData(),'audio_output':self.audio_out.currentData(),'ptt_mode':self.ptt_mode.currentData(),'explorer_manager':self.explorer_manager.currentData(),'client_type':self.client_type.currentData(),'protocol_version':self.protocol_version.text(),'manual_room':(self.manual_room.text() if hasattr(self,'manual_room') else ''),'ptt_limit_enabled':self.ptt_limit_enabled.isChecked(),'ptt_limit':self.ptt_limit.value(),'local_mute':self.local_mute.isChecked(),'local_deaf':self.local_deaf.isChecked(),'ptt_hotkey':self.ptt_hotkey_text(),'ptt_hotkey_scope':self.ptt_hotkey_scope_value(),'sm_guard_enabled':self.sm_guard_enabled.isChecked(),'sm_guard_minutes':self.sm_guard_minutes.value(),'main_password_fallback':self.main_password_fallback.isChecked()}
     def load_config(self,d):
         if not isinstance(d,dict):return
         for cb,key in ((self.manager,'manager'),(self.ptt_mode,'ptt_mode'),(self.explorer_manager,'explorer_manager'),(self.client_type,'client_type')):
             i=cb.findData(d.get(key));
             if i>=0:cb.setCurrentIndex(i)
+        self.local_mute.setChecked(bool(d.get('local_mute',False)))
+        self.local_deaf.setChecked(bool(d.get('local_deaf',False)))
+        self._update_local_audio_status()
         self.protocol_version.setText(str(d.get('protocol_version','20261016') or '20261016'));
         if hasattr(self,'manual_room'): self.manual_room.setText(d.get('manual_room',''))
         self.server.setText(d.get('server','')); self.port.setValue(int(d.get('port',10024) or 10024)); self.room.setText(d.get('room','')); self.email.setText(d.get('email','')); self.password.setText(d.get('password','')); self.callsign.setText(d.get('callsign','')); self.description.setText(d.get('description','FunkGateway UI')); self.band.setText(d.get('band','')); self.country.setText(d.get('country','Germany')); self.city.setText(d.get('city','')); self.audio_enabled.setChecked(bool(d.get('audio_enabled',True))); self.ptt_limit_enabled.setChecked(bool(d.get('ptt_limit_enabled',True))); self.ptt_limit.setValue(int(d.get('ptt_limit',180) or 180)); hotkey=str(d.get('ptt_hotkey','F9') or '')
