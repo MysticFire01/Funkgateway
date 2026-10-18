@@ -13,7 +13,7 @@ from html import unescape
 from urllib.parse import urlencode
 from html.parser import HTMLParser
 from datetime import datetime, timezone
-from PySide6.QtCore import QUrl, Signal, QTimer, Qt, QEvent
+from PySide6.QtCore import QUrl, Signal, QTimer, Qt, QEvent, QDateTime
 from PySide6.QtGui import QKeySequence
 from PySide6.QtNetwork import QAbstractSocket, QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWebSockets import QWebSocket
@@ -418,9 +418,13 @@ class ZelloPanel(QWidget):
         self.public_status=QLabel("Öffentliches Verzeichnis noch nicht geladen.")
         self.public_status.setWordWrap(True)
         public_layout.addWidget(self.public_status)
+        self.public_updated=QLabel("Letzte erfolgreiche Aktualisierung: noch keine")
+        public_layout.addWidget(self.public_updated)
         pages["Public Directory"].addWidget(public_box)
         self._public_entries=[]
         self._public_network=QNetworkAccessManager(self)
+        self._public_busy=False
+        self._public_reload_button=public_reload
         QTimer.singleShot(0,self._load_public_directory)
         move_widget(directory,"Buddys")
         for widget in (self.rx_diagnostic,self.rx_detail,self.rx_packets,
@@ -1015,10 +1019,23 @@ class ZelloPanel(QWidget):
             self.connect_channel()
 
     def _load_public_directory(self,*_args):
-        url="https://raw.githubusercontent.com/MysticFire01/Funkgateway/main/community/zello_channels.json"
-        request=QNetworkRequest(QUrl(url))
+        if self._public_busy:
+            return
+        self._public_busy=True
+        self._public_reload_button.setEnabled(False)
+        url=QUrl("https://raw.githubusercontent.com/MysticFire01/Funkgateway/main/community/zello_channels.json")
+        # Unique URL on every request avoids stale raw.githubusercontent.com CDN caches.
+        from PySide6.QtCore import QUrlQuery
+        query=QUrlQuery()
+        query.addQueryItem("_fg_refresh",str(QDateTime.currentMSecsSinceEpoch()))
+        url.setQuery(query)
+        request=QNetworkRequest(url)
         request.setTransferTimeout(12000)
         request.setRawHeader(b"User-Agent",b"FunkGateway-CommunityDirectory")
+        request.setRawHeader(b"Cache-Control",b"no-cache, no-store")
+        request.setRawHeader(b"Pragma",b"no-cache")
+        request.setAttribute(QNetworkRequest.Attribute.CacheLoadControlAttribute,
+                             QNetworkRequest.CacheLoadControl.AlwaysNetwork)
         self.public_status.setText("Lade freigegebenes Community-Verzeichnis …")
         reply=self._public_network.get(request)
         reply.finished.connect(lambda reply=reply:self._public_loaded(reply))
@@ -1048,6 +1065,9 @@ class ZelloPanel(QWidget):
                 cleaned.append({"name":name,"description":str(entry.get("description",""))[:160]})
             self._public_entries=cleaned
             self._filter_public_directory()
+            self.public_updated.setText(
+                "Letzte erfolgreiche Aktualisierung: "+
+                QDateTime.currentDateTime().toString("dd.MM.yyyy HH:mm:ss"))
             self.public_status.setText(
                 f"{len(cleaned)} freigegebene Community-Kanäle geladen. "
                 "Status nicht live überprüft.")
@@ -1055,6 +1075,8 @@ class ZelloPanel(QWidget):
             self.public_status.setText(
                 "Community-Verzeichnis derzeit nicht verfügbar: "+str(exc))
         finally:
+            self._public_busy=False
+            self._public_reload_button.setEnabled(True)
             reply.deleteLater()
 
     def _filter_public_directory(self,*_args):
