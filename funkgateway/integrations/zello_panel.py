@@ -371,7 +371,7 @@ class ZelloPanel(QWidget):
         # require verification against the image tables before connecting.
         suffixes={1:"Rufkanal Deutschland",2:"Ruf-Nord",3:"Ruf-West",
                   4:"Ruf-Ost",5:"Ruf-Süd",9:"Trucker",10:"Trucker",
-                  19:"Jugend",29:"Jugend"}
+                  19:"Jugend",20:"Jugend"}
         self._discovery_entries=[
             "Digital Funk Kanal {:02d}{}".format(
                 number, " ("+suffixes[number]+")" if number in suffixes else "")
