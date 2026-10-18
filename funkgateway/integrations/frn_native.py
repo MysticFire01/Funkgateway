@@ -421,6 +421,9 @@ class FrnNativeClient:
         self.tx_granted_evt = threading.Event()
         self.tx_thread = None
         self.current_talker_index = 0
+        # Local FRN controls; FRN has no Mumble-style server mute/deaf state.
+        self.local_mute = False
+        self.local_deaf = False
 
     def _set_state(self, state):
         # Alpha 9: identische Zustände nicht erneut loggen.
@@ -482,8 +485,20 @@ class FrnNativeClient:
                     "WARN: FRN-Thread reagierte beim Stoppen nicht innerhalb von 3 s."
                 )
 
+    def set_local_mute(self, enabled: bool):
+        self.local_mute = bool(enabled)
+        if self.local_mute:
+            self.request_tx(False)
+
+    def set_local_deaf(self, enabled: bool):
+        self.local_deaf = bool(enabled)
+
     def request_tx(self, enabled: bool):
         if enabled:
+            if self.local_mute:
+                self.signals.log.emit('FRN PTT blockiert: eigenes Mikrofon stummgeschaltet.')
+                return
+
             if not self.cfg.audio_enabled:
                 self.signals.error.emit("Audio ist nicht aktiviert.")
                 return
@@ -579,7 +594,8 @@ class FrnNativeClient:
                 if self.codec and self.output_stream:
                     pcm = self.codec.decode_packet(encoded)
                     self.signals.rx_audio_level.emit(rms_dbfs(pcm))
-                    self.output_stream.write(pcm)
+                    if not self.local_deaf:
+                        self.output_stream.write(pcm)
             except Exception as exc:
                 self.signals.error.emit("FRN RX-Audio: " + str(exc))
 
@@ -611,7 +627,8 @@ class FrnNativeClient:
                     pcm = bytes(pending[:FRN_AUDIO_SAMPLES * 2])
                     del pending[:FRN_AUDIO_SAMPLES * 2]
                     self.signals.audio_level.emit(rms_dbfs(pcm))
-                    self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
+                    if not self.local_mute:
+                        self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
             else:
                 if sd is None:
                     raise RuntimeError("sounddevice ist nicht initialisiert.")
@@ -635,7 +652,8 @@ class FrnNativeClient:
                     self.signals.audio_level.emit(rms_dbfs(pcm))
                     if overflow:
                         self.signals.log.emit("WARN: Audio-Eingang hatte einen Overflow.")
-                    self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
+                    if not self.local_mute:
+                        self._send(b"TX1\r\n" + self.codec.encode_packet(pcm))
             if self.sock and not self.stop_evt.is_set():
                 self._send_line("RX0")
                 self._set_state("IDLE")
