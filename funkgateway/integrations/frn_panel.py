@@ -155,7 +155,7 @@ class FrnPanel(QWidget):
         quick.addWidget(self.participants_audio_status,1)
         vv.addLayout(quick)
         vv.addWidget(self.talker)
-        self.participants=QTableWidget(0,7); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort','Audio-Status']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers); vv.addWidget(self.participants); tabs.addTab(w,'Teilnehmer')
+        self.participants=QTableWidget(0,7); self.participants.setHorizontalHeaderLabels(['','Name','Typ','Band','Land','Ort','Audio-Status']); self.participants.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); self.participants.horizontalHeader().setSectionResizeMode(6,QHeaderView.ResizeToContents); self.participants.setEditTriggers(QAbstractItemView.NoEditTriggers); vv.addWidget(self.participants); tabs.addTab(w,'Teilnehmer')
         # audio/PTT
         w=QWidget(); f=QFormLayout(w)
         audio_intro=QLabel('<b>FRN-Audiogeräte</b>')
@@ -320,8 +320,10 @@ class FrnPanel(QWidget):
                 name_item.setToolTip(
                     "Eigener FRN-Client · "+self.participants_audio_status.text()
                 )
-                if muted or deaf:
-                    status.setForeground(QColor("#F2994A"))
+                status.setForeground(
+                    QColor("#F2994A") if muted or deaf
+                    else self.participants.palette().color(self.participants.foregroundRole())
+                )
             else:
                 status.setText("—")
                 status.setToolTip(
