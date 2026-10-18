@@ -4356,8 +4356,11 @@ class MainWindow(QMainWindow):
         self.mumble_admin_tabs=QTabWidget()
         mumble_outer.addWidget(self.mumble_admin_tabs,1)
 
-        self.mumble_native_panel=MumbleNativePanel(self)
-        self.mumble_admin_tabs.addTab(self.mumble_native_panel,"Native Client")
+        self.mumble_native_scroll=QScrollArea(self)
+        self.mumble_native_scroll.setWidgetResizable(True)
+        self.mumble_native_panel=MumbleNativePanel(self.mumble_native_scroll)
+        self.mumble_native_scroll.setWidget(self.mumble_native_panel)
+        self.mumble_admin_tabs.addTab(self.mumble_native_scroll,"Native Client")
 
         self.mumble_status=QLabel("Mumble: noch nicht geprüft")
         self.mumble_status.setWordWrap(True); self.mumble_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
