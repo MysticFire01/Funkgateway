@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabe
     QComboBox,QSpinBox,QCheckBox,QTabWidget,QTableWidget,QTableWidgetItem,QHeaderView,QPlainTextEdit,
     QProgressBar,QAbstractItemView,QMessageBox,QGroupBox,QKeySequenceEdit,QMenu,QDialog)
 from .frn_native import FrnNativeClient,FrnSystemExplorer,FrnConfig,MANAGERS,sd
+from .emoji_picker import emoji_button
 
 class FrnPrivateChat(QDialog):
     """One conversation per FRN participant; closing never disconnects FRN."""
@@ -28,6 +29,7 @@ class FrnPrivateChat(QDialog):
         self.entry.setPlaceholderText("Private Nachricht an " + display_name)
         self.entry.returnPressed.connect(self.send)
         line.addWidget(self.entry, 1)
+        line.addWidget(emoji_button(self.entry, 'frn', self))
         button = QPushButton("Senden")
         button.clicked.connect(self.send)
         line.addWidget(button)
@@ -270,6 +272,7 @@ class FrnPanel(QWidget):
         self.chat_send.setEnabled(False)
         self.chat_send.clicked.connect(self._send_chat)
         compose.addWidget(self.chat_input,1)
+        compose.addWidget(emoji_button(self.chat_input, 'frn', w))
         compose.addWidget(self.chat_send)
         chat_layout.addLayout(compose)
         self.chat_status=QLabel("Mit FRN verbinden, um Nachrichten zu senden.")
