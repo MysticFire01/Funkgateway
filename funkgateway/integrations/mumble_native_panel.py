@@ -603,6 +603,57 @@ class MumbleNativePanel(QWidget):
         self._save_settings()
         return True
 
+    def _hotkey_status(self,status):
+        self.ptt_hotkey_status.setText("Mumble-Hotkey: "+str(status))
+
+    def _configure_ptt_hotkey(self,*_args):
+        key=self.ptt_hotkey.hotkey()
+        scope=self.ptt_hotkey_scope.currentData() or "local"
+        self.local_ptt_hotkey.set_hotkey("")
+        self.global_ptt_hotkey.stop()
+        self.global_ptt_hotkey.set_hotkey("")
+        if not key:
+            self._hotkey_status("deaktiviert")
+        elif scope=="global":
+            self.global_ptt_hotkey.set_hotkey(key)
+            if not self.global_ptt_hotkey.start():
+                self.local_ptt_hotkey.set_hotkey(key)
+                self._hotkey_status("systemweit nicht verfügbar – lokal aktiv")
+        else:
+            self.local_ptt_hotkey.set_hotkey(key)
+            self._hotkey_status("lokal aktiv")
+        self._save_settings()
+
+    def _hotkey_ptt_press(self):
+        self.set_mumble_ptt(True)
+
+    def _hotkey_ptt_release(self):
+        self.set_mumble_ptt(False)
+
+    def set_mumble_ptt(self,active):
+        if not (self.client.connected and self.ptt_enabled.isChecked()
+                and not self.self_mute.isChecked() and not self.self_deaf.isChecked()):
+            if not active:
+                self.client.set_pc_ptt(False)
+            return
+        self.client.set_pc_ptt(bool(active))
+        self.ptt.setText("Mumble PTT · SENDEN" if active else "Mumble PTT halten")
+        self.ptt.setStyleSheet(
+            "background:#C62828;color:#FFFFFF;font-weight:bold;" if active else ""
+        )
+        window=self.window()
+        button=getattr(window,"mumble_ptt_top_btn",None)
+        if button is not None:
+            button.setText("Mumble TX AKTIV" if active else "Mumble PTT")
+            button.setStyleSheet(
+                "background:#C62828;color:#FFFFFF;font-weight:bold;" if active else ""
+            )
+
+    def stop_ptt_hotkeys(self):
+        self.local_ptt_hotkey.set_hotkey("")
+        self.global_ptt_hotkey.stop()
+        self.set_mumble_ptt(False)
+
     def _load_settings(self):
         import json
         self.host.setText(str(self.settings.value("host","voice.mumble-funk.de")))
