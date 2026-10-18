@@ -58,7 +58,6 @@ class GlobalPttHotkey(QObject):
             )
             listener.daemon = True
             listener.start()
-            time.sleep(0.08)
             if not listener.is_alive():
                 raise RuntimeError("Tastatur-Listener wurde unmittelbar beendet")
             self._listener = listener
