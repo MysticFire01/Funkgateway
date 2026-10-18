@@ -8,6 +8,7 @@ import threading
 import queue
 import time
 import webbrowser
+from urllib.parse import quote_plus
 from datetime import datetime, timezone
 from PySide6.QtCore import QUrl, Signal, QTimer, Qt, QEvent
 from PySide6.QtGui import QKeySequence
@@ -302,7 +303,7 @@ class ZelloPanel(QWidget):
         tabs=QTabWidget(self)
         self.zello_tabs=tabs
         pages={}
-        for title in ("Verbindung","Kanäle","Buddys","Diagnose"):
+        for title in ("Verbindung","Kanäle","Entdecken","Buddys","Diagnose"):
             page=QWidget()
             layout=QVBoxLayout(page)
             layout.setContentsMargins(8,8,8,8)
@@ -325,6 +326,53 @@ class ZelloPanel(QWidget):
         channel_columns.addWidget(target_box,1)
         channel_columns.addWidget(channels_box,1)
         pages["Kanäle"].addLayout(channel_columns)
+        # External discovery is explicitly separate from the official Channel API.
+        # Only exact names published as text on the cited directory are preloaded.
+        discovery=QGroupBox("Öffentliche Kanäle entdecken (externe Verzeichnisse)")
+        discovery_layout=QVBoxLayout(discovery)
+        discovery_hint=QLabel(
+            "Keine weltweite Zello-Kanalsuche: Hier kannst du bekannte Namen "
+            "in einer kleinen öffentlichen Verzeichnis-Auswahl filtern. "
+            "Für weitere Ergebnisse öffnet sich die externe Websuche. "
+            "Eine Verbindung bestätigt erst der Zello-Server.")
+        discovery_hint.setWordWrap(True)
+        discovery_layout.addWidget(discovery_hint)
+        discover_row=QHBoxLayout()
+        self.discover_query=QLineEdit()
+        self.discover_query.setPlaceholderText("Kanalname oder Suchwort, z. B. Süd, Funk")
+        self.discover_query.textChanged.connect(self._search_discovery)
+        self.discover_web=QPushButton("Im Web suchen")
+        self.discover_web.clicked.connect(self._open_discovery_search)
+        discover_row.addWidget(self.discover_query,1)
+        discover_row.addWidget(self.discover_web)
+        discovery_layout.addLayout(discover_row)
+        self.discover_results=QListWidget()
+        self.discover_results.itemDoubleClicked.connect(self._discover_select)
+        discovery_layout.addWidget(self.discover_results)
+        discover_actions=QHBoxLayout()
+        pick_discover=QPushButton("Als Favorit speichern")
+        pick_discover.clicked.connect(self._discover_favorite)
+        switch_discover=QPushButton("Mit Kanal verbinden")
+        switch_discover.clicked.connect(self._discover_connect)
+        discover_actions.addWidget(pick_discover)
+        discover_actions.addWidget(switch_discover)
+        discovery_layout.addLayout(discover_actions)
+        self.discover_status=QLabel("Quelle: Digitalfunk-Deutschland – veröffentlichte Rufkanäle 01–05.")
+        self.discover_status.setWordWrap(True)
+        discovery_layout.addWidget(self.discover_status)
+        source_link=QPushButton("Original-Kanalliste öffnen")
+        source_link.clicked.connect(lambda:webbrowser.open(
+            "https://www.cb-digitalfunk.de/kanal%C3%BCbersicht"))
+        discovery_layout.addWidget(source_link)
+        pages["Entdecken"].addWidget(discovery)
+        self._discovery_entries=[
+            "Digital Funk Kanal 01 (Rufkanal Deutschland)",
+            "Digital Funk Kanal 02 (Ruf-Nord)",
+            "Digital Funk Kanal 03 (Ruf-West)",
+            "Digital Funk Kanal 04 (Ruf-Ost)",
+            "Digital Funk Kanal 05 (Ruf-Süd)",
+        ]
+        self._search_discovery()
         move_widget(directory,"Buddys")
         for widget in (self.rx_diagnostic,self.rx_detail,self.rx_packets,
                        self.copy_rx_btn,self.tx_diagnostic):
@@ -795,6 +843,65 @@ class ZelloPanel(QWidget):
         window=self.window()
         if hasattr(window,"save_cfg"):
             window.save_cfg()
+
+    def _search_discovery(self,*_args):
+        query=self.discover_query.text().strip().casefold()
+        self.discover_results.clear()
+        for name in self._discovery_entries:
+            if query in name.casefold():
+                self.discover_results.addItem(name)
+        self.discover_status.setText(
+            f"{self.discover_results.count()} Einträge aus der öffentlichen Rufkanalliste. "
+            "Keine Prüfung von Online-Status oder Zugangsrechten.")
+
+    def _open_discovery_search(self,*_args):
+        query=self.discover_query.text().strip()
+        if not query:
+            webbrowser.open("https://www.cb-digitalfunk.de/kanal%C3%BCbersicht")
+            return
+        webbrowser.open("https://www.google.com/search?q="+quote_plus(
+            'Zello öffentlicher Kanal '+query))
+        self.discover_status.setText(
+            "Websuche geöffnet. Gefundene Kanalnamen können in den Favoriten "
+            "eingetragen werden; Webtreffer sind nicht automatisch verifiziert.")
+
+    def _discovery_name(self):
+        item=self.discover_results.currentItem()
+        return item.text().strip() if item else ""
+
+    def _discover_select(self,*_args):
+        name=self._discovery_name()
+        if name:
+            self.channel_add.setText(name)
+            self.channel.setText(name)
+            self.discover_status.setText("Kanal übernommen: "+name+
+                " – Favorit speichern oder Verbindung herstellen.")
+
+    def _discover_favorite(self,*_args):
+        name=self._discovery_name()
+        if name:
+            self._channel_favorites.add(name)
+            self.channel_add.setText(name)
+            self._refresh_directories()
+            self._save_directory()
+            self.discover_status.setText("Favorit gespeichert: "+name)
+
+    def _discover_connect(self,*_args):
+        name=self._discovery_name()
+        if not name:
+            return
+        if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
+            self.discover_status.setText("Bitte vor dem Kanalwechsel PTT loslassen.")
+            return
+        if self.connected and self.channel.text().strip()==name:
+            self.discover_status.setText("Bereits mit diesem Kanal verbunden.")
+            return
+        if self._ws.state()!=QAbstractSocket.SocketState.UnconnectedState:
+            self._pending_channel_switch=name
+            self.disconnect_channel()
+        else:
+            self.channel.setText(name)
+            self.connect_channel()
 
     def _refresh_directories(self, *_args):
         buddy_filter=self.buddy_search.text().strip().casefold()
