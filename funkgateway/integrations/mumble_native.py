@@ -183,6 +183,7 @@ class MumbleNativeClient(QObject):
         except Exception as exc:
             self.error.emit("Native Mumble: " + str(exc))
         finally:
+            self._stop_rf_capture()
             self._stop_capture()
             self._close_playback()
             self._connected = False
