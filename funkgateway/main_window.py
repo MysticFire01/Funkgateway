@@ -1524,6 +1524,10 @@ class MainWindow(QMainWindow):
         if hasattr(self,"frn_panel"):
             parts.append("FRN aktiv" if self.frn_panel.connected else "FRN Alpha getrennt")
             if self.frn_panel.connected: voip_connected=True
+        if hasattr(self, "zello_panel"):
+            parts.append("Zello aktiv" if self.zello_panel.connected else "Zello getrennt")
+            if self.zello_panel.connected:
+                voip_connected = True
         if not parts:
             parts.append("keine optionale Integration aktiv")
         self.status_voip.setText(", ".join(parts))
