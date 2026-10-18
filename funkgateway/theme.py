@@ -81,7 +81,62 @@ QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background-color: {p['panel']}; color: {p['text']}; border: 1px solid {p['border']};
     border-radius: 6px; padding: 4px;
 }}
-QComboBox::drop-down {{ border: 0px; width: 24px; }}
+/* Consistent dropdowns throughout the application, including dialogs.
+   Explicitly style the popup view: otherwise Linux/GTK themes can show a
+   bright native selection bar on the dark FunkGateway theme. */
+QComboBox {{
+    min-height: 24px;
+    padding: 5px 30px 5px 9px;
+}}
+QComboBox:hover {{ border-color: {p['accent']}; }}
+QComboBox:focus {{ border: 1px solid {p['accent']}; }}
+QComboBox:on {{
+    border-color: {p['accent']};
+    border-bottom-left-radius: 2px;
+    border-bottom-right-radius: 2px;
+}}
+QComboBox:disabled {{
+    color: {p['muted']};
+    background-color: {p['panel_alt']};
+}}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 27px;
+    border-left: 1px solid {p['border']};
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    background-color: {p['panel_alt']};
+}}
+QComboBox::drop-down:hover {{
+    background-color: {p['panel']};
+}}
+QComboBox QAbstractItemView {{
+    background-color: {p['panel']};
+    color: {p['text']};
+    selection-background-color: {p['accent']};
+    selection-color: {p['accent_text']};
+    border: 1px solid {p['accent']};
+    border-radius: 5px;
+    padding: 5px;
+    outline: 0;
+    show-decoration-selected: 1;
+}}
+QComboBox QAbstractItemView::item {{
+    min-height: 26px;
+    padding: 5px 9px;
+    background-color: {p['panel']};
+    color: {p['text']};
+    border-radius: 4px;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {p['accent']};
+    color: {p['accent_text']};
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {p['panel_alt']};
+    color: {p['text']};
+}}
 QCheckBox {{ spacing: 7px; }}
 QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 7px; background: {p['panel']}; }}
 QTabBar::tab {{ background: {p['panel_alt']}; color: {p['text']}; border: 1px solid {p['border']}; padding: 7px 11px; margin-right: 2px; }}
