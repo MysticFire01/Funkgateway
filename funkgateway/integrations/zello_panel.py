@@ -33,6 +33,10 @@ class ZelloPanel(QWidget):
         self._last_packet = 0.0
         self._tx_seq = 2
         self._tx_pending = False
+        self._tx_request_seq = None
+        self._tx_timeout = QTimer(self)
+        self._tx_timeout.setSingleShot(True)
+        self._tx_timeout.timeout.connect(self._tx_request_timeout)
         self._tx_wanted = False
         self._tx_stream_id = None
         self._tx_input = None
@@ -178,8 +182,10 @@ class ZelloPanel(QWidget):
                 self._set_status("Anmeldung fehlgeschlagen: " +
                                  str(data.get("error", "unbekannter Fehler")))
                 self._ws.close()
-        elif data.get("seq") == self._tx_seq - 1 and self._tx_pending:
+        elif self._tx_pending and data.get("seq") == self._tx_request_seq:
             self._tx_pending=False
+            self._tx_timeout.stop()
+            self._tx_request_seq=None
             if data.get("success") and "stream_id" in data:
                 self._tx_stream_id=int(data["stream_id"])
                 if self._tx_wanted:
@@ -243,13 +249,24 @@ class ZelloPanel(QWidget):
                 return
             header=base64.b64encode(struct.pack("<HBB",16000,1,20)).decode("ascii")
             self._tx_pending=True
-            self._send_command("start_stream",channel=self.channel.text().strip(),
+            self._tx_request_seq=self._send_command("start_stream",channel=self.channel.text().strip(),
                                type="audio",codec="opus",codec_header=header,packet_duration=20)
+            self._tx_timeout.start(6000)
             self.tx_status.setText("Zello TX: Freigabe wird angefordert …")
         else:
             self._tx_wanted=False
             if not self._tx_pending and self._tx_stream_id is not None:
                 self._stop_tx()
+        self._update_ptt_ui()
+
+    def _tx_request_timeout(self):
+        if not self._tx_pending:
+            return
+        self._tx_pending=False
+        self._tx_wanted=False
+        self._tx_request_seq=None
+        self._tx_encoder=None
+        self.tx_status.setText("Zello TX: keine Antwort vom Server innerhalb von 6 Sekunden")
         self._update_ptt_ui()
 
     def _begin_microphone(self):
@@ -291,6 +308,7 @@ class ZelloPanel(QWidget):
     def _stop_tx(self):
         self._tx_wanted=False
         self._tx_timer.stop()
+        self._tx_timeout.stop()
         if self._tx_input is not None:
             try:
                 self._tx_input.stop()
@@ -311,6 +329,7 @@ class ZelloPanel(QWidget):
                                stream_id=self._tx_stream_id)
         self._tx_stream_id=None
         self._tx_pending=False
+        self._tx_request_seq=None
         self._tx_encoder=None
         while not self._tx_queue.empty():
             try: self._tx_queue.get_nowait()
