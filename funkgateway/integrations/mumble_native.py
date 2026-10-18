@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import audioop
 import math
+import subprocess
 import threading
 import time
 from collections import deque
@@ -42,6 +43,10 @@ class MumbleNativeClient(QObject):
         self._capture_device = None
         self._pc_ptt_enabled = False
         self._pc_ptt_active = False
+        self._gateway_rx_active = False
+        self._rf_capture_thread = None
+        self._rf_capture_stop = threading.Event()
+        self._rf_proc = None
         self._playback_enabled = True
         self._playback_device = None
         self._playback_stream = None
@@ -194,6 +199,8 @@ class MumbleNativeClient(QObject):
     def disconnect(self):
         self._stop.set()
         self._pc_ptt_active = False
+        self._gateway_rx_active = False
+        self._stop_rf_capture()
         self._own_tx_active = False
         self._stop_capture()
         self._close_playback()
@@ -329,9 +336,73 @@ class MumbleNativeClient(QObject):
 
     def set_pc_ptt(self, active):
         self._pc_ptt_active = bool(active) and self._pc_ptt_enabled and self._connected
-        self._own_tx_active = self._pc_ptt_active
+        self._own_tx_active = bool(self._pc_ptt_active or self._gateway_rx_active)
         if self._pc_ptt_active and not (self._capture_thread and self._capture_thread.is_alive()):
             self._start_capture()
+
+    def set_gateway_rx(self, active):
+        """Key native Mumble from RF RX independently of PC-user PTT."""
+        active = bool(active and self._connected and not self._stop.is_set())
+        if active == self._gateway_rx_active:
+            return
+        self._gateway_rx_active = active
+        self._own_tx_active = bool(active or self._pc_ptt_active)
+        if active and not (self._rf_capture_thread and self._rf_capture_thread.is_alive()):
+            self._rf_capture_stop.clear()
+            self._rf_capture_thread = threading.Thread(
+                target=self._rf_capture_worker, daemon=True)
+            self._rf_capture_thread.start()
+        self._emit_participants()
+
+    def _stop_rf_capture(self):
+        self._gateway_rx_active = False
+        self._rf_capture_stop.set()
+        proc = self._rf_proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        thread = self._rf_capture_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.5)
+        self._rf_capture_thread = None
+        self._rf_proc = None
+
+    def _rf_capture_worker(self):
+        """Read the actual gateway RX virtual source, not the PC microphone."""
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                ["parec", "--device=funkgateway_rx_source", "--raw",
+                 "--format=s16le", "--rate=48000", "--channels=1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+            self._rf_proc = proc
+            while not self._rf_capture_stop.is_set() and not self._stop.is_set():
+                frame = proc.stdout.read(1920)
+                if not frame:
+                    raise RuntimeError("FunkGateway_RX_Input liefert keine Audiodaten")
+                if not self._gateway_rx_active or not self._connected:
+                    continue
+                mumble = self._mumble
+                if mumble is not None:
+                    mumble.sound_output.add_sound(frame)
+        except Exception as exc:
+            if not self._rf_capture_stop.is_set() and not self._stop.is_set():
+                self._gateway_rx_active = False
+                self._own_tx_active = bool(self._pc_ptt_active)
+                self.error.emit("Mumble Funk-RX-Audio: " + str(exc))
+        finally:
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=0.5)
+                except Exception:
+                    pass
+            self._rf_proc = None
 
     def channel_snapshot(self):
         mumble = self._mumble
@@ -567,7 +638,7 @@ class MumbleNativeClient(QObject):
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=1.5)
         self._capture_thread = None
-        self._own_tx_active = False
+        self._own_tx_active = bool(self._gateway_rx_active)
 
     def _capture_worker(self):
         try:
@@ -595,7 +666,7 @@ class MumbleNativeClient(QObject):
                         mumble.sound_output.add_sound(raw)
         except Exception as exc:
             self._pc_ptt_active = False
-            self._own_tx_active = False
+            self._own_tx_active = bool(self._gateway_rx_active)
             self.error.emit(
                 "Mumble Mikrofon/PTT: " + str(exc)
                 + " – Das Eingabegerät ist möglicherweise belegt oder nicht verfügbar. "
