@@ -1717,6 +1717,16 @@ class MainWindow(QMainWindow):
                     "&nbsp;&nbsp;<span style='color:#27AE60'>●</span> "+
                     html.escape(native_label)
                 )
+            if hasattr(self,"zello_panel") and self.zello_panel.connected:
+                zp=self.zello_panel
+                label="Zello · "+(zp.channel.text().strip() or "Kanal")
+                if zp.talker_name:
+                    label+=" · RX "+zp.talker_name
+                elif getattr(zp,"_tx_wanted",False):
+                    label+=" · TX"
+                else:
+                    label+=" · RX frei"
+                detail+="&nbsp;&nbsp;<span style='color:#27AE60'>●</span> "+html.escape(label)
             self.live_status_bar.setText(f"<b>{html.escape(mode_name)}</b>&nbsp;&nbsp;{detail}")
 
     @staticmethod
@@ -4356,6 +4366,7 @@ class MainWindow(QMainWindow):
         # --- Zello Friends & Family Channel API (Alpha) ---------------------
         self.zello_panel = ZelloPanel(self)
         self.zello_panel.connectedChanged.connect(lambda _connected: self.update_start_status())
+        self.zello_panel.talkerChanged.connect(lambda _speaker: self.update_start_status())
         integration_tabs.addTab(self.zello_panel, "Zello · Alpha")
 
         # --- TeamSpeak -----------------------------------------------------
