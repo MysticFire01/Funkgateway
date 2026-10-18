@@ -116,6 +116,10 @@ class ZelloPanel(QWidget):
         outer.addWidget(self.speaker)
         self.audio_status=QLabel("Audioempfang: bereit")
         outer.addWidget(self.audio_status)
+        self.rx_diagnostic=QLabel("RX-Diagnose: noch keine Übertragung")
+        self.rx_diagnostic.setWordWrap(True)
+        self.rx_diagnostic.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outer.addWidget(self.rx_diagnostic)
         target_box=QGroupBox("Zello – Gesprächsziel")
         target_form=QFormLayout(target_box)
         self.target_mode=QComboBox()
@@ -320,7 +324,20 @@ class ZelloPanel(QWidget):
                     raise ValueError("Opus-Header nicht unterstützt")
                 import opuslib
                 decoder=opuslib.Decoder(rate,1)
-                speaker=str(data.get("from") or "Unbekannt")
+                # The API documents "from" and optional "for" for both
+                # regular and targeted channel transmissions. Avoid guessing
+                # an identity when the server omits the sender field.
+                sender=next((str(data[key]).strip() for key in
+                             ("from","sender","username","from_user")
+                             if isinstance(data.get(key),str) and data[key].strip()),"")
+                recipient=data.get("for")
+                target="gezielt" if isinstance(recipient,str) and recipient.strip() else "Kanal"
+                present=",".join(k for k in ("from","sender","username","from_user","for")
+                                 if k in data) or "keine"
+                self.rx_diagnostic.setText(
+                    f"RX-Diagnose: {target} · Absenderfelder: {present} · "
+                    +("Sprecher erkannt" if sender else "kein Absender übermittelt"))
+                speaker=sender or "Unbekannt"
                 self._streams[stream_id]=(decoder,rate,speaker)
                 self._last_packet=time.monotonic()
                 self._set_speaker(speaker)
@@ -481,7 +498,7 @@ class ZelloPanel(QWidget):
         if self.talker_name==name:
             return
         self.talker_name=name
-        if name and name not in self._known_speakers:
+        if name and name!="Unbekannt" and name not in self._known_speakers:
             self._known_speakers.add(name)
             self.target_user.addItem(name)
         self.speaker.setText("Sprecher: "+(name or "—"))
@@ -551,6 +568,7 @@ class ZelloPanel(QWidget):
             except queue.Empty:
                 break
         self._set_speaker("")
+        self.rx_diagnostic.setText("RX-Diagnose: noch keine Übertragung")
 
     def _check_audio_timeout(self):
         if self.talker_name and time.monotonic()-self._last_packet>2.5:
