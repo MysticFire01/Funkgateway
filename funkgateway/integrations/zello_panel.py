@@ -36,6 +36,7 @@ class ZelloPanel(QWidget):
         self._last_packet = 0.0
         self._known_speakers = set()
         self._channel_favorites = set()
+        self._pending_channel_switch = ""
         self._tx_recipient = ""
         self._tx_seq = 2
         self._tx_pending = False
@@ -201,18 +202,18 @@ class ZelloPanel(QWidget):
         directory_form.addLayout(channel_row)
         self.channel_list=QListWidget()
         self.channel_list.setMaximumHeight(105)
-        self.channel_list.itemDoubleClicked.connect(self._choose_favorite)
+        self.channel_list.itemDoubleClicked.connect(self._switch_to_favorite)
         directory_form.addWidget(self.channel_list)
         channel_actions=QHBoxLayout()
-        choose_channel=QPushButton("Favorit als Kanal wählen")
-        choose_channel.clicked.connect(self._choose_favorite)
+        choose_channel=QPushButton("Zum Favoriten wechseln")
+        choose_channel.clicked.connect(self._switch_to_favorite)
         remove_channel=QPushButton("Favorit entfernen")
         remove_channel.clicked.connect(self._remove_favorite)
         channel_actions.addWidget(choose_channel)
         channel_actions.addWidget(remove_channel)
         directory_form.addLayout(channel_actions)
         note=QLabel("Nur lokal gespeicherte Namen: keine Online-Kanalsuche und "
-                    "kein Zello-Kontaktbuch. Kanalwechsel erfordert erneutes Verbinden. "
+                    "kein Zello-Kontaktbuch. Doppelklick wechselt automatisch den Kanal. "
                     "Gezielte PTT ist nur innerhalb des verbundenen Kanals möglich.")
         note.setWordWrap(True)
         directory_form.addWidget(note)
@@ -659,6 +660,28 @@ class ZelloPanel(QWidget):
         self.channel.setText(item.text())
         self._save_directory()
 
+    def _switch_to_favorite(self, *_args):
+        item=self.channel_list.currentItem()
+        if item is None:
+            return
+        destination=item.text().strip()
+        if not destination:
+            return
+        if self._tx_wanted or self._tx_pending or self._tx_stream_id is not None:
+            self._set_status("Kanalwechsel erst nach Loslassen der PTT möglich")
+            return
+        if self.connected and self.channel.text().strip()==destination:
+            self._set_status("Bereits mit "+destination+" verbunden")
+            return
+        if self._ws.state()!=QAbstractSocket.SocketState.UnconnectedState:
+            self._pending_channel_switch=destination
+            self._set_status("Wechsle zu "+destination+" …")
+            self.disconnect_channel()
+            return
+        self.channel.setText(destination)
+        self._save_directory()
+        self.connect_channel()
+
     def _target_mode_changed(self, *_args):
         self.target_user.setEnabled(self.target_mode.currentData()=="user")
 
@@ -782,7 +805,13 @@ class ZelloPanel(QWidget):
         self.speaker.setText("Sprecher: —")
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
+        destination=self._pending_channel_switch
+        self._pending_channel_switch=""
         self._set_status("Getrennt")
+        if destination:
+            self.channel.setText(destination)
+            self._save_directory()
+            QTimer.singleShot(0,self.connect_channel)
         if was_connected:
             self.connectedChanged.emit(False)
         self.talkerChanged.emit("")
