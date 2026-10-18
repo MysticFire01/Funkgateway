@@ -13,7 +13,7 @@ from PySide6.QtCore import QUrl, Signal, QTimer, Qt
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QFormLayout,QHBoxLayout,QLabel,
-                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget)
+                               QLineEdit,QPushButton,QCheckBox,QGroupBox,QComboBox,QListWidget,QTabWidget)
 
 class ZelloPanel(QWidget):
     connectedChanged = Signal(bool)
@@ -160,7 +160,7 @@ class ZelloPanel(QWidget):
         note.setWordWrap(True)
         target_form.addRow("",note)
         outer.addWidget(target_box)
-        directory=QGroupBox("Buddyliste und Kanalfavoriten (lokal)")
+        directory=QGroupBox("Buddyliste (lokal)")
         directory_form=QVBoxLayout(directory)
         directory_form.addWidget(QLabel("Buddys – bekannte Zello-Namen"))
         buddy_row=QHBoxLayout()
@@ -187,7 +187,9 @@ class ZelloPanel(QWidget):
         buddy_actions.addWidget(choose_buddy)
         buddy_actions.addWidget(remove_buddy)
         directory_form.addLayout(buddy_actions)
-        directory_form.addWidget(QLabel("Kanäle – gespeicherte Favoriten"))
+        channels_box=QGroupBox("Kanalfavoriten (lokal)")
+        channels_form=QVBoxLayout(channels_box)
+        channels_form.addWidget(QLabel("Kanäle – gespeicherte Favoriten"))
         channel_row=QHBoxLayout()
         self.channel_search=QLineEdit()
         self.channel_search.setPlaceholderText("Favoriten durchsuchen")
@@ -199,11 +201,11 @@ class ZelloPanel(QWidget):
         add_channel=QPushButton("+")
         add_channel.clicked.connect(self._add_favorite)
         channel_row.addWidget(add_channel)
-        directory_form.addLayout(channel_row)
+        channels_form.addLayout(channel_row)
         self.channel_list=QListWidget()
         self.channel_list.setMaximumHeight(105)
         self.channel_list.itemDoubleClicked.connect(self._switch_to_favorite)
-        directory_form.addWidget(self.channel_list)
+        channels_form.addWidget(self.channel_list)
         channel_actions=QHBoxLayout()
         choose_channel=QPushButton("Zum Favoriten wechseln")
         choose_channel.clicked.connect(self._switch_to_favorite)
@@ -211,13 +213,14 @@ class ZelloPanel(QWidget):
         remove_channel.clicked.connect(self._remove_favorite)
         channel_actions.addWidget(choose_channel)
         channel_actions.addWidget(remove_channel)
-        directory_form.addLayout(channel_actions)
+        channels_form.addLayout(channel_actions)
         note=QLabel("Nur lokal gespeicherte Namen: keine Online-Kanalsuche und "
                     "kein Zello-Kontaktbuch. Doppelklick wechselt automatisch den Kanal. "
                     "Gezielte PTT ist nur innerhalb des verbundenen Kanals möglich.")
         note.setWordWrap(True)
-        directory_form.addWidget(note)
+        channels_form.addWidget(note)
         outer.addWidget(directory)
+        outer.addWidget(channels_box)
         self._refresh_directories()
         self.ptt_btn=QPushButton("Zello PTT halten")
         self.ptt_btn.setMinimumHeight(48)
@@ -231,12 +234,41 @@ class ZelloPanel(QWidget):
         self.tx_diagnostic.setWordWrap(True)
         self.tx_diagnostic.setTextInteractionFlags(Qt.TextSelectableByMouse)
         outer.addWidget(self.tx_diagnostic)
-        help_label = QLabel('Token über https://developers.zello.com/ erstellen. '
-                            'Zello unterstützt hier nur jeweils einen Friends-&-Family-Kanal. '
-                            'Zugangsdaten bleiben in dieser Version nur im Arbeitsspeicher und '
-                            'werden nicht in der FunkGateway-Konfiguration gespeichert.')
+        help_label = QLabel('Der API-Token wird über developers.zello.com erstellt. '
+                            'Der Client verbindet sich mit jeweils einem Kanal. '
+                            'Benutzer und Kanäle werden lokal gespeichert; '
+                            'Passwort und Token im System-Schlüsselbund.')
         help_label.setWordWrap(True)
         outer.addWidget(help_label)
+
+        # Same compact tab layout concept as the other integrations.
+        # Move existing widgets without reconnecting signals or recreating clients.
+        tabs=QTabWidget(self)
+        pages={}
+        for title in ("Verbindung","Kanäle","Buddys","Diagnose"):
+            page=QWidget()
+            layout=QVBoxLayout(page)
+            layout.setContentsMargins(8,8,8,8)
+            pages[title]=layout
+            tabs.addTab(page,title)
+        def move_widget(widget, destination):
+            outer.removeWidget(widget)
+            pages[destination].addWidget(widget)
+        move_widget(group,"Verbindung")
+        outer.removeItem(buttons)
+        pages["Verbindung"].addLayout(buttons)
+        move_widget(help_label,"Verbindung")
+        move_widget(target_box,"Kanäle")
+        move_widget(channels_box,"Kanäle")
+        move_widget(directory,"Buddys")
+        for widget in (self.rx_diagnostic,self.rx_detail,self.rx_packets,
+                       self.copy_rx_btn,self.tx_diagnostic):
+            move_widget(widget,"Diagnose")
+        for layout in pages.values():
+            layout.addStretch(1)
+        outer.insertWidget(outer.indexOf(self.ptt_btn),tabs,1)
+        # Connection overview and PTT remain visible independently of the tab.
+        # TX troubleshooting details are on the Diagnose tab.
         outer.addStretch(1)
 
     def to_config(self):
