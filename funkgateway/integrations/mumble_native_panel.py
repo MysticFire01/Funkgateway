@@ -104,7 +104,7 @@ class MumbleNativePanel(QWidget):
         self.mumble_tabs.currentChanged.connect(self._mumble_tab_changed)
         client_page=QWidget(self.mumble_tabs)
         v=QVBoxLayout(client_page)
-        self.mumble_tabs.addTab(client_page,"Mumble-Client")
+        self.mumble_tabs.addTab(client_page,"Verbindung")
 
         info=QLabel(
             "<b>Nativer Mumble-Client</b><br>"
@@ -192,7 +192,15 @@ class MumbleNativePanel(QWidget):
         af.addRow("Eigener Mumble-PTT-Hotkey:",self.ptt_hotkey)
         af.addRow("Hotkey-Bereich:",self.ptt_hotkey_scope)
         af.addRow("",self.ptt_hotkey_status)
-        v.addWidget(audio)
+        audio_page=QWidget(self.mumble_tabs)
+        audio_layout=QVBoxLayout(audio_page)
+        audio_layout.addWidget(QLabel(
+            "<b>Mumble Audio und Push-to-Talk</b> – Mikrofon, Wiedergabe "
+            "und eigener PTT-Hotkey."
+        ))
+        audio_layout.addWidget(audio)
+        audio_layout.addStretch(1)
+        self.mumble_tabs.addTab(audio_page,"Audio / PTT")
 
         # Channel browser gets its own entire tab, not a cramped area between
         # the connection settings and chat on the main client tab.
@@ -237,9 +245,10 @@ class MumbleNativePanel(QWidget):
         uv.addWidget(self.speaker); uv.addWidget(self.users)
         channel_layout.addWidget(chbox,1)
         self.mumble_tabs.addTab(channel_page,"Channels")
-        # Keep the participant list (including its right-click actions) on
-        # the client tab. The Channel tree also shows users under each room.
-        v.addWidget(userbox)
+        # Separate user/chat controls from connection details.
+        chat_page=QWidget(self.mumble_tabs)
+        chat_page_layout=QVBoxLayout(chat_page)
+        chat_page_layout.addWidget(userbox,1)
         chatbox=QGroupBox("Mumble Chat")
         chatlayout=QVBoxLayout(chatbox)
         self.chat_log=QPlainTextEdit()
@@ -262,7 +271,8 @@ class MumbleNativePanel(QWidget):
         typerow.addWidget(self.chat_input,1)
         typerow.addWidget(self.chat_send)
         chatlayout.addLayout(typerow)
-        v.addWidget(chatbox)
+        chat_page_layout.addWidget(chatbox,2)
+        self.mumble_tabs.addTab(chat_page,"Chat / Teilnehmer")
 
         publicbox=QGroupBox("Öffentliche Mumble-Serverliste")
         publiclayout=QVBoxLayout(publicbox)
@@ -288,7 +298,7 @@ class MumbleNativePanel(QWidget):
         self.public_use=QPushButton("Ausgewählten Server übernehmen (ohne Connect)")
         self.public_use.clicked.connect(self._use_public_server)
         publiclayout.addWidget(self.public_use)
-        self.mumble_tabs.addTab(publicbox,"Öffentliche Serverliste")
+        self.mumble_tabs.addTab(publicbox,"Serverliste")
 
         cert_page=QWidget(self.mumble_tabs)
         certv=QVBoxLayout(cert_page)
