@@ -2,6 +2,9 @@
 Uses the official secure Channel API; audio streaming is not yet implemented.
 """
 import json
+import base64
+import webbrowser
+from datetime import datetime, timezone
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
@@ -47,6 +50,13 @@ class ZelloPanel(QWidget):
         form.addRow("Kanal:",self.channel)
         form.addRow("API-Token:",self.token)
         form.addRow("",self.show_secrets)
+        self.token_portal_btn=QPushButton("Neuen API-Token anfordern")
+        self.token_portal_btn.clicked.connect(lambda: webbrowser.open("https://developers.zello.com/"))
+        form.addRow("",self.token_portal_btn)
+        self.token_expiry=QLabel("Token-Ablauf: noch nicht geprüft")
+        self.token_expiry.setWordWrap(True)
+        self.token.textChanged.connect(self._token_updated)
+        form.addRow("",self.token_expiry)
         outer.addWidget(group)
         buttons = QHBoxLayout()
         self.connect_btn = QPushButton("Verbinden")
@@ -69,6 +79,19 @@ class ZelloPanel(QWidget):
         help_label.setWordWrap(True)
         outer.addWidget(help_label)
         outer.addStretch(1)
+
+    def _token_updated(self, value):
+        """Read JWT expiry locally; never transmit the token for inspection."""
+        try:
+            encoded=value.split(".")[1]
+            data=json.loads(base64.urlsafe_b64decode(encoded+"="*(-len(encoded)%4)))
+            expiry=datetime.fromtimestamp(int(data["exp"]),timezone.utc)
+            local=expiry.astimezone()
+            days=(expiry-datetime.now(timezone.utc)).total_seconds()/86400
+            note="ABGELAUFEN" if days<=0 else ("läuft in weniger als 3 Tagen ab" if days<3 else "gültig laut Token")
+            self.token_expiry.setText("Token-Ablauf: "+local.strftime("%d.%m.%Y %H:%M")+" – "+note)
+        except (ValueError,TypeError,IndexError,KeyError,OverflowError):
+            self.token_expiry.setText("Token-Ablauf: nicht auslesbar")
 
     def _show_secrets(self, visible):
         mode = QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
