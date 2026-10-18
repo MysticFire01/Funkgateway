@@ -29,6 +29,7 @@ class ZelloPanel(QWidget):
         self._requested_disconnect = False
         self._streams = {}
         self._rx_packet_counts = {}
+        self._rx_event_details = {}
         self._audio_queue = queue.Queue(maxsize=120)
         self._audio_stop = threading.Event()
         self._audio_thread = None
@@ -348,10 +349,11 @@ class ZelloPanel(QWidget):
                 # List field names only; never display the full inbound JSON.
                 fields=", ".join(sorted(str(key) for key in data.keys()))
                 self._rx_packet_counts[stream_id]=0
-                self.rx_detail.setText(
+                event_details=(
                     f"RX-Details: Ereignis on_stream_start · Stream-ID {stream_id} · "
-                    f"Felder: {fields} · Opus {rate} Hz / {frame_ms} ms · "
-                    "Audiopakete: 0")
+                    f"Felder: {fields} · Opus {rate} Hz / {frame_ms} ms")
+                self._rx_event_details[stream_id]=event_details
+                self.rx_detail.setText(event_details+" · Audiopakete: 0")
                 if not sender:
                     self.rx_diagnostic.setText(
                         "RX-Diagnose: Absender nicht vom Server übermittelt "
@@ -368,7 +370,8 @@ class ZelloPanel(QWidget):
                 ended=int(data["stream_id"])
                 self._streams.pop(ended,None)
                 count=self._rx_packet_counts.pop(ended,0)
-                self.rx_detail.setText(self.rx_detail.text()+f" · Stream beendet ({count} Pakete)")
+                detail=self._rx_event_details.pop(ended,self.rx_detail.text())
+                self.rx_detail.setText(detail+f" · Stream beendet ({count} Pakete)")
             except (ValueError,TypeError,KeyError):
                 pass
             if not self._streams:
@@ -547,8 +550,9 @@ class ZelloPanel(QWidget):
             count=self._rx_packet_counts[stream_id]
             if count==1 or count%50==0:
                 self.rx_detail.setText(
-                    f"RX-Details: Stream-ID {stream_id} · Pakete: {count} · "
-                    f"letzte Paket-ID: {packet_id} · Sprecher: {speaker} · Opus {rate} Hz")
+                    self._rx_event_details.get(stream_id,f"RX-Details: Stream-ID {stream_id}")
+                    +f" · Pakete: {count} · letzte Paket-ID: {packet_id}"
+                    +f" · Sprecher: {speaker}")
             self._last_packet=time.monotonic()
             self._set_speaker(speaker)
             try:
@@ -597,6 +601,7 @@ class ZelloPanel(QWidget):
         self._audio_stop.set()
         self._streams.clear()
         self._rx_packet_counts.clear()
+        self._rx_event_details.clear()
         while True:
             try:
                 self._audio_queue.get_nowait()
