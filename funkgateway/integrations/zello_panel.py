@@ -607,11 +607,22 @@ class ZelloPanel(QWidget):
                     raise ValueError("Codec nicht Opus")
                 stream_id=int(data["stream_id"])
                 h=base64.b64decode(data["codec_header"],validate=True)
-                rate,frames,frame_ms=struct.unpack("<HBB",h)
-                if rate not in (8000,12000,16000,24000,48000) or frames not in (1,2):
-                    raise ValueError("Opus-Header nicht unterstützt")
+                if len(h)!=4:
+                    raise ValueError(f"Opus-Header-Länge {len(h)} statt 4 Bytes")
+                source_rate,frames,frame_ms=struct.unpack("<HBB",h)
+                # Header fields describe the sender's packetization. They do
+                # not reliably describe the decodable duration of each packet.
+                # Let libopus validate each actual compressed packet instead of
+                # dropping valid streams from crosslink clients beforehand.
+                supported_rates=(8000,12000,16000,24000,48000)
+                rate=source_rate if source_rate in supported_rates else 48000
                 import opuslib
                 decoder=opuslib.Decoder(rate,1)
+                if source_rate not in supported_rates or frames not in (1,2) or frame_ms not in (10,20,40,60):
+                    self.rx_detail.setText(
+                        f"RX-Header ungewöhnlich: {source_rate} Hz, "
+                        f"{frames} Frames/Paket, {frame_ms} ms/Frame; "
+                        f"Decoder läuft mit {rate} Hz")
                 # The API documents "from" and optional "for" for both
                 # regular and targeted channel transmissions. Avoid guessing
                 # an identity when the server omits the sender field.
@@ -638,7 +649,8 @@ class ZelloPanel(QWidget):
                 self._rx_packet_counts[stream_id]=0
                 event_details=(
                     f"RX-Details: Ereignis on_stream_start · Stream-ID {stream_id} · "
-                    f"Felder: {fields} · Opus {rate} Hz / {frame_ms} ms")
+                    f"Felder: {fields} · Opus {rate} Hz · "
+                    f"Header {source_rate} Hz / {frames} Frames / {frame_ms} ms")
                 self._rx_event_details[stream_id]=event_details
                 self.rx_detail.setText(event_details)
                 self.rx_packets.setText(f"RX-Audio: Stream-ID {stream_id} · Pakete: 0 · Opus {rate} Hz")
