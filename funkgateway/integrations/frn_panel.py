@@ -407,17 +407,27 @@ class FrnPanel(QWidget):
         self.chat_status.setText("An Server gesendet; Zustellung noch nicht bestätigt.")
 
     def _update_chat_recipients(self,parts):
-        selected=self.chat_recipient.currentData()
-        self.chat_recipient.clear()
-        self.chat_recipient.addItem("Alle im Raum (Test, ID 0)","0")
+        choices=[("Alle im Raum (Test, ID 0)","0")]
         for participant in parts:
             user_id=str(participant.get("id") or "").strip()
             if user_id and len(user_id)<=128:
-                self.chat_recipient.addItem(
-                    str(participant.get("name") or "Teilnehmer")[:100],user_id
-                )
+                choices.append((str(participant.get("name") or "Teilnehmer")[:100],user_id))
+        current=[(self.chat_recipient.itemText(i),self.chat_recipient.itemData(i))
+                 for i in range(self.chat_recipient.count())]
+        if choices==current:
+            return  # Preserve popup scrolling and keyboard position.
+        selected=self.chat_recipient.currentData()
+        popup=self.chat_recipient.view().isVisible()
+        scroll=self.chat_recipient.view().verticalScrollBar().value() if popup else None
+        self.chat_recipient.blockSignals(True)
+        self.chat_recipient.clear()
+        for label,user_id in choices:
+            self.chat_recipient.addItem(label,user_id)
         idx=self.chat_recipient.findData(selected)
         self.chat_recipient.setCurrentIndex(max(0,idx))
+        self.chat_recipient.blockSignals(False)
+        if popup and scroll is not None:
+            self.chat_recipient.view().verticalScrollBar().setValue(scroll)
 
     def connect_frn(self):
         try: cfg=self._cfg()
