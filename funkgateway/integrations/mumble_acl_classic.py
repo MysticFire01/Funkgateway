@@ -18,11 +18,21 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         for label in self.findChildren(QLabel):
             if label is not self.status and label.text().startswith('Doppelklick auf Erlaubte/Verweigerte Rechte'):
                 label.hide()
+        # Relocate header status: it was clipped by the stacked old/new UI.
+        layout=self.layout()
+        layout.removeWidget(self.status)
+        self.status.setMinimumHeight(0)
+        self.status.setMaximumHeight(55)
+        self.status.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        layout.insertWidget(layout.count()-1,self.status)
         old_tabs=self.findChildren(QTabWidget)[0]
         old_tabs.hide()
         self.member_add.hide()
         self._selected_group=-1
         self._selected_rule=-1
+        self.directory_info=QLabel("Benutzerverzeichnis: warte auf Serverantwort")
+        self.directory_info.setWordWrap(True)
+        self.layout().insertWidget(self.layout().count()-1,self.directory_info)
         body=QTabWidget(self)
         body.setMinimumSize(0,0)
         body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Ignored)
@@ -30,6 +40,8 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._build_properties(body)
         self._build_groups(body)
         self._build_rules(body)
+        self.client.registeredUsersReceived.connect(self._update_directory_info)
+        self._update_directory_info(self.client.cached_registered_users())
         self.inherit.stateChanged.connect(self._update_rule_details)
         # The dialog must not be taller than the usable desktop. Otherwise Qt
         # centers it partly above the screen and clips the status at the top.
@@ -47,6 +59,12 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         left=max(area.left()+8,min(frame.left(),area.right()-frame.width()+1))
         top=max(area.top()+8,min(frame.top(),area.bottom()-frame.height()+1))
         self.move(left,top)
+
+    def _update_directory_info(self,rows):
+        count=len(rows or [])
+        self.directory_info.setText(
+            f"Benutzerverzeichnis: {count} registrierte Benutzer vom Server verfügbar"
+            if count else "Benutzerverzeichnis: noch keine registrierten Benutzer empfangen")
 
     def _clear(self):
         super()._clear()
