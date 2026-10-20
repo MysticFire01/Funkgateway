@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
  QTabWidget,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QLabel,
  QListWidget,QListWidgetItem,QComboBox,QCheckBox,QPushButton,QInputDialog,
- QMessageBox,QScrollArea
+ QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit
 )
 from .mumble_acl_dialog import MumbleAclDialog,PERMISSIONS
 
@@ -18,6 +18,7 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._selected_rule=-1
         body=QTabWidget(self)
         self.layout().insertWidget(self.layout().count()-1,body,1)
+        self._build_properties(body)
         self._build_groups(body)
         self._build_rules(body)
         self.inherit.stateChanged.connect(self._update_rule_details)
@@ -33,6 +34,40 @@ class MumbleAclClassicDialog(MumbleAclDialog):
             self._selected_group=-1
             self._selected_rule=-1
             self._update_rule_details()
+
+    def _build_properties(self,body):
+        page=QWidget()
+        form=QFormLayout(page)
+        details=self.client.channel_details(self.channel_id)
+        self.property_name=QLineEdit(str(details.get("name") or ""))
+        self.property_name.setReadOnly(self.channel_id==0)
+        self.property_description=QTextEdit()
+        self.property_description.setPlainText(str(details.get("description") or ""))
+        self.property_position=QSpinBox()
+        self.property_position.setRange(-100000,100000)
+        self.property_position.setValue(int(details.get("position") or 0))
+        self.property_position.setEnabled(self.channel_id!=0)
+        self.property_save=QPushButton("Raumeigenschaften speichern")
+        self.property_save.clicked.connect(self._save_properties)
+        form.addRow("Name:",self.property_name)
+        form.addRow("Beschreibung:",self.property_description)
+        form.addRow("Position:",self.property_position)
+        form.addRow("Raum-ID:",QLabel(str(self.channel_id)))
+        form.addRow("",self.property_save)
+        form.addRow("",QLabel("Der Mumble-Server prüft alle Änderungen anhand deiner Rechte."))
+        body.addTab(page,"Eigenschaften")
+
+    def _save_properties(self):
+        name=self.property_name.text().strip()
+        if not name:
+            QMessageBox.warning(self,"Mumble","Der Raumname darf nicht leer sein.")
+            return
+        try:
+            self.client.edit_channel(self.channel_id,name,
+                self.property_description.toPlainText(),self.property_position.value())
+            QMessageBox.information(self,"Mumble","Änderung an den Server gesendet. Der Server prüft die Rechte.")
+        except Exception as exc:
+            QMessageBox.warning(self,"Mumble – Raumeigenschaften",str(exc))
 
     def _build_groups(self,body):
         page=QWidget()
@@ -78,6 +113,9 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         box=QVBoxLayout(inherited)
         self.inherited_members=QListWidget()
         box.addWidget(self.inherited_members)
+        exclude_button=QPushButton("Ausgewähltes Mitglied ausschließen")
+        exclude_button.clicked.connect(self._exclude_inherited_member)
+        box.addWidget(exclude_button)
         row.addWidget(inherited,1)
         v.addLayout(row,1)
         body.addTab(page,"Gruppen")
@@ -175,8 +213,10 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         name=self._text_at(self.groups,row,0)
         group=next((g for g in self._source_groups if g["name"]==name),None)
         if group:
+            excluded=set(self._ids(self._text_at(self.groups,row,2)))
             for uid in group.get("inherited_members",[]):
-                self.inherited_members.addItem(self._user_label(uid))
+                if int(uid) not in excluded:
+                    self.inherited_members.addItem(self._user_label(uid))
 
     def _store_group(self,*_):
         row=self._selected_group
@@ -204,6 +244,18 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self.groups.removeRow(row)
         self._refresh_group_ui()
 
+    def _exclude_inherited_member(self):
+        row=self._selected_group
+        item=self.inherited_members.currentItem()
+        if not self._loaded or row<0 or item is None:return
+        uid=self._parse_user_id(item.text())
+        excluded=self._ids(self._text_at(self.groups,row,2))
+        if uid not in excluded:
+            excluded.append(uid)
+            self._cell(self.groups,row,2,",".join(self._user_label(v) for v in excluded))
+        self._select_group(row)
+        self.status.setText("Mitglied für diesen Raum ausgeschlossen. ACL-Änderungen speichern.")
+
     def _group_add_user(self,col):
         row=self._selected_group
         if not self._loaded or row<0:return
@@ -211,12 +263,20 @@ class MumbleAclClassicDialog(MumbleAclDialog):
             self._request_registered()
             QMessageBox.information(self,"Mumble","Benutzerliste wird vom Server geladen. Danach erneut versuchen.")
             return
-        options=[f"{user['name']} (ID {user['user_id']})" for user in self._registered_rows]
+        members=set(self._ids(self._text_at(self.groups,row,1)))
+        excluded=set(self._ids(self._text_at(self.groups,row,2)))
+        blocked=members|excluded
+        candidates=[user for user in self._registered_rows if int(user["user_id"]) not in blocked]
+        if not candidates:
+            QMessageBox.information(self,"Mumble","Keine weiteren registrierten Benutzer verfügbar.")
+            return
+        options=[f"{user['name']} (ID {user['user_id']})" for user in candidates]
         choice,ok=QInputDialog.getItem(self,"Mitglied auswählen","Registrierter Benutzer:",options,0,False)
         if not ok:return
         uid=self._parse_user_id(choice)
+        if uid in blocked:return
         old=self._ids(self._text_at(self.groups,row,col))
-        if uid not in old:old.append(uid)
+        old.append(uid)
         self._cell(self.groups,row,col,",".join(self._user_label(i) for i in old))
         self._select_group(row)
 
