@@ -175,12 +175,14 @@ class MumbleAclDialog(QDialog):
             self.registered_status.setText("Benutzerliste nicht verfügbar: "+str(exc))
             self._registered_pending=False
             return
-        QTimer.singleShot(4000,self._registered_timeout)
+        QTimer.singleShot(10000,self._registered_timeout)
 
     def _registered_timeout(self):
         if getattr(self,"_registered_pending",False):
             self._registered_pending=False
-            self.registered_status.setText("Keine Benutzerliste erhalten. Wahrscheinlich fehlt das Serverrecht.")
+            self.registered_status.setText("Keine Antwort auf die UserList-Anfrage innerhalb von 10 Sekunden. "
+                "Das ist kein Beleg für fehlende Administratorrechte. "
+                "Bitte Mumble-Serverversion und Debug-Protokoll prüfen.")
 
     def _registered_received(self,rows):
         if not self._loaded or not getattr(self,"_registered_pending",False):
@@ -211,21 +213,27 @@ class MumbleAclDialog(QDialog):
 
     def _add_member(self):
         if not self._loaded:return
-        group_row=self.groups.currentRow()
-        if group_row<0:
-            QMessageBox.information(self,"Gruppe auswählen","Bitte zuerst eine Gruppe in der Gruppentabelle auswählen.")
+        row=self.groups.currentRow()
+        if row<0:
+            QMessageBox.information(self,"Gruppe auswählen",
+                "Bitte zuerst eine Gruppe in der Gruppentabelle auswählen.")
             return
-        user=self._selected_registered()
-        if user is None:
-            QMessageBox.information(self,"Benutzer auswählen",
-                "Bitte erst unter „Registrierte Benutzer“ einen Benutzer auswählen.")
+        candidates=self._registered_rows
+        if not candidates:
+            self._request_registered()
+            QMessageBox.information(self,"Benutzerliste wird geladen",
+                "Die Liste registrierter Benutzer wurde angefordert. "
+                "Nach dem Empfang kannst du den Benutzer hier auswählen.")
             return
-        cell=self.groups.item(group_row,1)
-        existing=cell.text().strip() if cell else ""
-        ids=self._ids(existing)
-        if user["user_id"] not in ids:
-            ids.append(user["user_id"])
-        self._cell(self.groups,group_row,1,",".join(self._user_label(uid) for uid in ids))
+        choices=[f"{u['name']} (ID {u['user_id']})" for u in candidates]
+        selected,ok=QInputDialog.getItem(self,"Gruppenmitglied hinzufügen",
+                    "Registrierten Benutzer auswählen:",choices,0,False)
+        if not ok or not selected:return
+        uid=self._parse_user_id(selected)
+        cell=self.groups.item(row,1)
+        ids=self._ids(cell.text() if cell else "")
+        if uid not in ids:ids.append(uid)
+        self._cell(self.groups,row,1,",".join(self._user_label(v) for v in ids))
         self.status.setText("Mitglied vorgemerkt. Bitte ACL-Änderungen speichern.")
 
     def _remove_registered(self):
@@ -335,6 +343,7 @@ class MumbleAclDialog(QDialog):
         self.status.setText("ACL vom Server empfangen. Änderungen nur entsprechend deiner Serverrechte.")
         self.save.setEnabled(True)
         self.member_add.setEnabled(True)
+        self._request_registered()
         for t in (self.groups,self.rules):
             t._add_button.setEnabled(True)
             t._remove_button.setEnabled(True)
