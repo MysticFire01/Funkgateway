@@ -3,6 +3,7 @@
 Never shows cached ACL information. Only a fresh server ACL response reveals
 groups/rules. All writes are subject to the server's own ACL checks.
 """
+import re
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QDialog,QVBoxLayout,QHBoxLayout,QLabel,QCheckBox,QTableWidget,
@@ -69,6 +70,7 @@ class MumbleAclDialog(QDialog):
         self.client=client
         self.channel_id=int(channel_id)
         self._loaded=False
+        self._user_names={}
         self.setWindowTitle("Mumble-Rechte – "+str(channel_name))
         self.resize(840,530)
         layout=QVBoxLayout(self)
@@ -175,18 +177,20 @@ class MumbleAclDialog(QDialog):
         self._request_pending=False
         self._loaded=True
         self._clear()
+        self._user_names=self.client.registered_user_names()
         self.inherit.setChecked(bool(data["inherit_acls"]))
         self.inherit.setEnabled(True)
         for group in data["groups"]:
             n=self.groups.rowCount()
             self.groups.insertRow(n)
-            vals=[group["name"],",".join(map(str,group["add"])),",".join(map(str,group["remove"])),
+            vals=[group["name"],",".join(self._user_label(v) for v in group["add"]),
+                  ",".join(self._user_label(v) for v in group["remove"]),
                   str(int(group["inherit"])),str(int(group["inheritable"]))]
             for c,v in enumerate(vals):self._cell(self.groups,n,c,v)
         for rule in data["rules"]:
             n=self.rules.rowCount()
             self.rules.insertRow(n)
-            vals=[rule["group"],"" if rule["user_id"] is None else str(rule["user_id"]),
+            vals=[rule["group"],"" if rule["user_id"] is None else self._user_label(rule["user_id"]),
                   hex(rule["grant"]),hex(rule["deny"]),str(int(rule["apply_here"])),
                   str(int(rule["apply_subs"])),str(int(rule["inherited"]))]
             for c,v in enumerate(vals):self._cell(self.rules,n,c,v)
@@ -256,9 +260,24 @@ class MumbleAclDialog(QDialog):
         item=table.item(row,column)
         return item.text().strip() if item else ""
 
+    def _user_label(self,user_id):
+        uid=int(user_id)
+        name=self._user_names.get(uid,"")
+        return f"{name} (ID {uid})" if name else f"ID {uid} (Name unbekannt)"
+
     @staticmethod
-    def _ids(value):
-        return [int(v.strip()) for v in value.split(",") if v.strip()]
+    def _parse_user_id(text):
+        text=str(text or "").strip()
+        if text.isdecimal():
+            return int(text)
+        match=re.search(r"\\bID\\s+(\\d+)\\b",text,re.I)
+        if match:
+            return int(match.group(1))
+        raise ValueError("Benutzer-ID nicht erkennbar. Bitte Zahl oder 'Name (ID 123)' verwenden.")
+
+    @classmethod
+    def _ids(cls,value):
+        return [cls._parse_user_id(v) for v in value.split(",") if v.strip()]
 
     def persist(self):
         if not self._loaded:return
@@ -281,7 +300,7 @@ class MumbleAclDialog(QDialog):
                     apply_subs=bool(int(self._text(self.rules,row,5))),
                     grant=self._mask(row,2),
                     deny=self._mask(row,3))
-                if uid:values["user_id"]=int(uid)
+                if uid:values["user_id"]=self._parse_user_id(uid)
                 else:values["group"]=group
                 rules.append(values)
             confirm=QMessageBox.question(self,"ACL-Änderungen senden?",
