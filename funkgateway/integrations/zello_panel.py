@@ -164,8 +164,17 @@ class ZelloPanel(QWidget):
         target_form.addRow("Sendeziel:",self.target_mode)
         target_form.addRow("Kanalteilnehmer:",self.target_user)
         target_form.addRow("",self.add_contact_btn)
+        self._heard_users={}
         self.users_online=QLabel("Teilnehmer online: —")
         target_form.addRow("",self.users_online)
+        self.heard_users=QListWidget()
+        self.heard_users.setMinimumHeight(88)
+        self.heard_users.setMaximumHeight(160)
+        self.heard_users.setToolTip("Nur seit Verbindungsaufbau beobachtete Sprecher; keine vollständige Online-Liste.")
+        target_form.addRow("Gehörte Teilnehmer:",self.heard_users)
+        self.heard_info=QLabel("Noch keine Sprecher erkannt. Die API liefert keine vollständige Online-Namensliste.")
+        self.heard_info.setWordWrap(True)
+        target_form.addRow("",self.heard_info)
         note=QLabel("Die Channel API liefert Teilnehmerzahlen, aber keine vollständige "
                     "Namensliste. Bekannte Sprecher und manuell gemerkte Namen "
                     "stehen zur Auswahl. Direktnachrichten funktionieren nur "
@@ -541,6 +550,7 @@ class ZelloPanel(QWidget):
         self.statusChanged.emit(message)
 
     def connect_channel(self):
+        self._clear_heard_users()
         if self._ws.state() != QAbstractSocket.SocketState.UnconnectedState:
             return
         if not all((self.username.text().strip(), self.password.text(),
@@ -564,6 +574,24 @@ class ZelloPanel(QWidget):
         }
         self._ws.sendTextMessage(json.dumps(payload))
         self._set_status("Anmeldung läuft …")
+
+    def _remember_heard_user(self,name):
+        name=str(name or "").strip()
+        if not name or len(name)>128:
+            return
+        key=name.casefold()
+        if key not in self._heard_users:
+            self._heard_users[key]=name
+            self.heard_users.addItem(name)
+        self.heard_info.setText(
+            f"{len(self._heard_users)} Sprecher seit Verbindungsaufbau erkannt – "
+            "Anwesenheit nicht bestätigt.")
+
+    def _clear_heard_users(self):
+        self._heard_users.clear()
+        self.heard_users.clear()
+        self.heard_info.setText(
+            "Noch keine Sprecher erkannt. Die API liefert keine vollständige Online-Namensliste.")
 
     def _message(self, raw):
         try:
@@ -683,6 +711,10 @@ class ZelloPanel(QWidget):
                         "RX-Diagnose: Absender nicht vom Server übermittelt "
                         "(Übertragungsart nicht sicher bestimmbar)")
                 speaker=sender or "Sprecher nicht übermittelt"
+                if sender and not (contact_label and not any(
+                        isinstance(data.get(k),str) and data[k].strip()
+                        for k in ("from","sender","username","from_user"))):
+                    self._remember_heard_user(sender)
                 self._streams[stream_id]=(decoder,rate,speaker)
                 self._last_packet=time.monotonic()
                 self._set_speaker(speaker)
@@ -1473,6 +1505,7 @@ class ZelloPanel(QWidget):
         self._set_status("Verbindungsfehler: " + self._ws.errorString())
 
     def _socket_disconnected(self):
+        self._clear_heard_users()
         self._stop_tx()
         self.ptt_btn.setEnabled(False)
         self._clear_audio()
