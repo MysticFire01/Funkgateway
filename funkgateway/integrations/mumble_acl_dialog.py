@@ -7,7 +7,7 @@ import re
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QDialog,QVBoxLayout,QHBoxLayout,QLabel,QCheckBox,QTableWidget,
-    QTableWidgetItem,QPushButton,QMessageBox,QTabWidget,QWidget,QHeaderView,QListWidget,QListWidgetItem,QDialogButtonBox
+    QTableWidgetItem,QPushButton,QMessageBox,QTabWidget,QWidget,QHeaderView,QListWidget,QListWidgetItem,QDialogButtonBox,QComboBox,QInputDialog,QLineEdit
 )
 
 
@@ -27,35 +27,39 @@ KNOWN_MASK=sum(bit for bit,_ in PERMISSIONS)
 
 
 class PermissionPicker(QDialog):
-    def __init__(self,mask,parent=None):
+    def __init__(self,grant,deny,parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Mumble-Berechtigungen auswählen")
-        self.resize(410,540)
-        self._other=int(mask)&~KNOWN_MASK
+        self.setWindowTitle("Mumble-Rechte: Erlauben / Verweigern / Nicht festgelegt")
+        self.resize(590,600)
+        self._grant_extra=int(grant)&~KNOWN_MASK
+        self._deny_extra=int(deny)&~KNOWN_MASK
         layout=QVBoxLayout(self)
-        layout.addWidget(QLabel("Welche Aktionen sollen ausdrücklich erlaubt bzw. verweigert werden?"))
-        self.list=QListWidget()
-        for bit,name in PERMISSIONS:
-            item=QListWidgetItem(name)
-            item.setFlags(item.flags()|Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if int(mask)&bit else Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole,bit)
-            self.list.addItem(item)
-        layout.addWidget(self.list,1)
-        if self._other:
-            layout.addWidget(QLabel("Unbekannte/zusätzliche Rechte-Bits bleiben unverändert erhalten."))
+        layout.addWidget(QLabel("Jedes Recht hat drei Zustände. Nicht festgelegt lässt andere ACL-Regeln entscheiden."))
+        self.choices=[]
+        form=QTableWidget(len(PERMISSIONS),2)
+        form.setHorizontalHeaderLabels(["Berechtigung","Einstellung"])
+        form.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for row,(bit,name) in enumerate(PERMISSIONS):
+            cell=QTableWidgetItem(name)
+            cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            form.setItem(row,0,cell)
+            combo=QComboBox()
+            combo.addItems(["Nicht festgelegt","Erlauben","Verweigern"])
+            combo.setCurrentIndex(1 if int(grant)&bit else (2 if int(deny)&bit else 0))
+            form.setCellWidget(row,1,combo)
+            self.choices.append((bit,combo))
+        layout.addWidget(form,1)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def mask(self):
-        value=self._other
-        for i in range(self.list.count()):
-            item=self.list.item(i)
-            if item.checkState()==Qt.CheckState.Checked:
-                value|=int(item.data(Qt.ItemDataRole.UserRole))
-        return value
+    def masks(self):
+        grant,deny=self._grant_extra,self._deny_extra
+        for bit,combo in self.choices:
+            if combo.currentIndex()==1:grant|=bit
+            elif combo.currentIndex()==2:deny|=bit
+        return grant,deny
 
 
 def permission_names(mask):
@@ -105,6 +109,37 @@ class MumbleAclDialog(QDialog):
             remove.setEnabled(False)
             table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             tabs.addTab(page,label)
+        self.member_add=QPushButton("Registrierten Benutzer zur ausgewählten Gruppe hinzufügen …")
+        self.member_add.setEnabled(False)
+        self.member_add.clicked.connect(self._add_member)
+        layout.addWidget(self.member_add)
+        registered=QWidget()
+        reglayout=QVBoxLayout(registered)
+        self.registered_status=QLabel("Benutzerliste noch nicht beim Server abgefragt.")
+        reglayout.addWidget(self.registered_status)
+        self.registered_filter=QLineEdit()
+        self.registered_filter.setPlaceholderText("Nach Namen oder ID suchen …")
+        reglayout.addWidget(self.registered_filter)
+        self.registered=QTableWidget(0,3)
+        self.registered.setHorizontalHeaderLabels(["Name","Benutzer-ID","Zuletzt gesehen"])
+        self.registered.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.registered.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        reglayout.addWidget(self.registered,1)
+        controls=QHBoxLayout()
+        self.load_registered=QPushButton("Registrierte Benutzer vom Server laden")
+        self.delete_registered=QPushButton("Ausgewählte Registrierung entfernen …")
+        self.delete_registered.setEnabled(False)
+        self.load_registered.clicked.connect(self._request_registered)
+        self.delete_registered.clicked.connect(self._remove_registered)
+        self.registered_filter.textChanged.connect(self._filter_registered)
+        controls.addWidget(self.load_registered)
+        controls.addWidget(self.delete_registered)
+        reglayout.addLayout(controls)
+        tabs.addTab(registered,"Registrierte Benutzer")
+        self._registered_rows=[]
+        client.registeredUsersReceived.connect(self._registered_received)
+        self.registered.itemSelectionChanged.connect(lambda:self.delete_registered.setEnabled(
+            self._loaded and self.registered.currentRow()>=0))
         note=QLabel("Doppelklick auf Erlaubte/Verweigerte Rechte öffnet die Rechteauswahl. "
                     "Geerbte Regeln sind nur lesbar. Der Server entscheidet über Änderungen.")
         note.setWordWrap(True)
@@ -124,6 +159,94 @@ class MumbleAclDialog(QDialog):
         client.aclDenied.connect(self.denied)
         client.connectedChanged.connect(self.connection_state)
         QTimer.singleShot(0,self.request)
+
+    def _request_registered(self):
+        if not self._loaded:
+            QMessageBox.warning(self,"Keine Berechtigung","Zuerst muss die ACL des Raums erfolgreich gelesen werden.")
+            return
+        self._registered_pending=True
+        self.registered.setRowCount(0)
+        self._registered_rows=[]
+        self.delete_registered.setEnabled(False)
+        self.registered_status.setText("Frage registrierte Benutzer beim Server an …")
+        try:
+            self.client.request_registered_users()
+        except Exception as exc:
+            self.registered_status.setText("Benutzerliste nicht verfügbar: "+str(exc))
+            self._registered_pending=False
+            return
+        QTimer.singleShot(4000,self._registered_timeout)
+
+    def _registered_timeout(self):
+        if getattr(self,"_registered_pending",False):
+            self._registered_pending=False
+            self.registered_status.setText("Keine Benutzerliste erhalten. Wahrscheinlich fehlt das Serverrecht.")
+
+    def _registered_received(self,rows):
+        if not self._loaded or not getattr(self,"_registered_pending",False):
+            return
+        self._registered_pending=False
+        self._registered_rows=sorted(rows,key=lambda r:str(r.get("name","")).casefold())
+        self.registered_status.setText(f"{len(rows)} registrierte Benutzer vom Server empfangen.")
+        self._user_names.update({int(r["user_id"]):str(r["name"]) for r in rows})
+        self._filter_registered()
+
+    def _filter_registered(self,*_):
+        term=self.registered_filter.text().strip().casefold()
+        rows=[r for r in self._registered_rows
+              if term in str(r["name"]).casefold() or term in str(r["user_id"])]
+        self.registered.setRowCount(0)
+        for r in rows:
+            n=self.registered.rowCount()
+            self.registered.insertRow(n)
+            for col,value in enumerate((r["name"],r["user_id"],r.get("last_seen",""))):
+                self._cell(self.registered,n,col,value)
+        self.delete_registered.setEnabled(False)
+
+    def _selected_registered(self):
+        row=self.registered.currentRow()
+        if row<0:return None
+        return {"name":self._text(self.registered,row,0),
+                "user_id":int(self._text(self.registered,row,1))}
+
+    def _add_member(self):
+        if not self._loaded:return
+        group_row=self.groups.currentRow()
+        if group_row<0:
+            QMessageBox.information(self,"Gruppe auswählen","Bitte zuerst eine Gruppe in der Gruppentabelle auswählen.")
+            return
+        user=self._selected_registered()
+        if user is None:
+            QMessageBox.information(self,"Benutzer auswählen",
+                "Bitte erst unter „Registrierte Benutzer“ einen Benutzer auswählen.")
+            return
+        cell=self.groups.item(group_row,1)
+        existing=cell.text().strip() if cell else ""
+        ids=self._ids(existing)
+        if user["user_id"] not in ids:
+            ids.append(user["user_id"])
+        self._cell(self.groups,group_row,1,",".join(self._user_label(uid) for uid in ids))
+        self.status.setText("Mitglied vorgemerkt. Bitte ACL-Änderungen speichern.")
+
+    def _remove_registered(self):
+        user=self._selected_registered()
+        if user is None or not self._loaded:return
+        uid=user["user_id"]
+        if uid<=0:
+            QMessageBox.warning(self,"Schutz","Systembenutzer können nicht entfernt werden.")
+            return
+        answer=QMessageBox.question(self,"Registrierung endgültig entfernen?",
+            f"Die Registrierung von „{user['name']}“ (ID {uid}) entfernen?\\n"
+            "Dies ist kein Kick/Ban. Zugeordnete Gruppenrechte können verloren gehen.",
+            QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer!=QMessageBox.StandardButton.Yes:return
+        try:
+            self.client.remove_registered_user(uid)
+            self.registered_status.setText("Entfernung beantragt; Serverbestätigung steht aus.")
+            QTimer.singleShot(900,self._request_registered)
+        except Exception as exc:
+            QMessageBox.warning(self,"Registrierung entfernen",str(exc))
 
     def connection_state(self,connected):
         if not connected:
@@ -151,6 +274,8 @@ class MumbleAclDialog(QDialog):
         self.rules.setRowCount(0)
         self.inherit.setEnabled(False)
         self.save.setEnabled(False)
+        self.member_add.setEnabled(False)
+        self.delete_registered.setEnabled(False)
         for t in (self.groups,self.rules):
             t._add_button.setEnabled(False)
             t._remove_button.setEnabled(False)
@@ -204,6 +329,7 @@ class MumbleAclDialog(QDialog):
         self._source_rules=data["rules"]
         self.status.setText("ACL vom Server empfangen. Änderungen nur entsprechend deiner Serverrechte.")
         self.save.setEnabled(True)
+        self.member_add.setEnabled(True)
         for t in (self.groups,self.rules):
             t._add_button.setEnabled(True)
             t._remove_button.setEnabled(True)
@@ -221,13 +347,11 @@ class MumbleAclDialog(QDialog):
     def _edit_permissions(self,row,col):
         if not self._loaded or col not in (2,3) or self._text(self.rules,row,6)=="1":
             return
-        cell=self.rules.item(row,col)
-        if cell is None:return
-        mask=cell.data(Qt.ItemDataRole.UserRole)
-        if mask is None:mask=0
-        picker=PermissionPicker(int(mask),self)
+        picker=PermissionPicker(self._mask(row,2),self._mask(row,3),self)
         if picker.exec()==QDialog.DialogCode.Accepted:
-            self._permission_cell(row,col,picker.mask())
+            grant,deny=picker.masks()
+            self._permission_cell(row,2,grant)
+            self._permission_cell(row,3,deny)
 
     def _mask(self,row,col):
         item=self.rules.item(row,col)
