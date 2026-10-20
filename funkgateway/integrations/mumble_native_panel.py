@@ -25,6 +25,7 @@ from .mumble_channel_editor import ChannelEditor
 from .mumble_acl_dialog import MumbleAclDialog
 from .mumble_acl_classic import MumbleAclClassicDialog
 from .mumble_registered_panel import MumbleRegisteredPanel
+from .mumble_ban_panel import MumbleBanPanel
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import (
@@ -321,6 +322,7 @@ class MumbleNativePanel(QWidget):
         self.mumble_tabs.addTab(chat_page,"Chat / TN")
         self.registered_panel=MumbleRegisteredPanel(self.client,self)
         self.mumble_tabs.addTab(self.registered_panel,"Benutzer")
+        self.mumble_tabs.addTab(MumbleBanPanel(self.client,self),"Bannliste")
 
         publicbox=QGroupBox("Öffentliche Mumble-Serverliste")
         publiclayout=QVBoxLayout(publicbox)
