@@ -50,6 +50,7 @@ class MumbleNativeClient(QObject):
         self._playback_enabled = True
         self._playback_device = None
         self._playback_stream = None
+        self._playback_lock = threading.RLock()
         self._speaker_lock = threading.Lock()
         self._speaker_times = {}
         self._speaker_modes = {}
@@ -500,6 +501,8 @@ class MumbleNativeClient(QObject):
         return True
 
     def _sound_received(self, user, soundchunk):
+        if self._stop.is_set() or not self._connected:
+            return
         name = str(self._prop(user, "name", "Mumble") or "Mumble")
         try:
             target = int(getattr(soundchunk, "target", 0) or 0)
@@ -526,10 +529,12 @@ class MumbleNativeClient(QObject):
             if gain != 1.0:
                 pcm = audioop.mul(pcm, 2, gain)
             try:
-                if self._playback_stream is not None:
-                    self._playback_stream.write(pcm)
+                with self._playback_lock:
+                    if not self._stop.is_set() and self._connected and self._playback_stream is not None:
+                        self._playback_stream.write(pcm)
             except Exception as exc:
-                self.error.emit("Mumble-Wiedergabe: " + str(exc))
+                if not self._stop.is_set():
+                    self.error.emit("Mumble-Wiedergabe: " + str(exc))
 
     def participants(self):
         mumble = self._mumble
@@ -601,29 +606,37 @@ class MumbleNativeClient(QObject):
             self.outputLevel.emit(-120.0)
 
     def _ensure_playback(self):
-        if sd is None or not self._playback_enabled:
-            self._close_playback()
-            return
-        if self._playback_stream is not None:
-            return
-        self._playback_stream = sd.RawOutputStream(
-            samplerate=48000, channels=1, dtype="int16",
-            device=self._playback_device, latency="low",
-        )
-        self._playback_stream.start()
+        with self._playback_lock:
+            if sd is None or not self._playback_enabled:
+                self._close_playback()
+                return
+            if self._playback_stream is not None or self._stop.is_set():
+                return
+            stream = sd.RawOutputStream(
+                samplerate=48000, channels=1, dtype="int16",
+                device=self._playback_device, latency="low",
+            )
+            try:
+                stream.start()
+                self._playback_stream = stream
+            except Exception:
+                stream.close()
+                raise
 
     def _close_playback(self):
-        stream = self._playback_stream
-        self._playback_stream = None
-        if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
+        # Serialize close with the pymumble receiver callback's write().
+        with self._playback_lock:
+            stream = self._playback_stream
+            self._playback_stream = None
+            if stream is not None:
+                try:
+                    stream.abort()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
     def _start_capture(self):
         self._stop_capture()
