@@ -193,7 +193,28 @@ class MumbleAclDialog(QDialog):
         self._registered_rows=sorted(rows,key=lambda r:str(r.get("name","")).casefold())
         self.registered_status.setText(f"{len(rows)} registrierte Benutzer vom Server empfangen.")
         self._user_names.update({int(r["user_id"]):str(r["name"]) for r in rows})
+        # UserList arrives asynchronously after the ACL. Refresh displayed names
+        # without changing the underlying registered IDs or unsaved edits.
+        for row in range(self.groups.rowCount()):
+            for col in (1,2):
+                value=self._text(self.groups,row,col)
+                if value:
+                    self._cell(self.groups,row,col,
+                               ",".join(self._user_label(uid) for uid in self._ids(value)))
+        for row in range(self.rules.rowCount()):
+            value=self._text(self.rules,row,1)
+            if value:
+                uid=self._parse_user_id(value)
+                self._cell(self.rules,row,1,self._user_label(uid))
         self._filter_registered()
+        if hasattr(self,"_refresh_group_ui"):
+            selected=self.group_select.currentIndex()
+            self._refresh_group_ui()
+            if selected>=0:
+                self.group_select.setCurrentIndex(selected)
+        if hasattr(self,"_refresh_rule_ui"):
+            selected=self.rule_list.currentRow()
+            self._refresh_rule_ui(max(0,selected))
 
     def _filter_registered(self,*_):
         term=self.registered_filter.text().strip().casefold()
