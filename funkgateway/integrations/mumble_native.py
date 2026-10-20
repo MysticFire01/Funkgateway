@@ -233,12 +233,23 @@ class MumbleNativeClient(QObject):
                         self.channelChanged.emit(name)
                 except Exception:
                     pass
+                # A live pymumble worker alone does not guarantee a live
+                # authenticated Mumble session. A stale session must not leave
+                # the old channel list visible or manual PC-PTT available.
                 if hasattr(mumble, "is_alive") and not mumble.is_alive():
+                    self.status.emit("Native Mumble: Verbindung verloren (Worker beendet)")
+                    break
+                if int(getattr(mumble, "connected", 0)) != 2:
+                    self.status.emit("Native Mumble: Verbindung verloren")
                     break
                 time.sleep(0.5)
         except Exception as exc:
             self.error.emit("Native Mumble: " + str(exc))
         finally:
+            # Drop local TX intent before reporting the disconnect to UI.
+            self._pc_ptt_active = False
+            self._gateway_rx_active = False
+            self._own_tx_active = False
             self._stop_rf_capture()
             self._stop_capture()
             self._close_playback()
