@@ -147,6 +147,18 @@ def build_help_html(platform="linux"):
       <p><b>Channel Commander:</b> Kann bei Funk-RX gesetzt werden,
       sofern der verwendete Client dies unterstützt und richtig konfiguriert ist.</p>"""),
     ("other","8. Zello und weitere Integrationen","""
+      <p><b>Zello-Zugang:</b> Für die Zello-Channel-API brauchst du
+      einen Zello-Benutzernamen, das passende Passwort, den Kanalnamen
+      und einen API-Token. Den Token musst du bei
+      <a href="https://developers.zello.com/">developers.zello.com</a>
+      beantragen oder einrichten. Klicke in der Zello-Integration
+      auf „Neuen API-Token anfordern“. Das ist eine externe Webseite.
+      Trage den erhaltenen Token danach in FunkGateway ein.
+      Bewahre Passwort und Token sicher auf und teile sie nicht mit anderen.</p>
+      <p><b>Wichtig:</b> Zello nutzt eine eigene Channel-API.
+      Je nach Version sind einzelne Funktionen noch Alpha oder eingeschränkt.
+      Ein erfolgreicher Login bedeutet nicht, dass bereits eine vollständige
+      Audioübertragung über alle Zello-Wege vorhanden ist.</p>
       <p>Zello und andere Sprachprogramme können je nach unterstützter
       Schnittstelle eingebunden sein. Prüfe zuerst deren Verbindung,
       Audiogeräte und eigene Sendetaste. Eine Verbindung allein bedeutet
