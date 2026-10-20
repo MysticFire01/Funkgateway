@@ -22,6 +22,18 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._build_rules(body)
         self.inherit.stateChanged.connect(self._update_rule_details)
 
+    def _clear(self):
+        super()._clear()
+        if hasattr(self,"group_select"):
+            self.group_select.clear()
+            for widget in (self.inherited_members,self.rule_list):
+                widget.clear()
+            for widget,_col in self.group_lists:
+                widget.clear()
+            self._selected_group=-1
+            self._selected_rule=-1
+            self._update_rule_details()
+
     def _build_groups(self,body):
         page=QWidget()
         v=QVBoxLayout(page)
