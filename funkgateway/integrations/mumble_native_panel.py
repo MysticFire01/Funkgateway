@@ -23,6 +23,7 @@ from .frn_panel import HotkeyCaptureButton
 from .emoji_picker import emoji_button
 from .mumble_channel_editor import ChannelEditor
 from .mumble_acl_dialog import MumbleAclDialog
+from .mumble_acl_classic import MumbleAclClassicDialog
 from .mumble_registered_panel import MumbleRegisteredPanel
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
@@ -1209,7 +1210,7 @@ class MumbleNativePanel(QWidget):
         if selected not in (create,edit,delete,acl):
             return
         if selected==acl:
-            dialog=MumbleAclDialog(self.client,int(data["id"]),str(data.get("name") or "Raum"),self)
+            dialog=MumbleAclClassicDialog(self.client,int(data["id"]),str(data.get("name") or "Raum"),self)
             dialog.exec()
             return
         try:
