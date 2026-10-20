@@ -21,6 +21,7 @@ from .mumble_native import MumbleNativeClient
 from .mumble_public import MumblePublicServerLoader
 from .frn_panel import HotkeyCaptureButton
 from .emoji_picker import emoji_button
+from .mumble_channel_editor import ChannelEditor
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import (
@@ -1176,11 +1177,52 @@ class MumbleNativePanel(QWidget):
         if item is None:
             return
         data=item.data(0,Qt.UserRole)
-        if not isinstance(data,dict) or data.get("kind")!="user":
+        if not isinstance(data,dict):
             return
-        self._show_mumble_user_menu(
-            data,self.channels.viewport().mapToGlobal(pos)
-        )
+        if data.get("kind")=="user":
+            self._show_mumble_user_menu(data,self.channels.viewport().mapToGlobal(pos))
+            return
+        if data.get("kind")!="channel" or not self.client.connected:
+            return
+        menu=QMenu(self)
+        create=menu.addAction("Unterraum anlegen …")
+        edit=menu.addAction("Raum bearbeiten …")
+        edit.setEnabled(int(data.get("id",-1))!=0)
+        selected=menu.exec(self.channels.viewport().mapToGlobal(pos))
+        if selected not in (create,edit):
+            return
+        try:
+            if selected==create:
+                dialog=ChannelEditor(self,create=True)
+                if dialog.exec()!=dialog.Accepted:
+                    return
+                values=dialog.values()
+                self.client.create_channel(data["id"],values["name"],values["temporary"])
+                # Creation is asynchronous. Newly created channel is identified
+                # by parent+name, not by an assumed channel ID.
+                from PySide6.QtCore import QTimer
+                def apply_position():
+                    rows=self.client.channel_snapshot()
+                    matches=[row for row in rows if row["parent"]==int(data["id"])
+                             and row["name"]==values["name"]]
+                    if len(matches)==1 and self.client.connected:
+                        self.client.edit_channel(matches[0]["id"],values["name"],
+                                                 values["description"],values["position"])
+                QTimer.singleShot(1000,apply_position)
+                QTimer.singleShot(1500,self._refresh_channels)
+            else:
+                details=self.client.channel_details(data["id"])
+                dialog=ChannelEditor(self,create=False,details=details)
+                if dialog.exec()!=dialog.Accepted:
+                    return
+                values=dialog.values()
+                self.client.edit_channel(data["id"],values["name"],
+                                         values["description"],values["position"])
+                QTimer.singleShot(800,self._refresh_channels)
+            QMessageBox.information(self,"Mumble-Raum",
+                "Änderung an den Server gesendet. Falls das Recht fehlt, lehnt der Server sie ab.")
+        except Exception as exc:
+            QMessageBox.warning(self,"Mumble – Raumverwaltung",str(exc))
 
     def _show_mumble_user_menu(self,data,global_pos):
         # Never offer server moderation through ordinary right-click.
