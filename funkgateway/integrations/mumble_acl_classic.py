@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
  QTabWidget,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QLabel,
  QListWidget,QListWidgetItem,QComboBox,QCheckBox,QPushButton,QInputDialog,
- QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit,QApplication,QSizePolicy
+ QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit,QApplication,QSizePolicy,QDialog,QDialogButtonBox
 )
 from .mumble_acl_dialog import MumbleAclDialog,PERMISSIONS
 
@@ -338,32 +338,64 @@ class MumbleAclClassicDialog(MumbleAclDialog):
 
     def _group_add_user(self,col):
         row=self._selected_group
-        if not self._loaded or row<0:return
-        if not self._registered_rows:
-            cached=self.client.cached_registered_users()
-            if cached:
-                self._registered_received(cached)
-        if not self._registered_rows:
+        if not self._loaded or row<0:
+            return
+        directory=self.client.cached_registered_users()
+        if directory:
+            self._user_names.update({
+                int(u["user_id"]):str(u.get("name") or "")
+                for u in directory if u.get("user_id") is not None})
+            self._registered_rows=directory
+        elif self._registered_rows:
+            directory=self._registered_rows
+        else:
             self._pending_group_column=col
             self._request_registered()
-            self.status.setText("Registrierte Benutzer werden geladen; die Auswahl öffnet sich automatisch.")
+            self.status.setText("Lade registrierte Benutzer; Auswahl öffnet sich nach dem Empfang …")
             return
         members=set(self._ids(self._text_at(self.groups,row,1)))
         excluded=set(self._ids(self._text_at(self.groups,row,2)))
         blocked=members|excluded
-        candidates=[user for user in self._registered_rows if int(user["user_id"]) not in blocked]
+        candidates=sorted(
+            (u for u in directory if int(u["user_id"]) not in blocked),
+            key=lambda u:str(u.get("name") or "").casefold())
         if not candidates:
             QMessageBox.information(self,"Mumble","Keine weiteren registrierten Benutzer verfügbar.")
             return
-        options=[f"{user['name']} (ID {user['user_id']})" for user in candidates]
-        choice,ok=QInputDialog.getItem(self,"Mitglied auswählen","Registrierter Benutzer:",options,0,False)
-        if not ok:return
-        uid=self._parse_user_id(choice)
+        dialog=QDialog(self)
+        dialog.setWindowTitle("Mumble – "+("Mitglied" if col==1 else "Ausgeschlossenes Mitglied")+" auswählen")
+        dialog.resize(490,145)
+        layout=QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Registrierten Benutzer auswählen (Name oder ID eintippen):"))
+        selector=QComboBox(dialog)
+        selector.setEditable(True)
+        selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for user in candidates:
+            selector.addItem(f"{user.get('name') or 'Unbenannt'} (ID {user['user_id']})",
+                             int(user["user_id"]))
+        completer=selector.completer()
+        if completer is not None:
+            from PySide6.QtCore import Qt as _Qt
+            completer.setFilterMode(_Qt.MatchFlag.MatchContains)
+            completer.setCaseSensitivity(_Qt.CaseSensitivity.CaseInsensitive)
+        layout.addWidget(selector)
+        buttons=QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        index=selector.currentIndex()
+        if index<0 or selector.currentText()!=selector.itemText(index):
+            QMessageBox.warning(self,"Mumble","Bitte einen Benutzer aus der Liste auswählen.")
+            return
+        uid=int(selector.itemData(index))
         if uid in blocked:return
         old=self._ids(self._text_at(self.groups,row,col))
-        old.append(uid)
+        if uid not in old:old.append(uid)
         self._cell(self.groups,row,col,",".join(self._user_label(i) for i in old))
         self._select_group(row)
+        self.status.setText("Benutzerzuordnung vorgemerkt. ACL-Änderungen speichern.")
 
     def _group_remove_user(self,col,lst):
         row=self._selected_group
