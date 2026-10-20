@@ -31,6 +31,8 @@ class MumbleNativeClient(QObject):
     outputLevel = Signal(float)
     error = Signal(str)
     chatReceived = Signal(object)
+    aclReceived = Signal(object)
+    aclDenied = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -144,6 +146,12 @@ class MumbleNativeClient(QObject):
             except ImportError:
                 from pymumble_py3.callbacks import PYMUMBLE_CLBK_TEXTMESSAGERECEIVED
             mumble.callbacks.set_callback(PYMUMBLE_CLBK_TEXTMESSAGERECEIVED, self._chat_received)
+            try:
+                from pymumble_py3.constants import PYMUMBLE_CLBK_ACLRECEIVED, PYMUMBLE_CLBK_PERMISSIONDENIED
+            except ImportError:
+                from pymumble_py3.callbacks import PYMUMBLE_CLBK_ACLRECEIVED, PYMUMBLE_CLBK_PERMISSIONDENIED
+            mumble.callbacks.set_callback(PYMUMBLE_CLBK_ACLRECEIVED,self._acl_received)
+            mumble.callbacks.set_callback(PYMUMBLE_CLBK_PERMISSIONDENIED,self._acl_denied)
             mumble.start()
             mumble.is_ready()
             state = int(getattr(mumble, "connected", 0))
@@ -416,6 +424,48 @@ class MumbleNativeClient(QObject):
             "position":int(self._prop(channel,"position",0) or 0),
             "temporary":bool(self._prop(channel,"temporary",False)),
         }
+
+    def request_channel_acl(self,channel_id):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        self._mumble.channels[int(channel_id)].request_acl()
+
+    def _acl_received(self,message):
+        # Only actual server responses are surfaced; no cached ACL disclosure.
+        try:
+            data={
+                "channel_id":int(message.channel_id),
+                "inherit_acls":bool(message.inherit_acls),
+                "groups":[{"name":str(g.name),"inherit":bool(g.inherit),
+                           "inheritable":bool(g.inheritable),
+                           "add":list(g.add),"remove":list(g.remove),
+                           "inherited":bool(g.inherited)}
+                          for g in message.groups],
+                "rules":[{"group":str(a.group) if a.HasField("group") else "",
+                          "user_id":int(a.user_id) if a.HasField("user_id") else None,
+                          "apply_here":bool(a.apply_here),
+                          "apply_subs":bool(a.apply_subs),
+                          "inherited":bool(a.inherited),
+                          "grant":int(a.grant),"deny":int(a.deny)}
+                         for a in message.acls],
+            }
+            self.aclReceived.emit(data)
+        except Exception as exc:
+            self.aclDenied.emit("ACL-Antwort konnte nicht verarbeitet werden: "+str(exc))
+
+    def _acl_denied(self,message):
+        details=str(getattr(message,"reason","") or "")
+        self.aclDenied.emit("Der Mumble-Server verweigert diese Aktion oder ACL-Einsicht."
+                            +((" Grund: "+details) if details else ""))
+
+    def save_channel_acl(self,channel_id,inherit_acls,groups,rules):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        from pymumble_py3 import messages
+        # Only local rules/groups are submitted, not inherited ACL entries.
+        cmd=messages.UpdateACL(channel_id=int(channel_id),
+              inherit_acls=bool(inherit_acls),chan_group=groups,chan_acl=rules)
+        self._mumble.execute_command(cmd)
 
     def create_channel(self,parent_id,name,temporary=False):
         if not self.connected or self._mumble is None:
