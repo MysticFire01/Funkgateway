@@ -1422,8 +1422,22 @@ class ZelloPanel(QWidget):
     def _audio_error(self,message):
         self.audio_status.setText("Audioausgabe: "+message)
 
+    def _wait_audio_thread(self):
+        """Join the audio owner before starting a new output stream.
+
+        Never clear the shared stop event while the previous worker is alive.
+        """
+        worker=self._audio_thread
+        if worker and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=2.0)
+        if worker and worker.is_alive():
+            self.audio_status.setText("Audioausgabe wird noch beendet; neuer Start verschoben.")
+            return False
+        self._audio_thread=None
+        return True
+
     def _start_audio(self):
-        if self._audio_thread and self._audio_thread.is_alive():
+        if not self._wait_audio_thread():
             return
         self._audio_stop.clear()
         self._rx_gain_factor=self.rx_volume.value()/100
@@ -1434,6 +1448,9 @@ class ZelloPanel(QWidget):
     def _clear_audio(self):
         self._rx_timer.stop()
         self._audio_stop.set()
+        # The playback worker owns RawOutputStream and closes it on exit.
+        # Joining it prevents a fast reconnect from reusing its stop event.
+        self._wait_audio_thread()
         self._streams.clear()
         self._rx_packet_counts.clear()
         self._rx_event_details.clear()
