@@ -883,6 +883,7 @@ class MainWindow(QMainWindow):
         banner_box=QGroupBox("Startseiten-Banner")
         bf=QFormLayout(banner_box)
         self.banner_enabled=QCheckBox("Banner auf der Startseite anzeigen")
+        self.banner_enabled.setChecked(True)
         self.banner_path=QLineEdit(); self.banner_path.setReadOnly(True)
         banner_buttons=QWidget(); bh=QHBoxLayout(banner_buttons); bh.setContentsMargins(0,0,0,0)
         choose_banner=QPushButton("Bild auswählen …"); choose_banner.clicked.connect(self._choose_banner)
