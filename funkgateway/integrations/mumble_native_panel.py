@@ -131,6 +131,8 @@ class MumbleNativePanel(QWidget):
         self.port=QSpinBox(); self.port.setRange(1,65535); self.port.setValue(64738)
         self.nick=QLineEdit("FunkGateway Linux")
         self.password=QLineEdit(); self.password.setEchoMode(QLineEdit.Password)
+        self.access_tokens=QLineEdit(); self.access_tokens.setEchoMode(QLineEdit.Password)
+        self.access_tokens.setPlaceholderText("Zugangstokens, durch Komma getrennt – nur für diese Verbindung")
         self.channel=QLineEdit(); self.channel.setPlaceholderText("optional: Channel/Pfad")
         self.favorite_select=QComboBox()
         self.favorite_select.addItem("Manueller Server",None)
@@ -176,7 +178,7 @@ class MumbleNativePanel(QWidget):
         f.addRow("Favoriten:",favrow)
         f.addRow("",self.favorite_nick_label)
         f.addRow("Server:",self.host); f.addRow("Port:",self.port); f.addRow("Nickname:",self.nick)
-        f.addRow("Passwort:",self.password); f.addRow("Start-Channel:",self.channel); f.addRow("Zertifikat:",certrow)
+        f.addRow("Passwort:",self.password); f.addRow("Raum-Zugangstokens:",self.access_tokens); f.addRow("Start-Channel:",self.channel); f.addRow("Zertifikat:",certrow)
         f.addRow(buttons); f.addRow("Status:",self.status); f.addRow("Aktueller Channel:",self.current_channel)
         f.addRow("Mute / Deaf:",self.mumble_audio_state)
         v.addWidget(box)
@@ -926,6 +928,7 @@ class MumbleNativePanel(QWidget):
                  or port!=self.port.value())
         if changed:
             self.password.clear()
+            self.access_tokens.clear()
             self.channel.clear()
         self.host.setText(host)
         self.port.setValue(port)
@@ -1478,6 +1481,7 @@ class MumbleNativePanel(QWidget):
                 self.host.text().strip(),self.port.value(),nickname,
                 self.password.text(),self.channel.text().strip(),
                 certfile=certfile,keyfile=keyfile,
+                access_tokens=[x.strip() for x in self.access_tokens.text().split(",") if x.strip()],
                 playback=self.playback.isChecked(),
                 output_device=self.output.currentData(),
                 input_device=self.input.currentData(),
