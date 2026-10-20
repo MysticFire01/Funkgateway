@@ -458,7 +458,14 @@ class MumbleNativeClient(QObject):
             if description is None and cid not in requested:
                 requested.add(cid)
                 self._description_requests=requested
-                self._mumble.blobs.get_channel_description(desc_hash)
+                # Mumble RequestBlob.channel_description contains channel IDs,
+                # NOT SHA1 hashes. pymumble's blob helper mistakenly unpacks
+                # the hash into five integers, so send the correct request.
+                from pymumble_py3 import mumble_pb2
+                from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_REQUESTBLOB
+                request=mumble_pb2.RequestBlob()
+                request.channel_description.append(cid)
+                self._mumble.send_message(PYMUMBLE_MSG_TYPES_REQUESTBLOB,request)
         if isinstance(description,bytes):
             description=description.decode("utf-8","replace")
         return {
