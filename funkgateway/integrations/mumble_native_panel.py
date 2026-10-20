@@ -23,6 +23,7 @@ from .frn_panel import HotkeyCaptureButton
 from .emoji_picker import emoji_button
 from .mumble_channel_editor import ChannelEditor
 from .mumble_acl_dialog import MumbleAclDialog
+from .mumble_registered_panel import MumbleRegisteredPanel
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import (
@@ -314,6 +315,8 @@ class MumbleNativePanel(QWidget):
         chatlayout.addLayout(typerow)
         chat_page_layout.addWidget(chatbox,2)
         self.mumble_tabs.addTab(chat_page,"Chat / Teilnehmer")
+        self.registered_panel=MumbleRegisteredPanel(self.client,self)
+        self.mumble_tabs.addTab(self.registered_panel,"Registrierte Benutzer")
 
         publicbox=QGroupBox("Öffentliche Mumble-Serverliste")
         publiclayout=QVBoxLayout(publicbox)
