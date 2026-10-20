@@ -162,14 +162,17 @@ class MumbleNativeClient(QObject):
                 if packet_type==PYMUMBLE_MSG_TYPES_USERLIST:
                     msg=mumble_pb2.UserList()
                     msg.ParseFromString(payload)
-                    self.registeredUsersReceived.emit([
+                    rows=[
                         {"user_id":int(u.user_id),"name":str(u.name),
                          "last_seen":str(u.last_seen),
                          "last_channel":int(u.last_channel) if u.HasField("last_channel") else None}
                         for u in msg.users
-                    ])
+                     ]
+                    self._registered_users_cache=rows
+                    self.registeredUsersReceived.emit(rows)
                 return old_dispatch(packet_type,payload)
             mumble.dispatch_control_message=dispatch_with_userlist
+            self._registered_users_cache=[]
             mumble.start()
             mumble.is_ready()
             state = int(getattr(mumble, "connected", 0))
@@ -457,6 +460,9 @@ class MumbleNativeClient(QObject):
             self._mumble.users[target].ban(reason=reason)
         else:
             self._mumble.users[target].kick(reason=reason)
+
+    def cached_registered_users(self):
+        return list(getattr(self,"_registered_users_cache",[]) or []) if self.connected else []
 
     def request_registered_users(self):
         if not self.connected or self._mumble is None:
