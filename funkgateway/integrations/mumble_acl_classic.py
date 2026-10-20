@@ -256,12 +256,22 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._select_group(row)
         self.status.setText("Mitglied für diesen Raum ausgeschlossen. ACL-Änderungen speichern.")
 
+    def _registered_received(self,rows):
+        super()._registered_received(rows)
+        pending=getattr(self,"_pending_group_column",None)
+        if pending is not None and self._registered_rows and self._loaded:
+            self._pending_group_column=None
+            # Open the picker after this server callback finishes updating the UI.
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0,lambda:self._group_add_user(pending))
+
     def _group_add_user(self,col):
         row=self._selected_group
         if not self._loaded or row<0:return
         if not self._registered_rows:
+            self._pending_group_column=col
             self._request_registered()
-            QMessageBox.information(self,"Mumble","Benutzerliste wird vom Server geladen. Danach erneut versuchen.")
+            self.status.setText("Registrierte Benutzer werden geladen; die Auswahl öffnet sich automatisch.")
             return
         members=set(self._ids(self._text_at(self.groups,row,1)))
         excluded=set(self._ids(self._text_at(self.groups,row,2)))
