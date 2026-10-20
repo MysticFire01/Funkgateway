@@ -78,10 +78,15 @@ class MumbleDescriptionEditor(QWidget):
             button.setEnabled(not pending)
 
     def _switch(self, index):
+        was_dirty = self._dirty
         if index == 1:
-            self.source.setPlainText(self.rendered.toHtml())
+            if was_dirty:
+                self.source.setPlainText(self.rendered.toHtml())
+            else:
+                self.source.setPlainText(self._original_markup)
         else:
             self.rendered.setHtml(self.source.toPlainText())
+        self._dirty = was_dirty
         self.stack.setCurrentIndex(index)
         for button in self.actions:
             button.setVisible(index == 0 and not self._loading)
