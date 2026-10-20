@@ -42,11 +42,17 @@ class MumbleDescriptionEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
         self.actions = []
+        self.format_buttons = {}
         for caption, method in (("B", self.bold), ("I", self.italic), ("U", self.underline),
                                 ("Farbe", self.color), ("Link", self.link)):
             button = QPushButton(caption)
             button.clicked.connect(method)
             button.setMaximumWidth(85)
+            if caption in ("B", "I", "U"):
+                button.setCheckable(True)
+                button.setAutoDefault(False)
+                button.setStyleSheet("QPushButton:checked { background-color: #2675d7; color: white; border: 1px solid #83b9ff; font-weight: bold; }")
+                self.format_buttons[caption] = button
             controls.addWidget(button)
             self.actions.append(button)
         controls.addStretch()
@@ -54,6 +60,8 @@ class MumbleDescriptionEditor(QWidget):
         self.stack = QStackedWidget(self)
         self.rendered = QTextEdit()
         self.rendered.setAcceptRichText(True)
+        self.rendered.cursorPositionChanged.connect(self._sync_format_buttons)
+        self.rendered.currentCharFormatChanged.connect(self._sync_format_buttons)
         self.rendered.setToolTip("Links mit Strg + Klick im Browser öffnen; normaler Klick bearbeitet den Text.")
         self.rendered.viewport().installEventFilter(self)
         self.source = QPlainTextEdit()
@@ -69,6 +77,20 @@ class MumbleDescriptionEditor(QWidget):
         self.rendered.textChanged.connect(self._mark_dirty)
         self.source.textChanged.connect(self._mark_dirty)
         self.set_description(markup)
+        self._sync_format_buttons()
+
+    def _sync_format_buttons(self, *_):
+        fmt = self.rendered.currentCharFormat()
+        states = {
+            "B": fmt.fontWeight() >= QFont.Weight.Bold,
+            "I": fmt.fontItalic(),
+            "U": fmt.fontUnderline(),
+        }
+        for name, active in states.items():
+            button = self.format_buttons[name]
+            button.blockSignals(True)
+            button.setChecked(bool(active))
+            button.blockSignals(False)
 
     def eventFilter(self, obj, event):
         if obj is self.rendered.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
@@ -92,6 +114,7 @@ class MumbleDescriptionEditor(QWidget):
         self.rendered.setHtml(_display_links(markup))
         self.source.setPlainText(markup)
         self._dirty = False
+        self._sync_format_buttons()
 
     def set_loading(self, pending):
         self._loading = bool(pending)
@@ -128,6 +151,7 @@ class MumbleDescriptionEditor(QWidget):
         self.rendered.textCursor().mergeCharFormat(fmt)
         self.rendered.mergeCurrentCharFormat(fmt)
         self.rendered.setFocus()
+        self._sync_format_buttons()
 
     def bold(self):
         weight = QFont.Weight.Normal if self.rendered.fontWeight() >= QFont.Weight.Bold else QFont.Weight.Bold
