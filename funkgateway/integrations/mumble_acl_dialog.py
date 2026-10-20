@@ -385,6 +385,14 @@ class MumbleAclDialog(QDialog):
         self._loaded=True
         self._clear()
         self._user_names=self.client.registered_user_names()
+        # Use an already authenticated UserList before drawing ACL entries.
+        # The separate Mumble users tab may have loaded it earlier.
+        directory=self.client.cached_registered_users()
+        for user in directory:
+            try:
+                self._user_names[int(user["user_id"])]=str(user.get("name") or "")
+            except (ValueError,TypeError,KeyError):
+                continue
         self.inherit.setChecked(bool(data["inherit_acls"]))
         self.inherit.setEnabled(True)
         for group in data["groups"]:
