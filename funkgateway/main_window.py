@@ -10486,7 +10486,7 @@ done"""
             self.mode_colors.setChecked(bool(d.get("mode_colors",True)))
             self.banner_path.setText(str(d.get("banner_path","") or ""))
             self.banner_enabled.blockSignals(True)
-            self.banner_enabled.setChecked(bool(d.get("banner_enabled",False)) if d.get("banner_path") else True)
+            self.banner_enabled.setChecked(bool(d["banner_enabled"]) if "banner_enabled" in d else True)
             self.banner_enabled.blockSignals(False)
             self._load_banner_pixmap(self.banner_path.text())
             if hasattr(self,"start_banner"):
