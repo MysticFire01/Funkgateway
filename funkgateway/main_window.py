@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QGroupBox,QApplication,QCheckBox,QComboBox,QFileDialog,
     QFormLayout,QHBoxLayout,QLabel,QLineEdit,QMainWindow,QMessageBox,QPushButton,
-    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QVBoxLayout,QWidget,QListWidget,
+    QProgressBar,QScrollArea,QSpinBox,QTabWidget,QTextEdit,QTextBrowser,QVBoxLayout,QWidget,QListWidget,
     QDialog,QDialogButtonBox,QInputDialog,QWizard,QWizardPage,QSizePolicy)
 from PySide6.QtCore import QTimer, Qt, Qt, QMarginsF, Signal, QSize
 from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPixmap, QIcon, QShortcut, QKeySequence
@@ -7615,8 +7615,11 @@ done"""
         self.tabs.addTab(w,"Protokoll")
 
     def build_help(self):
-        w=QWidget(); v=QVBoxLayout(w); h=QTextEdit(); h.setReadOnly(True); h.setHtml(HELP_HTML)
-        v.addWidget(h); self.tabs.addTab(w,"Hilfe")
+        w=QWidget(); v=QVBoxLayout(w)
+        search=QLineEdit(); search.setPlaceholderText("Hilfe durchsuchen – Suchwort eingeben und Enter drücken")
+        h=QTextBrowser(); h.setOpenExternalLinks(False); h.setHtml(HELP_HTML)
+        search.returnPressed.connect(lambda: h.find(search.text()))
+        v.addWidget(search); v.addWidget(h); self.tabs.addTab(w,"Hilfe")
 
     @staticmethod
     def _is_compact_log_message(msg):
