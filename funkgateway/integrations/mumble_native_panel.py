@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, 
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
     QComboBox,QCheckBox,QListWidget,QListWidgetItem,QMessageBox,QInputDialog,QGroupBox,
-    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu, QTabWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView, QFileDialog
+    QPlainTextEdit,QSlider,QDialog,QDialogButtonBox,QMenu,QScrollArea, QTabWidget, QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView, QFileDialog
 )
 
 try:
@@ -106,7 +106,11 @@ class MumbleNativePanel(QWidget):
         self.mumble_tabs.currentChanged.connect(self._mumble_tab_changed)
         client_page=QWidget(self.mumble_tabs)
         v=QVBoxLayout(client_page)
-        self.mumble_tabs.addTab(client_page,"Verbindung")
+        client_scroll=QScrollArea(self.mumble_tabs)
+        client_scroll.setWidgetResizable(True)
+        client_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        client_scroll.setWidget(client_page)
+        self.mumble_tabs.addTab(client_scroll,"Verbindung")
 
         info=QLabel(
             "<b>Nativer Mumble-Client</b><br>"
