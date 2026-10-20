@@ -6,9 +6,62 @@ groups/rules. All writes are subject to the server's own ACL checks.
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QDialog,QVBoxLayout,QHBoxLayout,QLabel,QCheckBox,QTableWidget,
-    QTableWidgetItem,QPushButton,QMessageBox,QTabWidget,QWidget,QHeaderView
+    QTableWidgetItem,QPushButton,QMessageBox,QTabWidget,QWidget,QHeaderView,QListWidget,QListWidgetItem,QDialogButtonBox
 )
 
+
+
+# Mumble Permission flags are stable protocol bits, not UI-specific indexes.
+PERMISSIONS = [
+    (0x1,"ACL verwalten"),(0x2,"Raum durchqueren"),(0x4,"Raum betreten"),
+    (0x8,"Sprechen"),(0x10,"Andere stumm/taub schalten"),
+    (0x20,"Benutzer verschieben"),(0x40,"Permanente Räume anlegen"),
+    (0x80,"Räume verknüpfen"),(0x100,"Flüstern"),
+    (0x200,"Textnachrichten senden"),(0x400,"Temporäre Räume anlegen"),
+    (0x10000,"Benutzer kicken"),(0x20000,"Benutzer bannen"),
+    (0x40000,"Benutzer registrieren"),(0x80000,"Selbstregistrierung"),
+    (0x100000,"Benutzerdaten zurücksetzen"),
+]
+KNOWN_MASK=sum(bit for bit,_ in PERMISSIONS)
+
+
+class PermissionPicker(QDialog):
+    def __init__(self,mask,parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mumble-Berechtigungen auswählen")
+        self.resize(410,540)
+        self._other=int(mask)&~KNOWN_MASK
+        layout=QVBoxLayout(self)
+        layout.addWidget(QLabel("Welche Aktionen sollen ausdrücklich erlaubt bzw. verweigert werden?"))
+        self.list=QListWidget()
+        for bit,name in PERMISSIONS:
+            item=QListWidgetItem(name)
+            item.setFlags(item.flags()|Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if int(mask)&bit else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole,bit)
+            self.list.addItem(item)
+        layout.addWidget(self.list,1)
+        if self._other:
+            layout.addWidget(QLabel("Unbekannte/zusätzliche Rechte-Bits bleiben unverändert erhalten."))
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def mask(self):
+        value=self._other
+        for i in range(self.list.count()):
+            item=self.list.item(i)
+            if item.checkState()==Qt.CheckState.Checked:
+                value|=int(item.data(Qt.ItemDataRole.UserRole))
+        return value
+
+
+def permission_names(mask):
+    known=[name for bit,name in PERMISSIONS if int(mask)&bit]
+    other=int(mask)&~KNOWN_MASK
+    if other: known.append(f"Weitere Rechte ({hex(other)})")
+    return ", ".join(known) if known else "Keine Rechte ausgewählt"
 
 class MumbleAclDialog(QDialog):
     def __init__(self,client,channel_id,channel_name,parent=None):
@@ -30,7 +83,8 @@ class MumbleAclDialog(QDialog):
         self.groups=QTableWidget(0,5)
         self.groups.setHorizontalHeaderLabels(["Gruppe","Mitglieder hinzufügen (IDs)","Mitglieder ausschließen (IDs)","Erben","Weitervererben"])
         self.rules=QTableWidget(0,7)
-        self.rules.setHorizontalHeaderLabels(["Gruppe","Benutzer-ID","Erlauben (Bitmaske)","Verweigern (Bitmaske)","Hier","Unterräume","Geerbt"])
+        self.rules.cellDoubleClicked.connect(self._edit_permissions)
+        self.rules.setHorizontalHeaderLabels(["Gruppe","Benutzer (ID)","Erlaubte Rechte","Verweigerte Rechte","Hier","Unterräume","Geerbt"])
         for label,table in [("Gruppen",self.groups),("ACL-Regeln",self.rules)]:
             page=QWidget()
             v=QVBoxLayout(page)
@@ -49,9 +103,8 @@ class MumbleAclDialog(QDialog):
             remove.setEnabled(False)
             table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             tabs.addTab(page,label)
-        note=QLabel("Berechtigungen werden als Mumble-Bitmasken angezeigt (z. B. 0x10). "
-                    "Geerbte Regeln sind nur lesbar. Änderungen betreffen ausschließlich diesen Raum; "
-                    "der Server muss jede Änderung autorisieren.")
+        note=QLabel("Doppelklick auf Erlaubte/Verweigerte Rechte öffnet die Rechteauswahl. "
+                    "Geerbte Regeln sind nur lesbar. Der Server entscheidet über Änderungen.")
         note.setWordWrap(True)
         layout.addWidget(note)
         buttons=QHBoxLayout()
@@ -137,6 +190,8 @@ class MumbleAclDialog(QDialog):
                   hex(rule["grant"]),hex(rule["deny"]),str(int(rule["apply_here"])),
                   str(int(rule["apply_subs"])),str(int(rule["inherited"]))]
             for c,v in enumerate(vals):self._cell(self.rules,n,c,v)
+            self._permission_cell(n,2,rule["grant"])
+            self._permission_cell(n,3,rule["deny"])
             if rule["inherited"]:
                 for c in range(7):
                     cell=self.rules.item(n,c)
@@ -149,6 +204,33 @@ class MumbleAclDialog(QDialog):
             t._add_button.setEnabled(True)
             t._remove_button.setEnabled(True)
 
+    def _permission_cell(self,row,col,mask):
+        cell=self.rules.item(row,col)
+        if cell is None:
+            cell=QTableWidgetItem()
+            self.rules.setItem(row,col,cell)
+        cell.setText(permission_names(mask))
+        cell.setToolTip("Doppelklick: Rechte per Häkchen auswählen")
+        cell.setData(Qt.ItemDataRole.UserRole,int(mask))
+        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+    def _edit_permissions(self,row,col):
+        if not self._loaded or col not in (2,3) or self._text(self.rules,row,6)=="1":
+            return
+        cell=self.rules.item(row,col)
+        if cell is None:return
+        mask=cell.data(Qt.ItemDataRole.UserRole)
+        if mask is None:mask=0
+        picker=PermissionPicker(int(mask),self)
+        if picker.exec()==QDialog.DialogCode.Accepted:
+            self._permission_cell(row,col,picker.mask())
+
+    def _mask(self,row,col):
+        item=self.rules.item(row,col)
+        if item is None:return 0
+        value=item.data(Qt.ItemDataRole.UserRole)
+        return int(value) if value is not None else int(item.text().strip() or "0",0)
+
     def _add_row(self,table):
         if not self._loaded:return
         n=table.rowCount()
@@ -156,6 +238,9 @@ class MumbleAclDialog(QDialog):
         values=(["","","","1","1"] if table is self.groups
                 else ["all","","0","0","1","1","0"])
         for c,value in enumerate(values):self._cell(table,n,c,value)
+        if table is self.rules:
+            self._permission_cell(n,2,0)
+            self._permission_cell(n,3,0)
 
     def _remove_row(self,table):
         if not self._loaded:return
@@ -194,8 +279,8 @@ class MumbleAclDialog(QDialog):
                 if not group and not uid:raise ValueError("Regel benötigt Gruppe oder Benutzer-ID.")
                 values=dict(inherited=False,user_id=None,group=None,apply_here=bool(int(self._text(self.rules,row,4))),
                     apply_subs=bool(int(self._text(self.rules,row,5))),
-                    grant=int(self._text(self.rules,row,2),0),
-                    deny=int(self._text(self.rules,row,3),0))
+                    grant=self._mask(row,2),
+                    deny=self._mask(row,3))
                 if uid:values["user_id"]=int(uid)
                 else:values["group"]=group
                 rules.append(values)
