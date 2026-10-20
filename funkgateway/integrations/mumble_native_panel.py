@@ -4,7 +4,7 @@ import html
 import re
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings, QThread
+from PySide6.QtCore import Qt, QSettings, QThread, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QBrush
 from PySide6.QtWidgets import (
     QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QLineEdit,QSpinBox,QPushButton,
