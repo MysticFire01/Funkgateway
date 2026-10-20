@@ -103,7 +103,7 @@ class MumbleNativeClient(QObject):
     def connect_async(self, host, port, nickname, password="", channel_path="",
                       certfile="", keyfile="", playback=True,
                       output_device=None, input_device=None,
-                      pc_ptt_enabled=True):
+                      pc_ptt_enabled=True, access_tokens=None):
         self.disconnect()
         host = str(host or "").strip()
         nickname = str(nickname or "").strip()
@@ -112,6 +112,7 @@ class MumbleNativeClient(QObject):
         if not nickname:
             raise RuntimeError("Mumble-Nickname fehlt.")
         self._stop.clear()
+        self._access_tokens=list(access_tokens or [])
         self._volume_server = f"{host.casefold()}:{int(port)}"
         self._certfile = str(certfile or "")
         self._keyfile = str(keyfile or "")
@@ -132,6 +133,7 @@ class MumbleNativeClient(QObject):
             self.status.emit("Native Mumble: verbindet …")
             mumble = pymumble.Mumble(
                 host, nickname, port=port, password=password,
+                tokens=list(self._access_tokens),
                 certfile=(self._certfile or None),
                 keyfile=(self._keyfile or None),
                 reconnect=False, stereo=False, debug=False,
