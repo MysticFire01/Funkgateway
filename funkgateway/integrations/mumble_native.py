@@ -478,6 +478,7 @@ class MumbleNativeClient(QObject):
                 "id": cid_i,
                 "parent": parent_i,
                 "name": str(self._prop(ch, "name", "") or f"Channel {cid_i}"),
+                "position": int(self._prop(ch, "position", 0) or 0),
                 "users": counts.get(cid_i, 0),
                 "current": current_id is not None and cid_i == current_id,
             })
