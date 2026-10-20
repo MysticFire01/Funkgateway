@@ -406,6 +406,41 @@ class MumbleNativeClient(QObject):
                     pass
             self._rf_proc = None
 
+    def channel_details(self, channel_id):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        channel=self._mumble.channels[int(channel_id)]
+        return {
+            "name":str(self._prop(channel,"name","") or ""),
+            "description":str(self._prop(channel,"description","") or ""),
+            "position":int(self._prop(channel,"position",0) or 0),
+            "temporary":bool(self._prop(channel,"temporary",False)),
+        }
+
+    def create_channel(self,parent_id,name,temporary=False):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        name=str(name).strip()
+        if not name:
+            raise ValueError("Raumname fehlt.")
+        # Actual permission checks happen on the Mumble server.
+        self._mumble.channels.new_channel(int(parent_id),name,bool(temporary))
+
+    def edit_channel(self,channel_id,name,description,position):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        if int(channel_id)==0:
+            raise ValueError("Der Root-Raum kann hier nicht bearbeitet werden.")
+        channel=self._mumble.channels[int(channel_id)]
+        if not str(name).strip():
+            raise ValueError("Raumname fehlt.")
+        if str(name).strip()!=str(self._prop(channel,"name","") or ""):
+            channel.rename_channel(str(name).strip())
+        if str(description)!=str(self._prop(channel,"description","") or ""):
+            channel.set_channel_description(str(description))
+        if int(position)!=int(self._prop(channel,"position",0) or 0):
+            channel.set_channel_position(int(position))
+
     def channel_snapshot(self):
         mumble = self._mumble
         if mumble is None or not self._connected:
