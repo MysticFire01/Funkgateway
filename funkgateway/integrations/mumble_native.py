@@ -510,6 +510,7 @@ class MumbleNativeClient(QObject):
                 "groups":[{"name":str(g.name),"inherit":bool(g.inherit),
                            "inheritable":bool(g.inheritable),
                            "add":list(g.add),"remove":list(g.remove),
+                           "inherited_members":list(g.inherited_members),
                            "inherited":bool(g.inherited)}
                           for g in message.groups],
                 "rules":[{"group":str(a.group) if a.HasField("group") else "",
