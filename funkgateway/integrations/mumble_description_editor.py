@@ -1,11 +1,35 @@
 """Mumble channel description: rich text, HTML source and clickable links."""
 import html
+import re
 from PySide6.QtCore import Qt, QEvent, QUrl
 from PySide6.QtGui import QTextCharFormat, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPlainTextEdit,
     QPushButton, QTabBar, QColorDialog, QInputDialog, QMessageBox, QStackedWidget,
 )
+
+
+def _display_links(markup):
+    # Convert bare web addresses only in text nodes, not HTML tag attributes
+    # or existing anchors. Original server HTML remains untouched on save.
+    pieces = re.split(r'(<[^>]*>)', markup)
+    inside_link = False
+    output = []
+    for piece in pieces:
+        if piece.startswith('<'):
+            tag = piece.lower().lstrip()
+            if tag.startswith('</a'):
+                inside_link = False
+            elif re.match(r'<a(?:\\s|>)', tag):
+                inside_link = True
+            output.append(piece)
+        elif inside_link:
+            output.append(piece)
+        else:
+            output.append(re.sub(r'https?://[^\\s<>"\\']+', lambda m:
+                '<a href="' + html.escape(html.unescape(m.group(0)),quote=True) + '">' +
+                m.group(0) + '</a>', piece))
+    return ''.join(output)
 
 
 class MumbleDescriptionEditor(QWidget):
@@ -65,7 +89,7 @@ class MumbleDescriptionEditor(QWidget):
     def set_description(self, markup):
         markup = str(markup or "")
         self._original_markup = markup
-        self.rendered.setHtml(markup)
+        self.rendered.setHtml(_display_links(markup))
         self.source.setPlainText(markup)
         self._dirty = False
 
