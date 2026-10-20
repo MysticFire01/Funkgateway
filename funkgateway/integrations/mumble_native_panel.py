@@ -1540,7 +1540,7 @@ class MumbleNativePanel(QWidget):
                     item.setFont(0,font)
                     item.setToolTip(0,"Aktueller Channel")
                 by_id[cid]=item
-            for row in sorted(channels,key=lambda r:str(r.get("name") or "").casefold()):
+            for row in sorted(channels,key=lambda r:(int(r.get("position") or 0),str(r.get("name") or "").casefold(),int(r["id"]))):
                 cid=row["id"]
                 parent=row.get("parent")
                 if parent in by_id and parent!=cid:
