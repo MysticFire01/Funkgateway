@@ -198,27 +198,47 @@ class MumbleAclDialog(QDialog):
         if not self._loaded:
             return
         self._registered_pending=False
-        self._registered_rows=sorted(rows,key=lambda r:str(r.get("name","")).casefold())
-        self.registered_status.setText(f"{len(rows)} registrierte Benutzer vom Server empfangen.")
-        self._user_names.update({int(r["user_id"]):str(r["name"]) for r in rows})
-        # UserList arrives asynchronously after the ACL. Refresh displayed names
-        # without changing the underlying registered IDs or unsaved edits.
+        # Store the directory FIRST. A malformed display row must never prevent
+        # the member picker from receiving the successful server result.
+        self._registered_rows=sorted(
+            [dict(r) for r in rows if r.get("user_id") is not None],
+            key=lambda r:str(r.get("name","")).casefold())
+        for user in self._registered_rows:
+            try:
+                uid=int(user["user_id"])
+                name=str(user.get("name") or "").strip()
+                if name:self._user_names[uid]=name
+            except (ValueError,TypeError):
+                continue
+        self.registered_status.setText(
+            f"{len(self._registered_rows)} registrierte Benutzer vom Server empfangen.")
+        # An ACL group is keyed by persistent IDs, not names. Redraw existing
+        # labels, preserving the membership IDs even if one name is unknown.
         for row in range(self.groups.rowCount()):
             for col in (1,2):
                 value=self._text(self.groups,row,col)
-                if value:
+                if not value:
+                    continue
+                try:
+                    ids=self._ids(value)
                     self._cell(self.groups,row,col,
-                               ",".join(self._user_label(uid) for uid in self._ids(value)))
+                               ",".join(self._user_label(uid) for uid in ids))
+                except (TypeError,ValueError):
+                    pass
         for row in range(self.rules.rowCount()):
             value=self._text(self.rules,row,1)
-            if value:
+            if not value:
+                continue
+            try:
                 uid=self._parse_user_id(value)
                 self._cell(self.rules,row,1,self._user_label(uid))
+            except (TypeError,ValueError):
+                pass
         self._filter_registered()
         if hasattr(self,"_refresh_group_ui"):
             selected=self.group_select.currentIndex()
             self._refresh_group_ui()
-            if selected>=0:
+            if selected>=0 and selected<self.group_select.count():
                 self.group_select.setCurrentIndex(selected)
         if hasattr(self,"_refresh_rule_ui"):
             selected=self.rule_list.currentRow()
