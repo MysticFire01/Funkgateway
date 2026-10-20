@@ -117,7 +117,10 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         if self._description_attempts>=25:
             self._description_timer.stop()
             self.property_description.setPlaceholderText("Beschreibung nicht empfangen: Mumble-Blob fehlt weiterhin. Originaltext bleibt geschützt.")
-            self.status.setText("Raumbeschreibung nicht empfangen. Speichern bleibt zum Schutz des Originaltexts gesperrt.")
+            details=self.client.channel_details(self.channel_id)
+            state=details.get("description_state","unknown")
+            self.status.setText("Raumbeschreibung nicht empfangen (Status: "+state+
+                "). Speichern bleibt zum Schutz des Originaltexts gesperrt.")
             return
         try:
             details=self.client.channel_details(self.channel_id)
