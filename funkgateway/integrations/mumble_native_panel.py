@@ -1194,7 +1194,7 @@ class MumbleNativePanel(QWidget):
         try:
             if selected==create:
                 dialog=ChannelEditor(self,create=True)
-                if dialog.exec()!=dialog.Accepted:
+                if dialog.exec()!=QDialog.DialogCode.Accepted:
                     return
                 values=dialog.values()
                 self.client.create_channel(data["id"],values["name"],values["temporary"])
@@ -1213,7 +1213,7 @@ class MumbleNativePanel(QWidget):
             else:
                 details=self.client.channel_details(data["id"])
                 dialog=ChannelEditor(self,create=False,details=details)
-                if dialog.exec()!=dialog.Accepted:
+                if dialog.exec()!=QDialog.DialogCode.Accepted:
                     return
                 values=dialog.values()
                 self.client.edit_channel(data["id"],values["name"],
