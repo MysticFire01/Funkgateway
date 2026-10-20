@@ -239,9 +239,6 @@ class MumbleNativeClient(QObject):
                 if hasattr(mumble, "is_alive") and not mumble.is_alive():
                     self.status.emit("Native Mumble: Verbindung verloren (Worker beendet)")
                     break
-                if int(getattr(mumble, "connected", 0)) != 2:
-                    self.status.emit("Native Mumble: Verbindung verloren")
-                    break
                 time.sleep(0.5)
         except Exception as exc:
             self.error.emit("Native Mumble: " + str(exc))
