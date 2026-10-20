@@ -20,13 +20,13 @@ def _display_links(markup):
             tag = piece.lower().lstrip()
             if tag.startswith('</a'):
                 inside_link = False
-            elif re.match(r'<a(?:\\s|>)', tag):
+            elif re.match(r'<a(?:\s|>)', tag):
                 inside_link = True
             output.append(piece)
         elif inside_link:
             output.append(piece)
         else:
-            output.append(re.sub(r'https?://[^\\s<>"\\']+', lambda m:
+            output.append(re.sub(r"https?://[^\s<>\"']+", lambda m:
                 '<a href="' + html.escape(html.unescape(m.group(0)),quote=True) + '">' +
                 m.group(0) + '</a>', piece))
     return ''.join(output)
