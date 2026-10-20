@@ -3,7 +3,7 @@
 Never shows cached ACL information. Only a fresh server ACL response reveals
 groups/rules. All writes are subject to the server's own ACL checks.
 """
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QDialog,QVBoxLayout,QHBoxLayout,QLabel,QCheckBox,QTableWidget,
     QTableWidgetItem,QPushButton,QMessageBox,QTabWidget,QWidget,QHeaderView
@@ -140,7 +140,7 @@ class MumbleAclDialog(QDialog):
             if rule["inherited"]:
                 for c in range(7):
                     cell=self.rules.item(n,c)
-                    cell.setFlags(cell.flags() & ~type(cell.flags()).ItemIsEditable)
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._source_groups=data["groups"]
         self._source_rules=data["rules"]
         self.status.setText("ACL vom Server empfangen. Änderungen nur entsprechend deiner Serverrechte.")
