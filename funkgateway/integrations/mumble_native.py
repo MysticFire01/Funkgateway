@@ -476,6 +476,7 @@ class MumbleNativeClient(QObject):
                                  "waiting_for_blob" if desc_hash else "no_description_hash"),
             "position":int(self._prop(channel,"position",0) or 0),
             "temporary":bool(self._prop(channel,"temporary",False)),
+            "max_users":int(self._prop(channel,"max_users",0) or 0),
         }
 
     def moderate_user(self,session,ban=False,reason=""):
@@ -611,6 +612,25 @@ class MumbleNativeClient(QObject):
             channel.set_channel_description(str(description))
         if int(position)!=int(self._prop(channel,"position",0) or 0):
             channel.set_channel_position(int(position))
+
+    def set_channel_max_users(self,channel_id,max_users):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        cid=int(channel_id)
+        if cid==0:
+            raise ValueError("Das Nutzerlimit des Root-Raums ist hier nicht änderbar.")
+        maximum=int(max_users)
+        if maximum<0 or maximum>100000:
+            raise ValueError("Ungültige maximale Nutzerzahl.")
+        channel=self._mumble.channels[cid]
+        if maximum==int(self._prop(channel,"max_users",0) or 0):
+            return
+        from pymumble_py3 import mumble_pb2
+        from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_CHANNELSTATE
+        request=mumble_pb2.ChannelState()
+        request.channel_id=cid
+        request.max_users=maximum
+        self._mumble.send_message(PYMUMBLE_MSG_TYPES_CHANNELSTATE,request)
 
     def channel_snapshot(self):
         mumble = self._mumble
