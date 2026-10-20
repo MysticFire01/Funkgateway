@@ -81,10 +81,14 @@ class MumbleBanPanel(QWidget):
             self.table.insertRow(row)
             ip="Nicht verfügbar"
             try:
-                ip=str(ipaddress.ip_address(entry["address"]))
-                if ip.startswith("::ffff:"):
-                    ip=ip[7:]
-                ip+=f'/{entry["mask"]}'
+                address=ipaddress.ip_address(entry["address"])
+                prefix=int(entry["mask"])
+                if isinstance(address,ipaddress.IPv6Address) and address.ipv4_mapped is not None and prefix>=96:
+                    # Murmur stores IPv4 as IPv4-mapped IPv6 (16 octets).
+                    # Display the actual four IPv4 octets and normalize CIDR.
+                    ip=f"{address.ipv4_mapped}/{prefix-96}"
+                else:
+                    ip=f"{address}/{prefix}"
             except (ValueError,KeyError,TypeError):
                 pass
             for col,value in enumerate((entry.get("name",""),ip,entry.get("reason",""),
