@@ -440,6 +440,24 @@ class MumbleNativeClient(QObject):
         else:
             self._mumble.users[target].kick(reason=reason)
 
+    def registered_user_names(self):
+        """Only names actually reported by the connected server; no guessing."""
+        names={}
+        if not self.connected or self._mumble is None:
+            return names
+        try:
+            for _session,user in list(self._mumble.users.items()):
+                raw=self._prop(user,"user_id",None)
+                name=str(self._prop(user,"name","") or "").strip()
+                if raw is None or not name:
+                    continue
+                uid=int(raw)
+                if uid>=0:
+                    names[uid]=name
+        except Exception:
+            pass
+        return names
+
     def request_channel_acl(self,channel_id):
         if not self.connected or self._mumble is None:
             raise RuntimeError("Mumble ist nicht verbunden.")
