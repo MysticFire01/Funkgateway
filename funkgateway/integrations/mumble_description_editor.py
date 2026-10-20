@@ -12,6 +12,8 @@ class MumbleDescriptionEditor(QWidget):
     def __init__(self, markup="", parent=None):
         super().__init__(parent)
         self._loading = False
+        self._original_markup = ""
+        self._dirty = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
@@ -40,6 +42,8 @@ class MumbleDescriptionEditor(QWidget):
         self.mode.addTab("Quelltext")
         self.mode.currentChanged.connect(self._switch)
         layout.addWidget(self.mode)
+        self.rendered.textChanged.connect(self._mark_dirty)
+        self.source.textChanged.connect(self._mark_dirty)
         self.set_description(markup)
 
     def eventFilter(self, obj, event):
@@ -55,10 +59,15 @@ class MumbleDescriptionEditor(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
+    def _mark_dirty(self):
+        self._dirty = True
+
     def set_description(self, markup):
         markup = str(markup or "")
+        self._original_markup = markup
         self.rendered.setHtml(markup)
         self.source.setPlainText(markup)
+        self._dirty = False
 
     def set_loading(self, pending):
         self._loading = bool(pending)
@@ -78,6 +87,8 @@ class MumbleDescriptionEditor(QWidget):
             button.setVisible(index == 0 and not self._loading)
 
     def get_description(self):
+        if not self._dirty:
+            return self._original_markup
         return self.source.toPlainText() if self.mode.currentIndex() == 1 else self.rendered.toHtml()
 
     def _format(self, property_name, value):
