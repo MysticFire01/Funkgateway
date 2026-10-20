@@ -4,6 +4,7 @@ The server is authoritative. Never show bans until a fresh BanList reply.
 Any modification is a full-list replacement, requiring explicit confirmation.
 """
 import ipaddress
+from .mumble_add_ban_dialog import MumbleAddBanDialog
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
     QTableWidget,QTableWidgetItem,QMessageBox)
@@ -26,12 +27,16 @@ class MumbleBanPanel(QWidget):
         outer.addWidget(self.table,1)
         buttons=QHBoxLayout()
         self.reload=QPushButton("Bannliste vom Server laden")
+        self.add_button=QPushButton("Sperre hinzufügen …")
+        self.add_button.setEnabled(False)
         self.remove_button=QPushButton("Ausgewählte Sperre entfernen …")
         self.remove_button.setEnabled(False)
         buttons.addWidget(self.reload)
+        buttons.addWidget(self.add_button)
         buttons.addWidget(self.remove_button)
         outer.addLayout(buttons)
         self.reload.clicked.connect(self.load)
+        self.add_button.clicked.connect(self.add_manual)
         self.remove_button.clicked.connect(self.remove_selected)
         self.table.itemSelectionChanged.connect(self._selection)
         client.banListReceived.connect(self.received)
@@ -47,6 +52,7 @@ class MumbleBanPanel(QWidget):
         self._entries=[]
         self.table.setRowCount(0)
         self.remove_button.setEnabled(False)
+        self.add_button.setEnabled(False)
         self.status.setText(message)
 
     def load(self):
@@ -75,6 +81,7 @@ class MumbleBanPanel(QWidget):
         self._pending=False
         self._authorized=True
         self._entries=list(entries)
+        self.add_button.setEnabled(True)
         self.table.setRowCount(0)
         for entry in self._entries:
             row=self.table.rowCount()
@@ -99,6 +106,28 @@ class MumbleBanPanel(QWidget):
 
     def _selection(self):
         self.remove_button.setEnabled(self._authorized and 0<=self.table.currentRow()<len(self._entries))
+
+    def add_manual(self):
+        if not self._authorized or self._pending:
+            QMessageBox.warning(self,"Mumble","Bitte zunächst die aktuelle Bannliste vom Server laden.")
+            return
+        dialog=MumbleAddBanDialog(self)
+        if dialog.exec()!=dialog.DialogCode.Accepted:
+            return
+        new_entry=dialog.entry
+        answer=QMessageBox.question(self,"Mumble – Neue Sperre bestätigen",
+            "Neue Sperre wirklich zum Mumble-Server übertragen?\n"
+            "Hinweis: Der Server erhält die gesamte aktualisierte Bannliste. "
+            "Zwischenzeitliche Änderungen anderer Administratoren könnten dabei überschrieben werden.",
+            QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer!=QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.client.replace_ban_list([dict(x) for x in self._entries]+[new_entry])
+            self._clear("Neue Sperre an den Server gesendet. Bitte Bannliste zur Kontrolle neu laden.")
+        except Exception as exc:
+            QMessageBox.warning(self,"Mumble – Sperre hinzufügen",str(exc))
 
     def remove_selected(self):
         row=self.table.currentRow()
