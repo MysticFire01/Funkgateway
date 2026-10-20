@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
  QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit,QApplication,QSizePolicy,QDialog,QDialogButtonBox
 )
 from .mumble_acl_dialog import MumbleAclDialog,PERMISSIONS
+from .mumble_description_editor import MumbleDescriptionEditor
 
 class MumbleAclClassicDialog(MumbleAclDialog):
     def __init__(self,client,channel_id,channel_name,parent=None):
@@ -84,29 +85,39 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         details=self.client.channel_details(self.channel_id)
         self.property_name=QLineEdit(str(details.get("name") or ""))
         self.property_name.setReadOnly(self.channel_id==0)
-        self.property_description=QTextEdit()
-        # Avoid squeezing the dialog header off-screen on smaller desktops.
-        self.property_description.setMinimumHeight(100)
-        self.property_description.setMaximumHeight(240)
-        self.property_description.setPlainText(str(details.get("description") or ""))
+        self.property_description=MumbleDescriptionEditor(str(details.get("description") or ""),page)
+        self.property_description.setMinimumHeight(145)
+        self.property_description.setMaximumHeight(315)
         self._description_pending=not bool(details.get("description_ready",True))
         self._description_timer=QTimer(self)
         self._description_timer.setInterval(400)
         self._description_attempts=0
         self._description_timer.timeout.connect(self._receive_channel_description)
         if self._description_pending:
-            self.property_description.setPlaceholderText("Lade Beschreibung vom Mumble-Server …")
-            self.property_description.setReadOnly(True)
+            self.property_description.set_loading(True)
             self._description_timer.start()
+        self.property_password=QLineEdit(page)
+        self.property_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.property_password.setPlaceholderText("Über diese Mumble-Schnittstelle nicht verfügbar")
+        self.property_password.setEnabled(False)
+        self.property_password.setToolTip("Ein Raumpasswort ist über ChannelState nicht vorgesehen.")
+        self.property_max_users=QSpinBox(page)
+        self.property_max_users.setRange(0,100000)
+        self.property_max_users.setSpecialValueText("Standard-Serverwert")
+        self.property_max_users.setValue(int(details.get("max_users") or 0))
+        self.property_max_users.setEnabled(self.channel_id!=0)
         self.property_position=QSpinBox()
         self.property_position.setRange(-100000,100000)
         self.property_position.setValue(int(details.get("position") or 0))
         self.property_position.setEnabled(self.channel_id!=0)
         self.property_save=QPushButton("Raumeigenschaften speichern")
         self.property_save.clicked.connect(self._save_properties)
+        self.property_save.setEnabled(self.channel_id!=0)
         form.addRow("Name:",self.property_name)
         form.addRow("Beschreibung:",self.property_description)
+        form.addRow("Passwort:",self.property_password)
         form.addRow("Position:",self.property_position)
+        form.addRow("Maximale Nutzer:",self.property_max_users)
         form.addRow("Raum-ID:",QLabel(str(self.channel_id)))
         form.addRow("",self.property_save)
         form.addRow("",QLabel("Der Mumble-Server prüft alle Änderungen anhand deiner Rechte."))
@@ -116,7 +127,7 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._description_attempts+=1
         if self._description_attempts>=25:
             self._description_timer.stop()
-            self.property_description.setPlaceholderText("Beschreibung nicht empfangen: Mumble-Blob fehlt weiterhin. Originaltext bleibt geschützt.")
+            self.property_description.set_loading(True)
             details=self.client.channel_details(self.channel_id)
             state=details.get("description_state","unknown")
             self.status.setText("Raumbeschreibung nicht empfangen (Status: "+state+
@@ -131,9 +142,8 @@ class MumbleAclClassicDialog(MumbleAclDialog):
             return
         self._description_timer.stop()
         self._description_pending=False
-        self.property_description.setPlainText(str(details.get("description") or ""))
-        self.property_description.setReadOnly(False)
-        self.property_description.setPlaceholderText("")
+        self.property_description.set_description(str(details.get("description") or ""))
+        self.property_description.set_loading(False)
 
     def _save_properties(self):
         if self._description_pending:
@@ -145,7 +155,8 @@ class MumbleAclClassicDialog(MumbleAclDialog):
             return
         try:
             self.client.edit_channel(self.channel_id,name,
-                self.property_description.toPlainText(),self.property_position.value())
+                self.property_description.get_description(),self.property_position.value())
+            self.client.set_channel_max_users(self.channel_id,self.property_max_users.value())
             QMessageBox.information(self,"Mumble","Änderung an den Server gesendet. Der Server prüft die Rechte.")
         except Exception as exc:
             QMessageBox.warning(self,"Mumble – Raumeigenschaften",str(exc))
