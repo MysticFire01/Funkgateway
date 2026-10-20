@@ -644,6 +644,10 @@ class MainWindow(QMainWindow):
 
     def _load_banner_pixmap(self,path=None):
         path=str(path if path is not None else (self.banner_path.text() if hasattr(self,"banner_path") else "")).strip()
+        if not path:
+            bundled=Path(__file__).resolve().parent / "assets" / "fgwui_default_banner.png"
+            if bundled.is_file():
+                path=str(bundled)
         self._banner_original_pixmap=QPixmap(path) if path else QPixmap()
         if not self._banner_original_pixmap.isNull():
             self._update_banner_pixmap()
@@ -10481,7 +10485,7 @@ done"""
             self.mode_colors.setChecked(bool(d.get("mode_colors",True)))
             self.banner_path.setText(str(d.get("banner_path","") or ""))
             self.banner_enabled.blockSignals(True)
-            self.banner_enabled.setChecked(bool(d.get("banner_enabled",False)))
+            self.banner_enabled.setChecked(bool(d.get("banner_enabled",False)) if d.get("banner_path") else True)
             self.banner_enabled.blockSignals(False)
             self._load_banner_pixmap(self.banner_path.text())
             if hasattr(self,"start_banner"):
