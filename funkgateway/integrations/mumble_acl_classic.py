@@ -11,6 +11,13 @@ class MumbleAclClassicDialog(MumbleAclDialog):
     def __init__(self,client,channel_id,channel_name,parent=None):
         super().__init__(client,channel_id,channel_name,parent)
         self.resize(980,700)
+        self.status.setMinimumHeight(36)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        self.status.setWordWrap(True)
+        # Obsolete helper note from the earlier table editor takes vertical room.
+        for label in self.findChildren(QLabel):
+            if label is not self.status and label.text().startswith('Doppelklick auf Erlaubte/Verweigerte Rechte'):
+                label.hide()
         old_tabs=self.findChildren(QTabWidget)[0]
         old_tabs.hide()
         self.member_add.hide()
@@ -42,6 +49,9 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self.property_name=QLineEdit(str(details.get("name") or ""))
         self.property_name.setReadOnly(self.channel_id==0)
         self.property_description=QTextEdit()
+        # Avoid squeezing the dialog header off-screen on smaller desktops.
+        self.property_description.setMinimumHeight(100)
+        self.property_description.setMaximumHeight(240)
         self.property_description.setPlainText(str(details.get("description") or ""))
         self.property_position=QSpinBox()
         self.property_position.setRange(-100000,100000)
