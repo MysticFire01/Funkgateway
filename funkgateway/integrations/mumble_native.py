@@ -158,7 +158,15 @@ class MumbleNativeClient(QObject):
             from pymumble_py3 import mumble_pb2
             from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_USERLIST
             old_dispatch=mumble.dispatch_control_message
+            from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_CHANNELSTATE
+            self._channel_descriptions={}
+            self._description_requests=set()
             def dispatch_with_userlist(packet_type,payload):
+                if packet_type==PYMUMBLE_MSG_TYPES_CHANNELSTATE:
+                    msg=mumble_pb2.ChannelState()
+                    msg.ParseFromString(payload)
+                    if msg.HasField("description"):
+                        self._channel_descriptions[int(msg.channel_id)]=str(msg.description)
                 if packet_type==PYMUMBLE_MSG_TYPES_USERLIST:
                     msg=mumble_pb2.UserList()
                     msg.ParseFromString(payload)
@@ -438,13 +446,18 @@ class MumbleNativeClient(QObject):
     def channel_details(self, channel_id):
         if not self.connected or self._mumble is None:
             raise RuntimeError("Mumble ist nicht verbunden.")
-        channel=self._mumble.channels[int(channel_id)]
+        cid=int(channel_id)
+        channel=self._mumble.channels[cid]
         description=self._prop(channel,"description",None)
         desc_hash=self._prop(channel,"description_hash",None)
+        if description is None:
+            description=getattr(self,"_channel_descriptions",{}).get(cid)
         if description is None and desc_hash:
-            # pymumble stores channel descriptions in a separate blob cache.
             description=self._mumble.blobs.get(desc_hash)
-            if description is None:
+            requested=getattr(self,"_description_requests",set())
+            if description is None and cid not in requested:
+                requested.add(cid)
+                self._description_requests=requested
                 self._mumble.blobs.get_channel_description(desc_hash)
         if isinstance(description,bytes):
             description=description.decode("utf-8","replace")
@@ -452,6 +465,8 @@ class MumbleNativeClient(QObject):
             "name":str(self._prop(channel,"name","") or ""),
             "description":str(description) if description is not None else "",
             "description_ready":description is not None or not bool(desc_hash),
+            "description_state":("loaded" if description is not None else
+                                 "waiting_for_blob" if desc_hash else "no_description_hash"),
             "position":int(self._prop(channel,"position",0) or 0),
             "temporary":bool(self._prop(channel,"temporary",False)),
         }
