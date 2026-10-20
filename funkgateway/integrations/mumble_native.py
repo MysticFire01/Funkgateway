@@ -33,6 +33,7 @@ class MumbleNativeClient(QObject):
     chatReceived = Signal(object)
     aclReceived = Signal(object)
     aclDenied = Signal(str)
+    registeredUsersReceived = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -152,6 +153,22 @@ class MumbleNativeClient(QObject):
                 from pymumble_py3.callbacks import PYMUMBLE_CLBK_ACLRECEIVED, PYMUMBLE_CLBK_PERMISSIONDENIED
             mumble.callbacks.set_callback(PYMUMBLE_CLBK_ACLRECEIVED,self._acl_received)
             mumble.callbacks.set_callback(PYMUMBLE_CLBK_PERMISSIONDENIED,self._acl_denied)
+            # pymumble currently parses UserList but discards it. Intercept
+            # only this packet and leave all other dispatch behavior intact.
+            from pymumble_py3 import mumble_pb2
+            from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_USERLIST
+            old_dispatch=mumble.dispatch_control_message
+            def dispatch_with_userlist(packet_type,payload):
+                if packet_type==PYMUMBLE_MSG_TYPES_USERLIST:
+                    msg=mumble_pb2.UserList()
+                    msg.ParseFromString(payload)
+                    self.registeredUsersReceived.emit([
+                        {"user_id":int(u.user_id),"name":str(u.name),
+                         "last_seen":str(u.last_seen)}
+                        for u in msg.users
+                    ])
+                return old_dispatch(packet_type,payload)
+            mumble.dispatch_control_message=dispatch_with_userlist
             mumble.start()
             mumble.is_ready()
             state = int(getattr(mumble, "connected", 0))
@@ -439,6 +456,26 @@ class MumbleNativeClient(QObject):
             self._mumble.users[target].ban(reason=reason)
         else:
             self._mumble.users[target].kick(reason=reason)
+
+    def request_registered_users(self):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        from pymumble_py3 import mumble_pb2
+        from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_USERLIST
+        self._mumble.send_message(PYMUMBLE_MSG_TYPES_USERLIST,mumble_pb2.UserList())
+
+    def remove_registered_user(self,user_id):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        uid=int(user_id)
+        if uid<=0:
+            raise ValueError("System-/SuperUser-Konto kann hier nicht entfernt werden.")
+        # Mumble protocol: an entry containing only user_id requests deletion.
+        from pymumble_py3 import mumble_pb2
+        from pymumble_py3.constants import PYMUMBLE_MSG_TYPES_USERLIST
+        message=mumble_pb2.UserList()
+        message.users.add(user_id=uid)
+        self._mumble.send_message(PYMUMBLE_MSG_TYPES_USERLIST,message)
 
     def registered_user_names(self):
         """Only names actually reported by the connected server; no guessing."""
