@@ -1176,6 +1176,12 @@ class MumbleNativePanel(QWidget):
         self._refresh_channels()
         self._focus_current_channel_once()
 
+    def _refresh_channels_after_edit(self):
+        # pymumble receives server channel updates asynchronously. Check more
+        # than once without stealing the user's tree selection or scroll.
+        for delay in (200, 650, 1200, 2200):
+            QTimer.singleShot(delay, self._refresh_channels)
+
     def _channel_context_menu(self,pos):
         item=self.channels.itemAt(pos)
         if item is None:
@@ -1216,7 +1222,7 @@ class MumbleNativePanel(QWidget):
                 if answer!=QMessageBox.StandardButton.Yes:
                     return
                 self.client.delete_channel(channel_id)
-                QTimer.singleShot(900,self._refresh_channels)
+                self._refresh_channels_after_edit()
                 QMessageBox.information(self,"Mumble – Raumverwaltung",
                     "Löschanforderung gesendet. Ob der Raum entfernt wird, entscheidet der Server.")
                 return
@@ -1236,7 +1242,7 @@ class MumbleNativePanel(QWidget):
                         self.client.edit_channel(matches[0]["id"],values["name"],
                                                  values["description"],values["position"])
                 QTimer.singleShot(1000,apply_position)
-                QTimer.singleShot(1500,self._refresh_channels)
+                self._refresh_channels_after_edit()
             else:
                 details=self.client.channel_details(data["id"])
                 dialog=ChannelEditor(self,create=False,details=details)
@@ -1245,7 +1251,7 @@ class MumbleNativePanel(QWidget):
                 values=dialog.values()
                 self.client.edit_channel(data["id"],values["name"],
                                          values["description"],values["position"])
-                QTimer.singleShot(800,self._refresh_channels)
+                self._refresh_channels_after_edit()
             QMessageBox.information(self,"Mumble-Raum",
                 "Änderung an den Server gesendet. Falls das Recht fehlt, lehnt der Server sie ab.")
         except Exception as exc:
