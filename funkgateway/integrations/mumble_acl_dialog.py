@@ -166,6 +166,14 @@ class MumbleAclDialog(QDialog):
         if not self._loaded:
             QMessageBox.warning(self,"Keine Berechtigung","Zuerst muss die ACL des Raums erfolgreich gelesen werden.")
             return
+        cached=self.client.cached_registered_users()
+        if cached:
+            self._registered_pending=True
+            self._registered_received(cached)
+            return
+        if getattr(self,"_registered_pending",False):
+            self.registered_status.setText("Benutzerliste wird bereits vom Server angefordert …")
+            return
         self._registered_pending=True
         self.registered.setRowCount(0)
         self._registered_rows=[]
@@ -187,7 +195,7 @@ class MumbleAclDialog(QDialog):
                 "Bitte Mumble-Serverversion und Debug-Protokoll prüfen.")
 
     def _registered_received(self,rows):
-        if not self._loaded or not getattr(self,"_registered_pending",False):
+        if not self._loaded:
             return
         self._registered_pending=False
         self._registered_rows=sorted(rows,key=lambda r:str(r.get("name","")).casefold())
