@@ -391,6 +391,9 @@ class MainWindow(QMainWindow):
 
         self._first_start = not CFG_FILE.exists()
         self.load_cfg()
+        if self._first_start:
+            self._load_banner_pixmap()
+            self._banner_enabled_changed(self.banner_enabled.isChecked())
         self._apply_default_wavs()
         self.theme_mode.currentIndexChanged.connect(self._appearance_changed)
         self.color_scheme.currentIndexChanged.connect(self._appearance_changed)
