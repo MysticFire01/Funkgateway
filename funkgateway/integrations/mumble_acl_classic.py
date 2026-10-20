@@ -228,6 +228,10 @@ class MumbleAclClassicDialog(MumbleAclDialog):
                         ("Entfernen",self._remove_rule)):
             btn=QPushButton(name);btn.clicked.connect(cb);controls.addWidget(btn)
         left.addLayout(controls)
+        token_button=QPushButton("Raum mit Zugangstoken schützen …")
+        token_button.setToolTip("Legt ACL-Regeln für @all und @#Token an. Speichern bleibt manuell.")
+        token_button.clicked.connect(self._prepare_token_protection)
+        left.addWidget(token_button)
         context=QGroupBox("Kontext")
         cf=QVBoxLayout(context)
         self.rule_here=QCheckBox("Betrifft diesen Raum")
@@ -516,6 +520,51 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._permission_cell(row,2,allow)
         self._permission_cell(row,3,deny)
         self._update_rule_details()
+
+    def _prepare_token_protection(self):
+        if not self._loaded:
+            QMessageBox.warning(self,"Mumble","Bitte zuerst die aktuellen ACLs vom Server laden.")
+            return
+        if self.channel_id==0:
+            QMessageBox.warning(self,"Mumble","Der Server-Hauptraum darf nicht über diesen Assistenten gesperrt werden.")
+            return
+        token,ok=QInputDialog.getText(self,"Mumble – Raumzugang",
+            "Zugangstoken eingeben (keine Leerzeichen):",QLineEdit.EchoMode.Password)
+        if not ok:return
+        token=token.strip()
+        if not token or len(token)>80 or any(ch.isspace() for ch in token):
+            QMessageBox.warning(self,"Mumble","Das Zugangstoken muss 1 bis 80 Zeichen ohne Leerzeichen enthalten.")
+            return
+        if any(self._text_at(self.rules,row,0)==("#"+token) for row in range(self.rules.rowCount())):
+            QMessageBox.warning(self,"Mumble","Für dieses Token existiert bereits eine ACL-Regel.")
+            return
+        response=QMessageBox.question(self,"Mumble – Schutz vorbereiten",
+            "FunkGateway fügt am Ende der lokalen ACL zwei Regeln ein:\n"
+            "1. @all: Betreten verweigern\n"
+            "2. @#Token: Betreten erlauben\n\n"
+            "Bestehende Regeln bleiben bestehen. Später folgende ACLs können den Schutz übersteuern. "
+            "Prüfe die Reihenfolge und deine Administratorrechte vor dem Speichern. Fortfahren?",
+            QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if response!=QMessageBox.StandardButton.Yes:return
+        for group,grant,deny in (("all",0,0x4),("#"+token,0x4,0)):
+            self._add_row(self.rules)
+            row=self.rules.rowCount()-1
+            self._cell(self.rules,row,0,group)
+            self._cell(self.rules,row,1,"")
+            self._cell(self.rules,row,4,"1")
+            self._cell(self.rules,row,5,"0")
+            self._cell(self.rules,row,6,"0")
+            self._permission_cell(row,2,grant)
+            self._permission_cell(row,3,deny)
+        self._refresh_rule_ui(self.rules.rowCount()-1)
+        self.status.setText("Token-Regeln vorbereitet, noch NICHT gespeichert. "
+            "Bitte Berechtigungen kontrollieren und ACL-Änderungen speichern.")
+        QMessageBox.information(self,"Mumble – Zugangstoken",
+            "Der Raumzugang ist noch NICHT geändert.\n\n"
+            "Jetzt die beiden neuen ACL-Regeln prüfen und mit „ACL-Änderungen speichern“ übertragen. "
+            "Teilnehmer müssen das Token in ihrem Mumble-Client bei den Zugangstokens hinterlegen. "
+            "Bitte vorher einen zweiten Administratorzugang bereithalten.")
 
     def _create_rule(self):
         if not self._loaded:return
