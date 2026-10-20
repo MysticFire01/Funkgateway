@@ -439,9 +439,19 @@ class MumbleNativeClient(QObject):
         if not self.connected or self._mumble is None:
             raise RuntimeError("Mumble ist nicht verbunden.")
         channel=self._mumble.channels[int(channel_id)]
+        description=self._prop(channel,"description",None)
+        desc_hash=self._prop(channel,"description_hash",None)
+        if description is None and desc_hash:
+            # pymumble stores channel descriptions in a separate blob cache.
+            description=self._mumble.blobs.get(desc_hash)
+            if description is None:
+                self._mumble.blobs.get_channel_description(desc_hash)
+        if isinstance(description,bytes):
+            description=description.decode("utf-8","replace")
         return {
             "name":str(self._prop(channel,"name","") or ""),
-            "description":str(self._prop(channel,"description","") or ""),
+            "description":str(description) if description is not None else "",
+            "description_ready":description is not None or not bool(desc_hash),
             "position":int(self._prop(channel,"position",0) or 0),
             "temporary":bool(self._prop(channel,"temporary",False)),
         }
