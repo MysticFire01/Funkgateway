@@ -37,6 +37,7 @@ from .ptt import DryPTT, SerialPTT, CM108PTT, GPIOPTT
 from .audio import AudioBridge, RxActivityDetector, list_sinks, make_virtual_sink, make_rx_sink, make_rx_source
 from .tones import make_cw, make_dtmf, make_roger_tone
 from .helptext import HELP_HTML
+from .update_notes import readable_changes
 from .integrations.teamspeak import TeamSpeakClientQuery, read_default_api_key
 from .integrations.mumble import MumbleLocalBackend, MumbleIceBackend, MumbleBridgeBackend
 from .integrations.mumble_native_panel import MumbleNativePanel
@@ -5101,7 +5102,7 @@ class MainWindow(QMainWindow):
         self.update_status.setWordWrap(True)
 
         self.update_check_start=QCheckBox("Beim Programmstart nach Updates suchen")
-        self.update_check_start.setChecked(False)
+        self.update_check_start.setChecked(True)
 
         self.update_auto_install=QCheckBox("Nach Download automatisch installieren")
         self.update_auto_install.setChecked(True)
@@ -5164,8 +5165,22 @@ class MainWindow(QMainWindow):
             if tag and is_newer(tag,VERSION):
                 self.update_status.setText(f"Update verfügbar: {VERSION} → {tag}")
                 self.update_prepare_btn.setEnabled(bool(asset))
-                if not quiet:
-                    QMessageBox.information(self,"FunkGateway Update",f"Eine neue Version ist verfügbar: {tag}")
+                if quiet:
+                    msg=QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Neue FunkGateway-Version")
+                    msg.setText(f"Es gibt eine neue Version: {tag}\nInstalliert: {VERSION}")
+                    msg.setInformativeText("Das ist neu oder wurde verbessert:\n\n" + readable_changes(release))
+                    msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    msg.button(QMessageBox.StandardButton.Yes).setText("Jetzt aktualisieren")
+                    msg.button(QMessageBox.StandardButton.No).setText("Später")
+                    if msg.exec() == QMessageBox.StandardButton.Yes:
+                        if asset:
+                            self.prepare_update()
+                        else:
+                            self.update_status.setText("Neue Version verfügbar, aber kein passendes Paket gefunden.")
+                else:
+                    QMessageBox.information(self,"FunkGateway Update",f"Eine neue Version ist verfügbar: {tag}\n\nDas ist neu:\n" + readable_changes(release))
             else:
                 self.update_status.setText("Kein neueres veröffentlichtes Release gefunden.")
                 self.update_prepare_btn.setEnabled(False)
@@ -10651,7 +10666,7 @@ done"""
             self.return_escalate.setChecked(bool(d.get("return_escalate",True)))
             self.return_move_rooms.setChecked(bool(d.get("return_move_rooms",True)))
             self.return_lost_wav.setText(d.get("return_lost_wav",""))
-            self.update_check_start.setChecked(bool(d.get("update_check_start",False)))
+            self.update_check_start.setChecked(bool(d.get("update_check_start",True)))
             self.update_auto_install.setChecked(bool(d.get("update_auto_install",True)))
             self.update_desktop_shortcut.setChecked(bool(d.get("update_desktop_shortcut",True)))
             self.update_desktop_shortcut.setEnabled(self.update_auto_install.isChecked())
