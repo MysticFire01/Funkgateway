@@ -22,6 +22,7 @@ from .mumble_public import MumblePublicServerLoader
 from .frn_panel import HotkeyCaptureButton
 from .emoji_picker import emoji_button
 from .mumble_channel_editor import ChannelEditor
+from .mumble_acl_dialog import MumbleAclDialog
 from ..hotkeys import LocalPttHotkey
 from ..global_hotkey import GlobalPttHotkey
 from ..mumble_certificates import (
@@ -1198,10 +1199,15 @@ class MumbleNativePanel(QWidget):
         create=menu.addAction("Unterraum anlegen …")
         edit=menu.addAction("Raum bearbeiten …")
         edit.setEnabled(int(data.get("id",-1))!=0)
+        acl=menu.addAction("Berechtigungen verwalten …")
         delete=menu.addAction("Raum löschen …")
         delete.setEnabled(int(data.get("id",-1))!=0)
         selected=menu.exec(self.channels.viewport().mapToGlobal(pos))
-        if selected not in (create,edit,delete):
+        if selected not in (create,edit,delete,acl):
+            return
+        if selected==acl:
+            dialog=MumbleAclDialog(self.client,int(data["id"]),str(data.get("name") or "Raum"),self)
+            dialog.exec()
             return
         try:
             if selected==delete:
