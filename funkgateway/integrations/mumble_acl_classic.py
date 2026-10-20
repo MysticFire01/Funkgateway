@@ -92,6 +92,7 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._description_pending=not bool(details.get("description_ready",True))
         self._description_timer=QTimer(self)
         self._description_timer.setInterval(400)
+        self._description_attempts=0
         self._description_timer.timeout.connect(self._receive_channel_description)
         if self._description_pending:
             self.property_description.setPlaceholderText("Lade Beschreibung vom Mumble-Server …")
@@ -112,6 +113,12 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         body.addTab(page,"Eigenschaften")
 
     def _receive_channel_description(self):
+        self._description_attempts+=1
+        if self._description_attempts>=25:
+            self._description_timer.stop()
+            self.property_description.setPlaceholderText("Beschreibung konnte nicht geladen werden (Serverantwort fehlt).")
+            self.status.setText("Raumbeschreibung nicht empfangen. Speichern bleibt zum Schutz des Originaltexts gesperrt.")
+            return
         try:
             details=self.client.channel_details(self.channel_id)
         except Exception:
@@ -337,6 +344,14 @@ class MumbleAclClassicDialog(MumbleAclDialog):
             QTimer.singleShot(0,lambda:self._group_add_user(pending))
 
     def _group_add_user(self,col):
+        try:
+            self._group_add_user_impl(col)
+        except Exception as exc:
+            self.status.setText("Mitgliederauswahl fehlgeschlagen: "+str(exc))
+            QMessageBox.warning(self,"Mumble – Mitgliederauswahl",
+                f"Die Auswahl konnte nicht geöffnet werden:\\n{type(exc).__name__}: {exc}")
+
+    def _group_add_user_impl(self,col):
         row=self._selected_group
         if not self._loaded or row<0:
             return
