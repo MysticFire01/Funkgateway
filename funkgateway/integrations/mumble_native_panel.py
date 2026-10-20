@@ -1192,10 +1192,34 @@ class MumbleNativePanel(QWidget):
         create=menu.addAction("Unterraum anlegen …")
         edit=menu.addAction("Raum bearbeiten …")
         edit.setEnabled(int(data.get("id",-1))!=0)
+        delete=menu.addAction("Raum löschen …")
+        delete.setEnabled(int(data.get("id",-1))!=0)
         selected=menu.exec(self.channels.viewport().mapToGlobal(pos))
-        if selected not in (create,edit):
+        if selected not in (create,edit,delete):
             return
         try:
+            if selected==delete:
+                channel_id=int(data["id"])
+                name=str(data.get("name") or f"Raum {channel_id}")
+                children=[row for row in self.client.channel_snapshot()
+                          if row.get("parent")==channel_id]
+                if children:
+                    QMessageBox.warning(self,"Mumble – Raum löschen",
+                        "Dieser Raum enthält Unterräume. Bitte zuerst die Unterräume entfernen.")
+                    return
+                answer=QMessageBox.question(
+                    self,"Mumble – Raum wirklich löschen?",
+                    f"Raum „{name}“ endgültig löschen?\\n"
+                    "Der Mumble-Server muss die Berechtigung dazu erteilen.",
+                    QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if answer!=QMessageBox.StandardButton.Yes:
+                    return
+                self.client.delete_channel(channel_id)
+                QTimer.singleShot(900,self._refresh_channels)
+                QMessageBox.information(self,"Mumble – Raumverwaltung",
+                    "Löschanforderung gesendet. Ob der Raum entfernt wird, entscheidet der Server.")
+                return
             if selected==create:
                 dialog=ChannelEditor(self,create=True)
                 if dialog.exec()!=QDialog.DialogCode.Accepted:
