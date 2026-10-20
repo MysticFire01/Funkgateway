@@ -113,7 +113,8 @@ class MumbleAclDialog(QDialog):
         self.member_add.setEnabled(False)
         self.member_add.clicked.connect(self._add_member)
         layout.addWidget(self.member_add)
-        registered=QWidget()
+        registered=QWidget(self)
+        self._registered_widget=registered
         reglayout=QVBoxLayout(registered)
         self.registered_status=QLabel("Benutzerliste noch nicht beim Server abgefragt.")
         reglayout.addWidget(self.registered_status)
@@ -135,7 +136,8 @@ class MumbleAclDialog(QDialog):
         controls.addWidget(self.load_registered)
         controls.addWidget(self.delete_registered)
         reglayout.addLayout(controls)
-        tabs.addTab(registered,"Registrierte Benutzer")
+        # The registered-user directory is its own Mumble integration tab.
+        # This hidden model supports the group-user picker without duplicating the UI.
         self._registered_rows=[]
         client.registeredUsersReceived.connect(self._registered_received)
         self.registered.itemSelectionChanged.connect(lambda:self.delete_registered.setEnabled(
