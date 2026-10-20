@@ -1301,9 +1301,13 @@ class MumbleNativePanel(QWidget):
             "🔈 Lokale Stummschaltung aufheben" if data.get("local_user_mute")
             else "🔇 Diesen Teilnehmer nur für mich stummschalten"
         )
+        kick=menu.addAction("Benutzer kicken …")
+        ban=menu.addAction("Benutzer bannen …")
         chosen=menu.exec(global_pos)
         try:
-            if chosen==volume:
+            if chosen in (kick,ban):
+                self._moderate_mumble_participant(data,chosen==ban)
+            elif chosen==volume:
                 self._user_volume_popup(name)
             elif chosen==local:
                 self.client.set_local_user_mute(
@@ -1341,6 +1345,8 @@ class MumbleNativePanel(QWidget):
         )
         server_mute.setToolTip("Erfordert Mumble-Serverrechte")
         server_deaf.setToolTip("Erfordert Mumble-Serverrechte")
+        kick=menu.addAction("Benutzer kicken …")
+        ban=menu.addAction("Benutzer bannen …")
         chosen=menu.exec(self.users.viewport().mapToGlobal(pos))
         try:
             if chosen==volume:
@@ -1357,8 +1363,30 @@ class MumbleNativePanel(QWidget):
                 self.client.set_server_user_deaf(
                     data["session"],not data.get("server_deaf")
                 )
+            elif chosen in (kick,ban):
+                self._moderate_mumble_participant(data,chosen==ban)
         except Exception as exc:
             self._error(str(exc))
+
+    def _moderate_mumble_participant(self,data,ban):
+        name=str(data.get("name") or "Teilnehmer")
+        reason,ok=QInputDialog.getText(self,"Mumble – "+("Bannen" if ban else "Kicken"),
+                        "Grund für "+name+" (optional):")
+        if not ok:
+            return
+        confirm=QMessageBox.question(self,"Mumble – Aktion bestätigen",
+            ("Benutzer „"+name+"“ dauerhaft bannen?" if ban
+             else "Benutzer „"+name+"“ vom Server kicken?"),
+            QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm!=QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.client.moderate_user(int(data["session"]),ban=ban,reason=reason)
+            QMessageBox.information(self,"Mumble",
+                "Anforderung gesendet. Der Server prüft die Berechtigungen.")
+        except Exception as exc:
+            QMessageBox.warning(self,"Mumble – Aktion abgelehnt",str(exc))
 
     def _user_volume_popup(self,name):
         old=self.client.user_volume(name)
