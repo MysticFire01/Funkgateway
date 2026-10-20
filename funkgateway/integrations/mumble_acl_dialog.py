@@ -486,7 +486,7 @@ class MumbleAclDialog(QDialog):
         text=str(text or "").strip()
         if text.isdecimal():
             return int(text)
-        match=re.search(r"\\bID\\s+(\\d+)\\b",text,re.I)
+        match=re.search(r"\bID\s+(\d+)\b",text,re.I)
         if match:
             return int(match.group(1))
         raise ValueError("Benutzer-ID nicht erkennbar. Bitte Zahl oder 'Name (ID 123)' verwenden.")
