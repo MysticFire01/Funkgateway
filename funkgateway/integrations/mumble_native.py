@@ -426,6 +426,17 @@ class MumbleNativeClient(QObject):
         # Actual permission checks happen on the Mumble server.
         self._mumble.channels.new_channel(int(parent_id),name,bool(temporary))
 
+    def delete_channel(self,channel_id):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        channel_id=int(channel_id)
+        if channel_id==0:
+            raise ValueError("Der Root-Raum darf nicht gelöscht werden.")
+        if channel_id not in self._mumble.channels:
+            raise ValueError("Der Raum existiert nicht mehr.")
+        # This submits the removal request; the server enforces its ACL.
+        self._mumble.channels.remove_channel(channel_id)
+
     def edit_channel(self,channel_id,name,description,position):
         if not self.connected or self._mumble is None:
             raise RuntimeError("Mumble ist nicht verbunden.")
