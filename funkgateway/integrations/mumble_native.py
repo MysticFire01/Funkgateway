@@ -401,9 +401,13 @@ class MumbleNativeClient(QObject):
 
     def set_pc_ptt(self, active):
         self._pc_ptt_active = bool(active) and self._pc_ptt_enabled and self._connected
-        self._own_tx_active = bool(self._pc_ptt_active or self._gateway_rx_active)
         if self._pc_ptt_active and not (self._capture_thread and self._capture_thread.is_alive()):
             self._start_capture()
+        # _start_capture() calls _stop_capture() while reinitializing the
+        # stream, which clears _own_tx_active. Restore the final combined
+        # PC/gateway TX state AFTER microphone startup, even on first press.
+        self._own_tx_active = bool(self._pc_ptt_active or self._gateway_rx_active)
+        self._emit_participants()
 
     def set_gateway_rx(self, active):
         """Key native Mumble from RF RX independently of PC-user PTT."""
