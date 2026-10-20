@@ -270,6 +270,11 @@ class MumbleAclDialog(QDialog):
                         "Möglicherweise fehlt das Recht zur Einsicht.")
 
     def _clear(self):
+        self._registered_pending=False
+        self._registered_rows=[]
+        self._user_names={}
+        self.registered.setRowCount(0)
+        self.registered_status.setText("Keine Benutzerliste freigegeben.")
         self.groups.setRowCount(0)
         self.rules.setRowCount(0)
         self.inherit.setEnabled(False)
