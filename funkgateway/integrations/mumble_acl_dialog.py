@@ -182,7 +182,7 @@ class MumbleAclDialog(QDialog):
             for row in range(self.groups.rowCount()):
                 name=self._text(self.groups,row,0)
                 if not name:raise ValueError("Gruppenname darf nicht leer sein.")
-                groups.append(dict(name=name,inherit=bool(int(self._text(self.groups,row,3))),
+                groups.append(dict(name=name,inherited=False,inherit=bool(int(self._text(self.groups,row,3))),
                     inheritable=bool(int(self._text(self.groups,row,4))),
                     add=self._ids(self._text(self.groups,row,1)),
                     remove=self._ids(self._text(self.groups,row,2))))
@@ -192,7 +192,7 @@ class MumbleAclDialog(QDialog):
                 group=self._text(self.rules,row,0)
                 uid=self._text(self.rules,row,1)
                 if not group and not uid:raise ValueError("Regel benötigt Gruppe oder Benutzer-ID.")
-                values=dict(apply_here=bool(int(self._text(self.rules,row,4))),
+                values=dict(inherited=False,user_id=None,group=None,apply_here=bool(int(self._text(self.rules,row,4))),
                     apply_subs=bool(int(self._text(self.rules,row,5))),
                     grant=int(self._text(self.rules,row,2),0),
                     deny=int(self._text(self.rules,row,3),0))
