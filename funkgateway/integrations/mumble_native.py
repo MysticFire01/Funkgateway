@@ -164,7 +164,8 @@ class MumbleNativeClient(QObject):
                     msg.ParseFromString(payload)
                     self.registeredUsersReceived.emit([
                         {"user_id":int(u.user_id),"name":str(u.name),
-                         "last_seen":str(u.last_seen)}
+                         "last_seen":str(u.last_seen),
+                         "last_channel":int(u.last_channel) if u.HasField("last_channel") else None}
                         for u in msg.users
                     ])
                 return old_dispatch(packet_type,payload)
