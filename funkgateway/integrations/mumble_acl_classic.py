@@ -1,5 +1,5 @@
 """Mumble-style groups and ACL editing atop the existing server-gated editor."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
  QTabWidget,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QLabel,
  QListWidget,QListWidgetItem,QComboBox,QCheckBox,QPushButton,QInputDialog,
@@ -89,6 +89,14 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self.property_description.setMinimumHeight(100)
         self.property_description.setMaximumHeight(240)
         self.property_description.setPlainText(str(details.get("description") or ""))
+        self._description_pending=not bool(details.get("description_ready",True))
+        self._description_timer=QTimer(self)
+        self._description_timer.setInterval(400)
+        self._description_timer.timeout.connect(self._receive_channel_description)
+        if self._description_pending:
+            self.property_description.setPlaceholderText("Lade Beschreibung vom Mumble-Server …")
+            self.property_description.setReadOnly(True)
+            self._description_timer.start()
         self.property_position=QSpinBox()
         self.property_position.setRange(-100000,100000)
         self.property_position.setValue(int(details.get("position") or 0))
@@ -103,7 +111,24 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         form.addRow("",QLabel("Der Mumble-Server prüft alle Änderungen anhand deiner Rechte."))
         body.addTab(page,"Eigenschaften")
 
+    def _receive_channel_description(self):
+        try:
+            details=self.client.channel_details(self.channel_id)
+        except Exception:
+            self._description_timer.stop()
+            return
+        if not details.get("description_ready",True):
+            return
+        self._description_timer.stop()
+        self._description_pending=False
+        self.property_description.setPlainText(str(details.get("description") or ""))
+        self.property_description.setReadOnly(False)
+        self.property_description.setPlaceholderText("")
+
     def _save_properties(self):
+        if self._description_pending:
+            QMessageBox.warning(self,"Mumble","Die vorhandene Raumbeschreibung wird noch geladen. Bitte warten.")
+            return
         name=self.property_name.text().strip()
         if not name:
             QMessageBox.warning(self,"Mumble","Der Raumname darf nicht leer sein.")
