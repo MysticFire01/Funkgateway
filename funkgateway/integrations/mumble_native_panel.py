@@ -189,6 +189,7 @@ class MumbleNativePanel(QWidget):
         self.playback=QCheckBox("Mumble-Empfang direkt wiedergeben"); self.playback.setChecked(True)
         self.ptt_enabled=QCheckBox("PC-User Mikrofon-PTT aktiv"); self.ptt_enabled.setChecked(False)
         self.ptt_enabled.setToolTip("Standardmäßig AUS, damit Gateway/Funkpapagei und PC-User nicht gleichzeitig senden. Bei Bedarf nur für manuellen PC-Betrieb aktivieren.")
+        self.ptt_enabled.toggled.connect(self._pc_ptt_enabled_changed)
         self.self_mute=QCheckBox("Eigenes Mikrofon stummschalten")
         self.self_mute.toggled.connect(self._self_mute_changed)
         self.self_deaf=QCheckBox("Eigenen Empfang taub schalten")
@@ -945,6 +946,20 @@ class MumbleNativePanel(QWidget):
         self._save_settings()
         return True
 
+    def _pc_ptt_enabled_changed(self, enabled):
+        """Apply changed PC microphone permission to the running native client."""
+        if not enabled:
+            self.set_mumble_ptt(False)
+        self.client._pc_ptt_enabled = bool(enabled)
+        if not enabled:
+            self.client._pc_ptt_active = False
+            self.client._own_tx_active = bool(self.client._gateway_rx_active)
+            self.client._stop_capture()
+        self.ptt.setEnabled(bool(self.client.connected and enabled))
+        window=self.window()
+        if hasattr(window,"_sync_mumble_ptt_ui"):
+            window._sync_mumble_ptt_ui()
+
     def _hotkey_status(self,status):
         self.ptt_hotkey_status.setText("Mumble-Hotkey: "+str(status))
 
@@ -1492,7 +1507,7 @@ class MumbleNativePanel(QWidget):
             self._error(str(exc))
 
     def _connected(self,on):
-        self.connect_btn.setEnabled(not on); self.disconnect_btn.setEnabled(on); self.ptt.setEnabled(on)
+        self.connect_btn.setEnabled(not on); self.disconnect_btn.setEnabled(on); self.ptt.setEnabled(bool(on and self.ptt_enabled.isChecked()))
         self.chat_send.setEnabled(on)
         if on:
             self._update_mumble_self_state()
