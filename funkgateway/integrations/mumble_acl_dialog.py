@@ -160,7 +160,22 @@ class MumbleAclDialog(QDialog):
         client.aclReceived.connect(self.received)
         client.aclDenied.connect(self.denied)
         client.connectedChanged.connect(self.connection_state)
+        self._directory_poll=QTimer(self)
+        self._directory_poll.setInterval(500)
+        self._directory_poll.timeout.connect(self._poll_directory)
         QTimer.singleShot(0,self.request)
+
+    def _poll_directory(self):
+        if not self._loaded:
+            self._directory_poll.stop()
+            return
+        cached=self.client.cached_registered_users()
+        if cached:
+            fingerprint=tuple(sorted((int(r["user_id"]),str(r.get("name",""))) for r in cached))
+            if fingerprint!=getattr(self,"_directory_fingerprint",None):
+                self._directory_fingerprint=fingerprint
+                self._registered_received(cached)
+            self._directory_poll.stop()
 
     def _request_registered(self):
         if not self._loaded:
@@ -198,6 +213,7 @@ class MumbleAclDialog(QDialog):
         if not self._loaded:
             return
         self._registered_pending=False
+        self._directory_fingerprint=tuple(sorted((int(r["user_id"]),str(r.get("name",""))) for r in rows))
         # Store the directory FIRST. A malformed display row must never prevent
         # the member picker from receiving the successful server result.
         self._registered_rows=sorted(
@@ -313,6 +329,8 @@ class MumbleAclDialog(QDialog):
 
     def request(self):
         self._loaded=False
+        self._directory_poll.stop()
+        self._directory_fingerprint=None
         self._clear()
         self.status.setText("Rechte werden vom Server angefordert …")
         self._request_pending=True
@@ -395,6 +413,7 @@ class MumbleAclDialog(QDialog):
         self.save.setEnabled(True)
         self.member_add.setEnabled(True)
         self._request_registered()
+        self._directory_poll.start()
         for t in (self.groups,self.rules):
             t._add_button.setEnabled(True)
             t._remove_button.setEnabled(True)
