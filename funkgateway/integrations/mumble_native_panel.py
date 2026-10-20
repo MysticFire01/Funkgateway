@@ -1228,7 +1228,6 @@ class MumbleNativePanel(QWidget):
                 self.client.create_channel(data["id"],values["name"],values["temporary"])
                 # Creation is asynchronous. Newly created channel is identified
                 # by parent+name, not by an assumed channel ID.
-                from PySide6.QtCore import QTimer
                 def apply_position():
                     rows=self.client.channel_snapshot()
                     matches=[row for row in rows if row["parent"]==int(data["id"])
