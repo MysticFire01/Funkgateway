@@ -7632,7 +7632,7 @@ done"""
     def build_help(self):
         w=QWidget(); v=QVBoxLayout(w)
         search=QLineEdit(); search.setPlaceholderText("Hilfe durchsuchen – Suchwort eingeben und Enter drücken")
-        h=QTextBrowser(); h.setOpenExternalLinks(False); h.setHtml(HELP_HTML)
+        h=QTextBrowser(); h.setOpenExternalLinks(True); h.setHtml(HELP_HTML)
         search.returnPressed.connect(lambda: h.find(search.text()))
         v.addWidget(search); v.addWidget(h); self.tabs.addTab(w,"Hilfe")
 
