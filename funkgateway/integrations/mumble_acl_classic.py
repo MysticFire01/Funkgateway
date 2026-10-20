@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
  QTabWidget,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QLabel,
  QListWidget,QListWidgetItem,QComboBox,QCheckBox,QPushButton,QInputDialog,
- QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit
+ QMessageBox,QScrollArea,QFormLayout,QLineEdit,QSpinBox,QTextEdit,QApplication,QSizePolicy
 )
 from .mumble_acl_dialog import MumbleAclDialog,PERMISSIONS
 
@@ -24,11 +24,29 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._selected_group=-1
         self._selected_rule=-1
         body=QTabWidget(self)
+        body.setMinimumSize(0,0)
+        body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Ignored)
         self.layout().insertWidget(self.layout().count()-1,body,1)
         self._build_properties(body)
         self._build_groups(body)
         self._build_rules(body)
         self.inherit.stateChanged.connect(self._update_rule_details)
+        # The dialog must not be taller than the usable desktop. Otherwise Qt
+        # centers it partly above the screen and clips the status at the top.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0,self._fit_to_desktop)
+
+    def _fit_to_desktop(self):
+        screen=self.screen() or QApplication.primaryScreen()
+        if screen is None:return
+        area=screen.availableGeometry()
+        self.setMinimumHeight(0)
+        self.resize(min(980,max(520,area.width()-50)),
+                    min(700,max(380,area.height()-70)))
+        frame=self.frameGeometry()
+        left=max(area.left()+8,min(frame.left(),area.right()-frame.width()+1))
+        top=max(area.top()+8,min(frame.top(),area.bottom()-frame.height()+1))
+        self.move(left,top)
 
     def _clear(self):
         super()._clear()
