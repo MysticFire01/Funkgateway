@@ -116,7 +116,7 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         self._description_attempts+=1
         if self._description_attempts>=25:
             self._description_timer.stop()
-            self.property_description.setPlaceholderText("Beschreibung konnte nicht geladen werden (Serverantwort fehlt).")
+            self.property_description.setPlaceholderText("Beschreibung nicht empfangen: Mumble-Blob fehlt weiterhin. Originaltext bleibt geschützt.")
             self.status.setText("Raumbeschreibung nicht empfangen. Speichern bleibt zum Schutz des Originaltexts gesperrt.")
             return
         try:
