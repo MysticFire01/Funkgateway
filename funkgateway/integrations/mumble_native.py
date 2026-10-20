@@ -425,6 +425,21 @@ class MumbleNativeClient(QObject):
             "temporary":bool(self._prop(channel,"temporary",False)),
         }
 
+    def moderate_user(self,session,ban=False,reason=""):
+        if not self.connected or self._mumble is None:
+            raise RuntimeError("Mumble ist nicht verbunden.")
+        target=int(session)
+        myself=getattr(self._mumble.users,"myself_session",None)
+        if myself is not None and target==int(myself):
+            raise ValueError("Eigene Verbindung kann hier nicht gekickt oder gebannt werden.")
+        if target not in self._mumble.users:
+            raise ValueError("Benutzer ist nicht mehr mit dem Server verbunden.")
+        reason=str(reason or "").strip()[:400]
+        if ban:
+            self._mumble.users[target].ban(reason=reason)
+        else:
+            self._mumble.users[target].kick(reason=reason)
+
     def request_channel_acl(self,channel_id):
         if not self.connected or self._mumble is None:
             raise RuntimeError("Mumble ist nicht verbunden.")
