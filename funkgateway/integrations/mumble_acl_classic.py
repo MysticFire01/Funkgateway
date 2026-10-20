@@ -269,6 +269,10 @@ class MumbleAclClassicDialog(MumbleAclDialog):
         row=self._selected_group
         if not self._loaded or row<0:return
         if not self._registered_rows:
+            cached=self.client.cached_registered_users()
+            if cached:
+                self._registered_received(cached)
+        if not self._registered_rows:
             self._pending_group_column=col
             self._request_registered()
             self.status.setText("Registrierte Benutzer werden geladen; die Auswahl öffnet sich automatisch.")
