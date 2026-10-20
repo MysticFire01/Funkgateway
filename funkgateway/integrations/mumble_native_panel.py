@@ -105,6 +105,9 @@ class MumbleNativePanel(QWidget):
     def _build(self):
         outer=QVBoxLayout(self)
         self.mumble_tabs=QTabWidget(self)
+        self.mumble_tabs.setUsesScrollButtons(True)
+        self.mumble_tabs.tabBar().setExpanding(False)
+        self.mumble_tabs.setElideMode(Qt.TextElideMode.ElideRight)
         outer.addWidget(self.mumble_tabs)
         self.mumble_tabs.currentChanged.connect(self._mumble_tab_changed)
         client_page=QWidget(self.mumble_tabs)
@@ -315,9 +318,9 @@ class MumbleNativePanel(QWidget):
         typerow.addWidget(self.chat_send)
         chatlayout.addLayout(typerow)
         chat_page_layout.addWidget(chatbox,2)
-        self.mumble_tabs.addTab(chat_page,"Chat / Teilnehmer")
+        self.mumble_tabs.addTab(chat_page,"Chat / TN")
         self.registered_panel=MumbleRegisteredPanel(self.client,self)
-        self.mumble_tabs.addTab(self.registered_panel,"Registrierte Benutzer")
+        self.mumble_tabs.addTab(self.registered_panel,"Benutzer")
 
         publicbox=QGroupBox("Öffentliche Mumble-Serverliste")
         publiclayout=QVBoxLayout(publicbox)
@@ -343,7 +346,7 @@ class MumbleNativePanel(QWidget):
         self.public_use=QPushButton("Ausgewählten Server übernehmen (ohne Connect)")
         self.public_use.clicked.connect(self._use_public_server)
         publiclayout.addWidget(self.public_use)
-        self.mumble_tabs.addTab(publicbox,"Serverliste")
+        self.mumble_tabs.addTab(publicbox,"Server")
 
         cert_page=QWidget(self.mumble_tabs)
         certv=QVBoxLayout(cert_page)
@@ -385,6 +388,11 @@ class MumbleNativePanel(QWidget):
         certv.addWidget(self.cert_backend_label)
         certv.addStretch(1)
         self.mumble_tabs.addTab(cert_page,"Zertifikate")
+        for name,tip in (("Chat / TN","Chat und Teilnehmer"),("Benutzer","Registrierte Benutzer"),("Server","Öffentliche Mumble-Serverliste")):
+            for idx in range(self.mumble_tabs.count()):
+                if self.mumble_tabs.tabText(idx)==name:
+                    self.mumble_tabs.setTabToolTip(idx,tip)
+                    break
 
         self._refresh_audio()
         self._refresh_certs()
