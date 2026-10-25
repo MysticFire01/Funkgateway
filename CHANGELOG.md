@@ -1,3 +1,15 @@
+# FunkGateway UI 0.6.130
+
+## Release 0.6.130
+
+- Mumble: Speicherzugriffsfehler beim Verbindungsaufbau mit Server-Mute oder Server-Deaf behoben.
+- Rekursive Teilnehmeraktualisierung durch wiederholte PC-PTT-Abschaltung verhindert.
+- Teilnehmeränderungen bei PC-PTT nur noch melden, wenn sich der PTT- oder TX-Zustand tatsächlich verändert.
+- Unabhängige Gateway-RX-PTT bleibt bei deaktivierter PC-PTT erhalten.
+- Drei automatisierte Regressionstests für Mumble-PTT ergänzt.
+- Verbindungstest mit Mumble-Server 1.5.517 bei aktivem Server-Mute erfolgreich.
+- Versionsangaben in constants.py und __init__.py auf 0.6.130 aktualisiert.
+
 # FunkGateway UI 0.6.21
 
 ## Release 0.6.21
