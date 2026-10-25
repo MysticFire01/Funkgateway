@@ -400,6 +400,8 @@ class MumbleNativeClient(QObject):
             user.undeafen()
 
     def set_pc_ptt(self, active):
+        previous_pc_ptt = bool(self._pc_ptt_active)
+        previous_tx = bool(self._own_tx_active)
         self._pc_ptt_active = bool(active) and self._pc_ptt_enabled and self._connected
         if self._pc_ptt_active and not (self._capture_thread and self._capture_thread.is_alive()):
             self._start_capture()
@@ -407,7 +409,10 @@ class MumbleNativeClient(QObject):
         # stream, which clears _own_tx_active. Restore the final combined
         # PC/gateway TX state AFTER microphone startup, even on first press.
         self._own_tx_active = bool(self._pc_ptt_active or self._gateway_rx_active)
-        self._emit_participants()
+        # Avoid recursive participantsChanged -> mute/deaf -> set_pc_ptt.
+        if (previous_pc_ptt != self._pc_ptt_active or
+                previous_tx != self._own_tx_active):
+            self._emit_participants()
 
     def set_gateway_rx(self, active):
         """Key native Mumble from RF RX independently of PC-user PTT."""
