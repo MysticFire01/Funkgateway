@@ -18,6 +18,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Validate Python
         run: python3 -m compileall -q funkgateway main.py
 
@@ -25,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libportaudio2 libsndfile1 libopus0
-          python3 -m venv .test-venv
+          python3.11 -m venv .test-venv
           .test-venv/bin/python -m pip install --upgrade pip
           .test-venv/bin/python -m pip install "PySide6>=6.5,<7" sounddevice
           .test-venv/bin/python -m unittest discover -s tests -p 'test_mumble_ptt_recursion.py' -v
