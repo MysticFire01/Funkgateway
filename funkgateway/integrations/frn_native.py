@@ -454,7 +454,7 @@ class FrnNativeClient:
             raise ConnectionError("FRN-Chat: keine angemeldete Verbindung.")
         recipient=str(recipient_id or "").strip()
         message=str(text or "").strip()
-        if not recipient or any(x in recipient for x in "<>\r\n") or len(recipient)>128:
+        if any(x in recipient for x in "<>\r\n") or len(recipient)>128:
             raise ValueError("FRN-Chat: ungültige Empfänger-ID.")
         if not message or len(message)>500 or any(x in message for x in "\r\n\x00"):
             raise ValueError("FRN-Chat: bitte 1 bis 500 Zeichen in einer Zeile eingeben.")
@@ -766,7 +766,7 @@ class FrnNativeClient:
             # variants retain their established per-entry handling.
             import uuid
             ordinary_entries = items
-            if len(items) == 3 and str(items[2]).strip() == "P":
+            if len(items) == 3 and str(items[2]).strip().upper() in ("P", "A"):
                 try:
                     sender_id = str(uuid.UUID(str(items[0]).strip()))
                 except (ValueError, AttributeError):
@@ -781,7 +781,7 @@ class FrnNativeClient:
                     self.signals.text_message.emit({
                         "sender": sender_name,
                         "sender_id": sender_id,
-                        "private": True,
+                        "private": str(items[2]).strip().upper() == "P",
                         "message": message_text[:2000],
                     })
                     ordinary_entries = []

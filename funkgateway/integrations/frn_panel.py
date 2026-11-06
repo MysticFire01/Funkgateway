@@ -146,6 +146,7 @@ class FrnPanel(QWidget):
         self._sm_request_kind=None
         self._participants_with_ids=[]
         self._private_chats={}
+        self._pending_public_echoes=[]
         self.explorer=FrnSystemExplorer(); self.explorer.signals.result.connect(self._explorer_result); self.explorer.signals.status.connect(self._set_explorer_status); self.explorer.signals.error.connect(self._explorer_error)
         self._build(); self.refresh_audio_devices(); self._update_status()
         self._room_refresh_timer=QTimer(self); self._room_refresh_timer.setInterval(self._sm_auto_interval_ms); self._room_refresh_timer.timeout.connect(self._refresh_room_counts); self._room_refresh_timer.start()
@@ -259,8 +260,8 @@ class FrnPanel(QWidget):
         recipients=QHBoxLayout()
         recipients.addWidget(QLabel("An:"))
         self.chat_recipient=QComboBox()
-        self.chat_recipient.addItem("Alle im Raum (Test, ID 0)","0")
-        self.chat_recipient.setToolTip("ID 0: Gruppenversand ist serverabhängig und noch unbestätigt.")
+        self.chat_recipient.addItem("Alle im Raum","")
+        self.chat_recipient.setToolTip("Öffentliche Nachricht an alle Teilnehmer im aktuellen FRN-Raum.")
         recipients.addWidget(self.chat_recipient,1)
         chat_layout.addLayout(recipients)
         compose=QHBoxLayout()
@@ -383,6 +384,17 @@ class FrnPanel(QWidget):
                 # Use the actual sender ID, never names, to keep conversations separate.
                 self._open_private_chat(sender_id, sender).append_message(sender, message)
             else:
+                now = time.monotonic()
+                self._pending_public_echoes = [
+                    (text, stamp) for text, stamp in self._pending_public_echoes
+                    if now - stamp < 10
+                ]
+                own_name = self._own_name()
+                if own_name and sender.casefold() == own_name.casefold():
+                    for index, (text, stamp) in enumerate(self._pending_public_echoes):
+                        if text == message:
+                            self._pending_public_echoes.pop(index)
+                            return
                 self.chat_history.appendPlainText(
                     f"[{time.strftime('%H:%M:%S')}] {sender}: {message}"
                 )
@@ -403,14 +415,20 @@ class FrnPanel(QWidget):
         except Exception as exc:
             self.chat_status.setText("FRN-Chat: "+str(exc))
             return
-        self.chat_history.appendPlainText(
-            f"[{time.strftime('%H:%M:%S')}] Ich → {self.chat_recipient.currentText()}: {message}"
-        )
+        if str(recipient):
+            self._open_private_chat(
+                str(recipient), self.chat_recipient.currentText()
+            ).append_message("Ich", message)
+        else:
+            self._pending_public_echoes.append((message, time.monotonic()))
+            self.chat_history.appendPlainText(
+                f"[{time.strftime('%H:%M:%S')}] Ich → Alle im Raum: {message}"
+            )
         self.chat_input.clear()
         self.chat_status.setText("An Server gesendet; Zustellung noch nicht bestätigt.")
 
     def _update_chat_recipients(self,parts):
-        choices=[("Alle im Raum (Test, ID 0)","0")]
+        choices=[("Alle im Raum","")]
         for participant in parts:
             user_id=str(participant.get("id") or "").strip()
             if user_id and len(user_id)<=128:
